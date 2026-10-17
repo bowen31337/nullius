@@ -21,6 +21,15 @@ One test per claim the feature sentence makes:
   with no ``select``, and a malformed answer (non-list, a duplicate id, an id
   outside the view) all raise :class:`~orchestrator._policy.PolicyLoadError`,
   naming the module's own code word.
+* **declared abstention, question contract** — a ``CONTRACT = "question"``
+  fixture whose ``select`` calls ``question.abstain()`` is admitted, answers
+  its batch through :meth:`~orchestrator._policy.ExplorationPolicy.select`
+  without the ``AttributeError`` the bare front raised, and its declaration
+  reaches the real one-way door (:class:`policy_runtime.PolicyCommitError`
+  for a commit that follows it); driven through the real
+  :func:`~orchestrator._campaign.run_campaign` round loop, against a
+  throwaway fully migrated SQLite database, it runs one round that expands
+  exactly the ids it returns.
 
 This suite builds real :class:`policy_runtime.PrefixView` objects from real
 :class:`policy_runtime.PolicyObservation` cells rather than mocking either —
@@ -34,11 +43,19 @@ reads a real credential.
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import discovery
+import providers
 import pytest
+import signal_agent
+from orchestrator._campaign import STOP_ROUND_CAP, run_campaign
 from orchestrator._policy import (
     DEFAULT_BASELINE_WIDTH,
     EXPLORATION_POLICY_ENV,
@@ -52,7 +69,9 @@ from orchestrator._policy import (
 )
 from policy_runtime import (
     POLICY_MODULE_NAME,
+    UNBOUNDED_BUDGET,
     CampaignTree,
+    PolicyCommitError,
     PolicyFilesystemError,
     PolicyImportError,
     PolicyObservation,
@@ -569,6 +588,80 @@ def select(question):
 
 
 # ---------------------------------------------------------------------------
+# Declared abstention — question.abstain() through the front, beside commit()
+# ---------------------------------------------------------------------------
+#
+# The front's commit door carries two ways through it (policy_runtime's own
+# EpisodeCommit: "one door, two ways through it, and no episode takes both"),
+# and a question-contract policy that declares it commits nothing must reach
+# the same door commit() does rather than an AttributeError. The abstaining
+# fixture's own return goes through a _Sink's commit() — the device
+# ADMITTED_SELECT_SOURCE already uses — because the static gate demands every
+# terminating path reach a commit() call and counts the attribute, not the
+# receiver, so the fixture is admitted today and after abstain() is counted
+# wherever commit() is.
+
+#: A question-contract fixture that declares it commits nothing: reaches its
+#: own ``question.abstain()`` and answers the legal roots as its batch.
+ABSTAINING_QUESTION_SOURCE = """
+CONTRACT = "question"
+
+
+class _Sink:
+    def commit(self, value):
+        return value
+
+
+def select(question):
+    sink = _Sink()
+    roots = question.legal_roots()
+    question.abstain()
+    return sink.commit(list(roots))
+"""
+
+#: The same declaration, followed by the one act the door refuses after it —
+#: the probe that tells a real abstention from a silent no-op.
+_ABSTAIN_THEN_COMMIT_QUESTION_SOURCE = """
+CONTRACT = "question"
+
+
+def select(question):
+    roots = question.legal_roots()
+    question.abstain()
+    question.commit(roots[0])
+    return list(roots)
+"""
+
+
+def test_question_contract_abstaining_select_returns_its_batch(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, ABSTAINING_QUESTION_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    question = _question({"root-b": (None, 0, {}), "root-a": (None, 0, {})})
+
+    # question.abstain() is reached inside select() -- without the front's
+    # own abstain door this call raises AttributeError, the fault this
+    # feature closes ("'_QuestionContractFront' object has no attribute
+    # 'abstain'"), and the batch it answers is exactly the ids it names.
+    assert policy.select(question) == ["root-a", "root-b"]
+
+
+def test_question_contract_abstain_reaches_the_real_commit_door(tmp_path: Path) -> None:
+    source_file = _write(tmp_path, _ABSTAIN_THEN_COMMIT_QUESTION_SOURCE)
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+
+    question = _question({"root-a": (None, 0, {}), "root-b": (None, 0, {})})
+
+    # The declaration landed on the EpisodeCommit the front joins, not on a
+    # stub: the commit that follows it is refused by the door's own one-act
+    # law, naming the abstention. A front whose abstain() were a silent
+    # no-op would let this select return its batch instead of raising.
+    with pytest.raises(PolicyCommitError) as excinfo:
+        policy.select(question)
+    assert "abstained" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # An unknown CONTRACT is refused at load, not at the first round
 # ---------------------------------------------------------------------------
 
@@ -630,6 +723,213 @@ def test_incumbent_example_is_admitted_as_a_question_contract_policy() -> None:
 
     question = _question({"root-a": (None, 0, {}), "root-b": (None, 0, {})})
     assert policy.select(question) == ["root-a", "root-b"]
+
+
+# ---------------------------------------------------------------------------
+# One campaign round driven by an abstaining question-contract policy
+# ---------------------------------------------------------------------------
+#
+# The verification this feature is judged by: a CONTRACT = "question" fixture
+# that abstains drives one *live* campaign round without error, and the round
+# expands exactly the ids the policy returns. The harness is this suite's own
+# copy of the one test_campaign.py, test_campaign_resume.py and
+# test_concurrent_evaluation.py each carry (there is no shared conftest): a
+# throwaway fully migrated SQLite database, the three fakes the campaign spec
+# names explicitly, and the real run_campaign round loop.
+
+
+CAMPAIGN_MIGRATION = "0111_campaign_table"
+
+#: The assembled chain the tree's columns fill, in the order the chain
+#: actually widens it — ``0118`` creates ``node`` empty, and only then do
+#: ``0117``-``0114`` add their ``NOT NULL`` columns.
+NODE_TABLE_MIGRATIONS = (
+    "0118_node_table",
+    "0117_identity_trio",
+    "0116_provenance_trio",
+    "0115_agent_model_trio",
+    "0114_node_metrics",
+)
+
+CAMPAIGN_SOURCE = "def signal(ctx):\n    return ctx.close.pct_change(20)\n"
+CAMPAIGN_PROPOSAL = "Mechanism: fades crowded carry.\n```python\n" + CAMPAIGN_SOURCE + "```\n"
+
+#: Real, well-formed pins — the same literals test_campaign.py already
+#: exercises, reused here rather than invented.
+ROOT_PIN = providers.ModelPin("deepseek", "deepseek-v4-flash", "20260910")
+DEPTH_PIN = providers.ModelPin("anthropic", "claude-opus-5", "20260401")
+SAMPLING = providers.AgentSampling(temperature=0.4, seed=7)
+USAGE = providers.Usage(input_tokens=1_000, output_tokens=200)
+
+#: A single-member frontier tier naming exactly :data:`ROOT_PIN`'s own
+#: family, for the reason test_campaign.py gives: a tier of one member is
+#: always assigned to itself, so every root records cleanly.
+ROOT_TIER = providers.FrontierTier(
+    providers=(providers.FrontierProvider(ROOT_PIN.provider, ROOT_PIN.model),)
+)
+
+
+def _load_migration(revision: str) -> ModuleType:
+    """Import a migration by file path, as the schema's owner."""
+    versions_dir = REPO_ROOT / "migrations" / "versions"
+    path = versions_dir / f"{revision}.py"
+    if not path.is_file():
+        raise AssertionError(
+            f"{revision} is not at {path}; this suite runs the campaign and "
+            "node tables' own migrations rather than hand-writing their DDL"
+        )
+    spec = importlib.util.spec_from_file_location(
+        f"_orchestrator_test_policy_{revision}", path
+    )
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def tree_database(tmp_path: Path) -> str:
+    """A ``sqlite:///`` URL for a throwaway database, fully migrated."""
+    url = f"sqlite:///{tmp_path / 'abstaining-round-test.db'}"
+    _load_migration(CAMPAIGN_MIGRATION).apply(url)
+    for revision in NODE_TABLE_MIGRATIONS:
+        _load_migration(revision).apply(url)
+    return url
+
+
+class _CampaignContext:
+    """The subset of ``orchestrator._context.EvaluationContext`` the round reads.
+
+    The same fake test_campaign.py's own ``_Context`` is — the provenance
+    trio, the database URL, the artifact directory and the evaluation grid's
+    length (``evaluation_periods``, for
+    :func:`~orchestrator._live_tree.live_question`) — plus the one
+    evaluation slot explained below.
+    """
+
+    def __init__(self, database_url: str, artifact_dir: Path) -> None:
+        self.database_url = database_url
+        self.evaluator_hash = hashlib.sha256(b"evaluator").hexdigest()
+        self.snapshot_hash = hashlib.sha256(b"snapshot").hexdigest()
+        self.cost_model_hash = hashlib.sha256(b"cost-model").hexdigest()
+        self.artifact_dir = artifact_dir
+        self.evaluation_dates = (dt.date(2026, 1, 2), dt.date(2026, 1, 3))
+        # One evaluation slot, the knob bug_spec_evaluation_throughput.xml
+        # added for exactly this duck-typed context: this suite's only
+        # campaign round expands a two-node batch, and two concurrent
+        # first writers race the attempt store's own ensure-column
+        # fallback (``ALTER TABLE node ADD COLUMN fail_class``) in a
+        # fresh database. Serial slots keep the throwaway-DB test
+        # deterministic; the round loop, the batch and the expansion are
+        # unchanged by it.
+        self.evaluation_workers = 1
+
+
+class _SequenceAuthor:
+    """``author.author_root`` for planting, ``author(workspace)`` for expansion."""
+
+    def author_root(self, campaign_id: str, theme_root: str, *, root_id: Any) -> Any:
+        record = providers.AuthoringRecord(
+            node_id=str(root_id),
+            campaign_id=campaign_id,
+            depth=0,
+            role="root",
+            pin=ROOT_PIN,
+            sampling=SAMPLING,
+            usage=USAGE,
+            served_model=ROOT_PIN.model,
+            tier=ROOT_TIER,
+        )
+        return SimpleNamespace(
+            code=CAMPAIGN_SOURCE,
+            stated_mechanism="Fades crowded carry.",
+            proposal=CAMPAIGN_PROPOSAL,
+            record=record,
+        )
+
+    def __call__(self, workspace: Any) -> Any:
+        child_id = discovery.refined_node_id(workspace.node_id)
+        record = providers.AuthoringRecord(
+            node_id=child_id,
+            campaign_id=workspace.campaign_id,
+            depth=workspace.depth + 1,
+            role="depth",
+            pin=DEPTH_PIN,
+            sampling=SAMPLING,
+            usage=USAGE,
+            served_model=DEPTH_PIN.model,
+        )
+        return SimpleNamespace(
+            code=CAMPAIGN_SOURCE,
+            stated_mechanism="Fades crowded carry.",
+            proposal=CAMPAIGN_PROPOSAL,
+            record=record,
+        )
+
+
+class _FakeEvaluator:
+    """A fake evaluator answering one fixed, budget-charging evaluation."""
+
+    def __init__(self) -> None:
+        self._score = signal_agent.ScoreRecord(ic_mean=0.1, ic_tstat=2.0)
+
+    def evaluate(self, node_id: Any, campaign_id: Any, depth: Any, code: Any) -> Any:
+        return SimpleNamespace(
+            node_id=node_id,
+            fail_class=None,
+            score=self._score,
+            charges_budget=True,
+        )
+
+
+class _FakeSidecarSelection:
+    """The Type-R seal this test never reads back."""
+
+    def persist(self, campaign_id: str) -> None:
+        return None
+
+
+def test_an_abstaining_question_contract_policy_drives_one_campaign_round(
+    tree_database: str, tmp_path: Path
+) -> None:
+    author = _SequenceAuthor()
+    evaluator = _FakeEvaluator()
+    sidecar = _FakeSidecarSelection()
+    events: list[dict[str, Any]] = []
+    context = _CampaignContext(tree_database, tmp_path / "artifacts")
+    source_file = _write(tmp_path, ABSTAINING_QUESTION_SOURCE, name="abstaining.py")
+    policy = load_exploration_policy(env={EXPLORATION_POLICY_ENV: str(source_file)})
+    assert policy.contract == QUESTION_CONTRACT
+
+    result = run_campaign(
+        campaign_type="Type-D",
+        workspaces=2,
+        rounds=1,
+        width=2,
+        allowance=UNBOUNDED_BUDGET,
+        author=author,
+        evaluator=evaluator,
+        policy=policy,
+        context=context,
+        sidecar_selection=sidecar,
+        emit=events.append,
+    )
+
+    # The fixture abstains and answers both planted roots as its batch, so
+    # the round expands exactly those ids -- one refined child per root,
+    # neither more nor fewer -- and the round cap, not an AttributeError
+    # from the abstain() call, is what stops the campaign. The round event
+    # pins the batch the loop actually dispatched: both of the policy's
+    # ids, unsliced (width 2) and unshrunk.
+    assert result.stop_reason == STOP_ROUND_CAP
+    assert result.rounds_run == 1
+    assert len(result.roots) == 2
+    round_events = [event for event in events if event["event"] == "round"]
+    assert len(round_events) == 1
+    assert round_events[0]["batch_size"] == 2
+    expanded = {discovery.refined_node_id(root_id) for root_id in result.roots}
+    assert set(result.nodes) == expanded
+    assert len(result.nodes) == 2
 
 
 # ---------------------------------------------------------------------------

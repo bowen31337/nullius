@@ -216,8 +216,9 @@ class ExplorationPolicy:
     joins the question to a fresh :func:`policy_runtime.episode_commit`
     record (:func:`_question_front`), the same join
     :mod:`orchestrator._financial_eval` makes for a dreaming candidate, so a
-    question-contract policy's ``question.commit(...)`` reaches a real door
-    instead of an :class:`AttributeError`.  Every answer, from either
+    question-contract policy's ``question.commit(...)`` and
+    ``question.abstain()`` each reach a real door instead of an
+    :class:`AttributeError`.  Every answer, from either
     contract, is validated against the world it was computed over before it
     is handed back: not a ``list``, a repeated id, or an id the world cannot
     address each raise :class:`PolicyLoadError`.
@@ -386,13 +387,14 @@ class _QuestionContractFront:
     :class:`policy_runtime.PolicyQuestion`) for every read (``observed``,
     ``legal_roots``, ``legal_actions``, ``meta``, ``probe_batch``, ``tree``)
     and a :class:`policy_runtime.EpisodeCommit` opened over that same
-    question for the one write (``commit``) — the identical join
-    :mod:`orchestrator._financial_eval`'s own ``_FinancialQuestion`` makes
-    for a dreaming candidate replayed over a financial world, built fresh
-    here so a question-contract policy driving a *live* campaign's round
-    loop reaches the same door rather than the bare
-    :class:`~policy_runtime.PolicyQuestion`, which carries no ``commit`` of
-    its own.
+    question for the terminal writes — ``commit``, and the declared
+    abstention ``abstain``, one door with two ways through it — the
+    identical join :mod:`orchestrator._financial_eval`'s own
+    ``_FinancialQuestion`` makes for a dreaming candidate replayed over a
+    financial world, built fresh here so a question-contract policy driving
+    a *live* campaign's round loop reaches the same door rather than the
+    bare :class:`~policy_runtime.PolicyQuestion`, which carries no
+    ``commit`` of its own.
     """
 
     __slots__ = ("_commit", "_question")
@@ -422,6 +424,9 @@ class _QuestionContractFront:
 
     def commit(self, node_id: Any) -> Any:
         return self._commit.commit(node_id)
+
+    def abstain(self) -> None:
+        return self._commit.abstain()
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return "_QuestionContractFront()"
