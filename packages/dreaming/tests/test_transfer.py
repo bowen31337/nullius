@@ -73,6 +73,11 @@ from dreaming import (
     pooled_family_transfer,
     sqlite_path,
 )
+from dreaming.paired import (
+    NON_COMMITTING_FLAT,
+    NON_COMMITTING_REFUSE,
+    NON_COMMITTING_SCORE,
+)
 
 #: The two families the fixtures plant — §241's default theme set carries both
 #: spellings, and a bootstrap world's own root is ``hpo``
@@ -1075,6 +1080,202 @@ class TestTheStoreSeam:
 
         assert str(refusal.value).startswith(PAIRED_CODE)
         assert "world-002" in str(refusal.value)
+
+
+class TestTheFlatBook:
+    """``non_committing`` on the store seam — the same rule the comparison takes.
+
+    docs/preregistration/2026-10-17-m3-dreaming.md's *"a non-committing world
+    scores an IR of exactly 0.0"* applies to the leave-one-family-out delta
+    exactly as it applies to the paired comparison it is built from: a stored
+    reading of :data:`~dreaming.paired.NON_COMMITTING_SCORE` on a held-out
+    world enters the delta as ``0.0`` under ``non_committing="flat"``, and the
+    row the pool holds is never rewritten.
+    """
+
+    def test_the_pure_family_transfer_takes_no_non_committing_keyword(self):
+        """Scope: the flat book is a store-reading fact, not ``family_transfer``'s."""
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+
+        with pytest.raises(TypeError):
+            family_transfer(
+                candidate,
+                baseline,
+                themes=families,
+                theme=HELD_ROOT,
+                non_committing=NON_COMMITTING_FLAT,
+            )
+
+    def test_refuse_is_todays_behaviour_and_the_default(self, pool, monkeypatch):
+        """Every existing caller is unaffected: a held-out miss still refuses."""
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        baseline["world-000"] = NON_COMMITTING_SCORE  # a held-out world's miss
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        with pytest.raises(PairedComparisonError) as by_default:
+            pooled_family_transfer("pi-1", "pi-0", themes=families, theme=HELD_ROOT)
+        with pytest.raises(PairedComparisonError) as explicit:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes=families,
+                theme=HELD_ROOT,
+                non_committing=NON_COMMITTING_REFUSE,
+            )
+
+        assert str(by_default.value) == str(explicit.value)
+
+    def test_flat_substitutes_the_sentinel_on_the_held_out_family(
+        self, pool, monkeypatch
+    ):
+        """A held-out miss enters the delta as a flat ``0.0`` book.
+
+        One of the four held-out worlds misses; the hand computation
+        substitutes ``0.0`` for it before averaging over the family.
+        """
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        baseline["world-000"] = NON_COMMITTING_SCORE
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        transfer = pooled_family_transfer(
+            "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="flat"
+        )
+
+        held = [world for world, root in families.items() if root == HELD_ROOT]
+        hand = statistics.fmean(
+            candidate[world]
+            - (0.0 if baseline[world] == NON_COMMITTING_SCORE else baseline[world])
+            for world in held
+        )
+        assert transfer.delta_ir == pytest.approx(hand)
+        assert transfer.difference.paired_worlds == 4
+
+    def test_an_unknown_mode_is_refused(self, pool, monkeypatch):
+        """Only the two spelled modes are legal, refused in this module's own word."""
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        with pytest.raises(TransferRequestError) as refusal:
+            pooled_family_transfer(
+                "pi-1",
+                "pi-0",
+                themes=families,
+                theme=HELD_ROOT,
+                non_committing="zero-fill",
+            )
+
+        assert "'zero-fill'" in str(refusal.value)
+
+    def test_positive_infinity_on_a_held_out_world_is_refused_under_both_modes(
+        self, pool, monkeypatch
+    ):
+        """``+inf`` is not :data:`~dreaming.paired.NON_COMMITTING_SCORE` — refused, flat or not."""
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        baseline["world-000"] = float("inf")
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        with pytest.raises(PairedComparisonError):
+            pooled_family_transfer(
+                "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="refuse"
+            )
+        with pytest.raises(PairedComparisonError):
+            pooled_family_transfer(
+                "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="flat"
+            )
+
+    def test_nan_on_a_held_out_world_is_refused_under_both_modes(self, pool, monkeypatch):
+        """A real pool cannot store ``nan`` (SQLite converts it to ``NULL`` on
+        write, which :func:`dreaming.paired._pool_arm`'s own filter then
+        excludes) — so ``_pool_arm`` is stubbed to hand one back directly,
+        driving :func:`pooled_family_transfer` itself end to end.
+        """
+        import dreaming.transfer as transfer_module
+
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+
+        def _stub_pool_arm(path, policy_version):
+            if policy_version == "pi-0":
+                return {**baseline, "world-000": float("nan")}
+            return candidate
+
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+        monkeypatch.setattr(transfer_module, "_pool_arm", _stub_pool_arm)
+
+        with pytest.raises(PairedComparisonError):
+            pooled_family_transfer(
+                "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="refuse"
+            )
+        with pytest.raises(PairedComparisonError):
+            pooled_family_transfer(
+                "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="flat"
+            )
+
+    def test_commit_counts_are_measured_over_the_held_out_family_only(
+        self, pool, monkeypatch
+    ):
+        """The rate is over the family's worlds, not the whole pool.
+
+        One of four held-out worlds misses on the baseline — a rate of
+        ``3 / 4`` — and a retained-world miss (never part of the comparison)
+        changes nothing about it.
+        """
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        baseline["world-000"] = NON_COMMITTING_SCORE
+        baseline["world-010"] = NON_COMMITTING_SCORE  # a retained world's miss
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        transfer = pooled_family_transfer(
+            "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="flat"
+        )
+
+        assert transfer.difference.candidate_commits == 4
+        assert transfer.difference.candidate_commit_rate == pytest.approx(1.0)
+        assert transfer.difference.baseline_commits == 3
+        assert transfer.difference.baseline_commit_rate == pytest.approx(3 / 4)
+
+    def test_the_stored_sentinel_is_never_rewritten(self, pool, monkeypatch):
+        """The flat book is a statistic's fiction — the pool keeps its ``-inf``."""
+        families = _families(held=4, retained=20)
+        candidate, baseline = _arms(families)
+        baseline["world-000"] = NON_COMMITTING_SCORE
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv(DATABASE_URL_ENV, pool)
+
+        pooled_family_transfer(
+            "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="flat"
+        )
+
+        with closing(sqlite3.connect(sqlite_path(pool))) as connection:
+            stored = connection.execute(
+                "SELECT score FROM replay_score WHERE policy_version = 'pi-0' "
+                "AND world_id = 'world-000'"
+            ).fetchone()[0]
+        assert stored == NON_COMMITTING_SCORE
+
+        with pytest.raises(PairedComparisonError):
+            pooled_family_transfer(
+                "pi-1", "pi-0", themes=families, theme=HELD_ROOT, non_committing="refuse"
+            )
 
 
 class TestTheVocabulary:

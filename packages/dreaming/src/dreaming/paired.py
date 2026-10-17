@@ -163,6 +163,9 @@ from .errors import (
 from .layout import DATABASE_URL_ENV, REPLAY_SCORE_TABLE, pool_tables_present
 
 __all__ = [
+    "NON_COMMITTING_FLAT",
+    "NON_COMMITTING_REFUSE",
+    "NON_COMMITTING_SCORE",
     "PAIRED_CODE",
     "PAIRED_LEVEL",
     "POWER",
@@ -238,6 +241,133 @@ _TWO_SIDED = 2.0
 #: requirement, so the two figures the refusal compares are computed on the
 #: same terms.
 PROPORTION_DESIGN_EFFECT = 4.0
+
+#: The pool's own sentinel for "this policy took no position here" —
+#: ``replay.NON_COMMITTING_SCORE`` / ``policy_runtime.NON_COMMITTING_SCORE``,
+#: spelled again here rather than imported because neither member is this
+#: one's dependency (``pyproject.toml`` declares ``nullius`` and ``providers``
+#: only, and no member in this workspace imports another).  The value is the
+#: one those modules fix — ``float("-inf")`` — the same stance this workspace
+#: takes for every sentinel two members must agree on without either
+#: depending on the other.
+#:
+#: docs/preregistration/2026-10-17-m3-dreaming.md's *"A world where a policy
+#: commits nothing"*: *"The stored score stays ``-inf``
+#: (``NON_COMMITTING_SCORE``); only the statistic maps it to 0.0."*  That
+#: sentence is this module's own: the pool's rows are never rewritten (feature
+#: 270 holds them fixed, and §12's own rule is that existing stored rows are
+#: never rewritten), and :data:`NON_COMMITTING_SCORE` is the figure a reading
+#: must equal, exactly, for :func:`paired_pool_difference` and
+#: :func:`dreaming.transfer.pooled_family_transfer` to flatten it under
+#: ``non_committing="flat"``.
+NON_COMMITTING_SCORE: float = float("-inf")
+
+#: Today's behaviour, and the default for both store seams that take the new
+#: keyword: a stored reading of :data:`NON_COMMITTING_SCORE` is refused like
+#: any other non-finite figure, by :func:`_validated_figure`, exactly as
+#: before this feature existed.  Named rather than left as the literal
+#: ``"refuse"`` so the two legal values are read from one place and a typo in
+#: either call site is a ``NameError`` rather than a silently-accepted string.
+NON_COMMITTING_REFUSE = "refuse"
+
+#: The pre-registration's rule, opted into by name: a stored reading equal to
+#: :data:`NON_COMMITTING_SCORE` enters the statistic as ``0.0`` — *"a flat
+#: book earns nothing and pays no cost"* — and every other non-finite reading
+#: (``nan``, ``+inf``) is still refused.  The substitution happens on the
+#: *reading handed to the statistic*; the row the pool holds is never
+#: touched, so a second read of the same pool under
+#: :data:`NON_COMMITTING_REFUSE` sees the same ``-inf`` it always did.
+NON_COMMITTING_FLAT = "flat"
+
+#: The only two spellings :func:`_validated_non_committing` admits — named as
+#: a tuple rather than re-listed at each refusal, so the message and the
+#: check cannot drift apart.
+_NON_COMMITTING_MODES = (NON_COMMITTING_REFUSE, NON_COMMITTING_FLAT)
+
+
+def _validated_non_committing(value: Any) -> str:
+    """Check that ``value`` is a legal non-committing mode, or refuse it.
+
+    Exactly :data:`NON_COMMITTING_REFUSE` or :data:`NON_COMMITTING_FLAT` —
+    nothing else names a rule this module knows how to apply to a stored
+    reading, and a caller's typo answered silently as "refuse" would run
+    today's behaviour while believing it had asked for the flat book.
+    """
+    if value not in _NON_COMMITTING_MODES:
+        raise PairedComparisonError(
+            f"{PAIRED_CODE}: a comparison's non-committing mode is "
+            f"{NON_COMMITTING_REFUSE!r} or {NON_COMMITTING_FLAT!r} — got "
+            f"{value!r}; {NON_COMMITTING_REFUSE!r} is today's behaviour (a "
+            f"stored {NON_COMMITTING_SCORE!r} is refused like any other "
+            f"non-finite reading) and {NON_COMMITTING_FLAT!r} is "
+            "docs/preregistration/2026-10-17-m3-dreaming.md's rule — a "
+            "non-committing world's reading enters the statistic as 0.0. "
+            "There is no third rule to ask for"
+        )
+    return value
+
+
+def _flattened_arm(arm: Mapping[str, float], *, mode: str) -> dict[str, float]:
+    """Substitute :data:`NON_COMMITTING_SCORE` with ``0.0``, under the flat mode.
+
+    Exactly one substitution, and only when ``mode`` is
+    :data:`NON_COMMITTING_FLAT`: a reading equal to
+    :data:`NON_COMMITTING_SCORE` becomes ``0.0``, and every other reading —
+    including ``nan`` and ``+inf``, neither of which compares equal to the
+    sentinel — passes through unchanged, to be refused downstream by
+    :func:`_validated_figure` exactly as :data:`NON_COMMITTING_REFUSE` refuses
+    it.  Under :data:`NON_COMMITTING_REFUSE` this is the identity, spelled as
+    a copy rather than the caller's own dict, so the two modes return the same
+    *kind* of value.
+    """
+    if mode != NON_COMMITTING_FLAT:
+        return dict(arm)
+    return {
+        world_id: (0.0 if reading == NON_COMMITTING_SCORE else reading)
+        for world_id, reading in arm.items()
+    }
+
+
+def _arm_commit_count(arm: Mapping[str, float], paired_ids: list[str]) -> int:
+    """How many of ``arm``'s *paired-world* readings are not a miss.
+
+    docs/preregistration/2026-10-17-m3-dreaming.md: *"The commit rate of each
+    arm is reported beside every criterion"* — the count a reading of
+    :data:`NON_COMMITTING_SCORE` does not add to, taken over ``paired_ids``
+    (the worlds the comparison was actually run over) rather than over every
+    row the policy ever wrote, because a world outside the pair contributed no
+    difference and is not part of the comparison the rate describes.  Read
+    from ``arm`` *before* :func:`_flattened_arm` runs: a flattened ``0.0``
+    reads identically to a genuine zero IR, so the sentinel can only still be
+    told apart in the reading the pool actually stored.
+    """
+    return sum(1 for world_id in paired_ids if arm[world_id] != NON_COMMITTING_SCORE)
+
+
+def _carrying_commits(
+    difference: PairedDifference, *, candidate_commits: int, baseline_commits: int
+) -> PairedDifference:
+    """Attach each arm's commit count to an already-taken paired comparison.
+
+    :class:`PairedDifference` is immutable, so the record :func:`paired_ir_difference`
+    returned is rebuilt rather than mutated, carrying every figure it already
+    computed unchanged and adding only the two counts the pool-reading seams
+    know and the pure statistic does not.
+    """
+    return PairedDifference(
+        paired_worlds=difference.paired_worlds,
+        candidate_mean=difference.candidate_mean,
+        baseline_mean=difference.baseline_mean,
+        mean_difference=difference.mean_difference,
+        spread=difference.spread,
+        standard_error=difference.standard_error,
+        t_statistic=difference.t_statistic,
+        p_value=difference.p_value,
+        differences=difference.differences,
+        method=difference.method,
+        candidate_commits=candidate_commits,
+        baseline_commits=baseline_commits,
+    )
 
 
 def _validated_figure(value: Any, *, name: str, code: str, error: type[Exception]) -> float:
@@ -446,11 +576,27 @@ class PairedDifference:
     ``√(2 ln M)`` bar, and what the gate does about a cleared one) is another
     feature's, so this record carries the facts and states no verdict of its
     own beyond the two figures the PRD's criterion is written in.
+
+    ``candidate_commits`` and ``baseline_commits`` are each arm's count, over
+    the *paired* worlds, of readings that were not
+    :data:`NON_COMMITTING_SCORE` — docs/preregistration/2026-10-17-m3-dreaming.md's
+    *"the commit rate of each arm is reported beside every criterion"*.  They
+    default to ``None`` because the pure statistic (:func:`paired_ir_difference`,
+    called with whatever readings the caller already holds) has no pool row to
+    ask *"was this a commit?"* of — only a pool-reading seam
+    (:func:`paired_pool_difference`, :func:`dreaming.transfer.pooled_family_transfer`)
+    knows which stored reading was the sentinel before it was ever handed to
+    this record.  A ``None`` is carried rather than a fabricated ``1.0``: a
+    caller reading :attr:`candidate_commit_rate` off a comparison the pure
+    function built must see *no rate was measured*, not a rate that happens to
+    read as "every reading committed".
     """
 
     __slots__ = (
         "_differences",
+        "baseline_commits",
         "baseline_mean",
+        "candidate_commits",
         "candidate_mean",
         "mean_difference",
         "method",
@@ -474,6 +620,8 @@ class PairedDifference:
         p_value: float,
         differences: tuple[tuple[str, float], ...],
         method: str = "paired t, normal two-sided",
+        candidate_commits: int | None = None,
+        baseline_commits: int | None = None,
     ) -> None:
         #: How many worlds the pair was taken over — the ``n`` Appendix B's
         #: ``n ≈ 8(σ_diff/Δ)²`` is computed against, so a reader comparing this
@@ -508,11 +656,40 @@ class PairedDifference:
         # order the worlds were compared — so a caller auditing one world's
         # contribution reads it here rather than re-deriving the pairing.
         self._differences = differences
+        #: The candidate arm's commit count over the paired worlds, or
+        #: ``None`` when no pool row was read to measure one — see the
+        #: class docstring.
+        self.candidate_commits = candidate_commits
+        #: The baseline arm's commit count over the paired worlds, or
+        #: ``None`` for the same reason.
+        self.baseline_commits = baseline_commits
 
     @property
     def differences(self) -> tuple[tuple[str, float], ...]:
         """The per-world differences, ``(world_id, d)``, in comparison order."""
         return self._differences
+
+    @property
+    def candidate_commit_rate(self) -> float | None:
+        """The candidate's commit count divided by :attr:`paired_worlds`.
+
+        ``None`` when :attr:`candidate_commits` is ``None`` — a rate over a
+        count nobody measured would read as a number rather than as the
+        absence this record means.
+        """
+        if self.candidate_commits is None:
+            return None
+        return self.candidate_commits / self.paired_worlds
+
+    @property
+    def baseline_commit_rate(self) -> float | None:
+        """The baseline's commit count divided by :attr:`paired_worlds`.
+
+        ``None`` for the same reason :attr:`candidate_commit_rate` is.
+        """
+        if self.baseline_commits is None:
+            return None
+        return self.baseline_commits / self.paired_worlds
 
     @property
     def is_positive(self) -> bool:
@@ -548,8 +725,14 @@ class PairedDifference:
         to.  ``differences`` is included because it is the *evidence* the other
         figures are derived from — the same stance ``0109``'s ``replay_score``
         takes toward a revision's aggregate.
+
+        The two commit counts and their rates are included only when they were
+        measured (:attr:`candidate_commits` is not ``None``): a comparison the
+        pure statistic built carries the row it always has, unchanged, and a
+        caller of :func:`paired_ir_difference` sees no new keys it did not ask
+        for.
         """
-        return {
+        row: dict[str, object] = {
             "paired_worlds": self.paired_worlds,
             "candidate_mean": self.candidate_mean,
             "baseline_mean": self.baseline_mean,
@@ -561,6 +744,13 @@ class PairedDifference:
             "method": self.method,
             "differences": self._differences,
         }
+        if self.candidate_commits is not None:
+            row["candidate_commits"] = self.candidate_commits
+            row["candidate_commit_rate"] = self.candidate_commit_rate
+        if self.baseline_commits is not None:
+            row["baseline_commits"] = self.baseline_commits
+            row["baseline_commit_rate"] = self.baseline_commit_rate
+        return row
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, PairedDifference):
@@ -580,6 +770,8 @@ class PairedDifference:
                 self.p_value,
                 self.method,
                 self._differences,
+                self.candidate_commits,
+                self.baseline_commits,
             )
         )
 
@@ -1067,6 +1259,7 @@ def paired_pool_difference(
     delta: Any = 0.0,
     power: Any = POWER,
     env: Mapping[str, str] | None = None,
+    non_committing: Any = NON_COMMITTING_REFUSE,
 ) -> PairedDifference:
     """Compare two policy versions over the pool's own rows — feature 281, over the store.
 
@@ -1091,11 +1284,31 @@ def paired_pool_difference(
     the same amount — which is true of a self-comparison and reads like a fact
     about the pool.
 
+    ``non_committing`` is :data:`NON_COMMITTING_REFUSE` (the default) or
+    :data:`NON_COMMITTING_FLAT` — docs/preregistration/2026-10-17-m3-dreaming.md's
+    *"a non-committing world scores an IR of exactly 0.0"*.  Under the flat
+    mode, a reading equal to :data:`NON_COMMITTING_SCORE` is substituted with
+    ``0.0`` *in the statistic only*, in either arm — the row ``replay_score``
+    holds is read and never rewritten, so a second comparison taken under
+    :data:`NON_COMMITTING_REFUSE` over the same pool still refuses it.  Every
+    other non-finite reading (``nan``, ``+inf``) is refused in both modes, by
+    :func:`paired_ir_difference`'s own :func:`_validated_figure` — the
+    substitution is for the one sentinel this pool's writers actually emit,
+    and not a general licence to launder a reading this statistic cannot use.
+    The returned comparison also carries each arm's commit count and rate
+    over the paired worlds (:attr:`PairedDifference.candidate_commits` /
+    :attr:`~PairedDifference.baseline_commits` and their ``_rate``
+    properties), under both modes — a rate the pre-registration says is
+    *"reported beside every criterion, but does not decide any"*, so it is
+    carried whether or not the flat substitution changed anything.
+
     Refuses, in this order, each naming what it is about:
 
-    1. a policy version that is not non-empty text, or the same version named
-       as both arms (:class:`~dreaming.errors.PairedComparisonError`) — the
-       ask's own facts, refused before any database is opened;
+    1. a policy version that is not non-empty text, the same version named
+       as both arms, or a ``non_committing`` that is neither
+       :data:`NON_COMMITTING_REFUSE` nor :data:`NON_COMMITTING_FLAT`
+       (:class:`~dreaming.errors.PairedComparisonError`) — the ask's own
+       facts, refused before any database is opened;
     2. a URL that names no database or one this member cannot speak
        (:class:`~dreaming.errors.PairedComparisonError`, translated at the
        seam);
@@ -1104,7 +1317,8 @@ def paired_pool_difference(
        comparison over a database without it would report a difference between
        two arms that were never read and nothing in the result would look
        wrong;
-    4. arms that do not pair, or too few paired worlds
+    4. arms that do not pair, too few paired worlds, or a non-finite reading
+       that is not :data:`NON_COMMITTING_SCORE`
        (:class:`~dreaming.errors.PairedComparisonError`), by
        :func:`paired_ir_difference`.
     """
@@ -1121,6 +1335,7 @@ def paired_pool_difference(
             "would describe the pool instead. Name the arm this policy is to "
             "be compared against"
         )
+    mode = _validated_non_committing(non_committing)
     path = _pool_path(database_url, env)
     with closing(sqlite3.connect(path)) as connection:
         if REPLAY_SCORE_TABLE not in pool_tables_present(connection):
@@ -1133,12 +1348,20 @@ def paired_pool_difference(
                 f"been. Point {DATABASE_URL_ENV} at the database the replay "
                 "pool lives in, or migrate it"
             )
-    return paired_ir_difference(
-        _pool_arm(path, candidate),
-        _pool_arm(path, baseline),
+    raw_candidate = _pool_arm(path, candidate)
+    raw_baseline = _pool_arm(path, baseline)
+    difference = paired_ir_difference(
+        _flattened_arm(raw_candidate, mode=mode),
+        _flattened_arm(raw_baseline, mode=mode),
         spread=spread,
         delta=delta,
         power=power,
+    )
+    paired_ids = [world_id for world_id, _ in difference.differences]
+    return _carrying_commits(
+        difference,
+        candidate_commits=_arm_commit_count(raw_candidate, paired_ids),
+        baseline_commits=_arm_commit_count(raw_baseline, paired_ids),
     )
 
 

@@ -193,7 +193,17 @@ from .errors import (
 )
 from .ladder import LADDER_FLOOR_WORLDS, rejects_thin_pool, validated_floor
 from .layout import DATABASE_URL_ENV
-from .paired import POWER, PairedDifference, _pool_arm, paired_ir_difference
+from .paired import (
+    NON_COMMITTING_FLAT,
+    NON_COMMITTING_REFUSE,
+    POWER,
+    PairedDifference,
+    _arm_commit_count,
+    _carrying_commits,
+    _flattened_arm,
+    _pool_arm,
+    paired_ir_difference,
+)
 from .split import pool_worlds
 
 __all__ = [
@@ -275,6 +285,32 @@ def _validated_theme(value: Any) -> str:
             f"{value!r} ({type(value).__name__}); holding a family out of the "
             "pool starts by naming the family, and a value that names no "
             "theme names nothing to hold out"
+        )
+    return value
+
+
+def _validated_non_committing(value: Any) -> str:
+    """Check that ``value`` is a legal non-committing mode, or refuse it.
+
+    :func:`dreaming.paired._validated_non_committing`'s own check, restated in
+    this module's vocabulary — no code word, the stance this module takes for
+    every ask refusal — rather than imported, so a caller of
+    :func:`pooled_family_transfer` meets this module's refusal for its own
+    keyword instead of the comparison's.  Exactly
+    :data:`~dreaming.paired.NON_COMMITTING_REFUSE` or
+    :data:`~dreaming.paired.NON_COMMITTING_FLAT`: nothing else names a rule
+    this module knows how to apply to a reading read off the held-out family.
+    """
+    if value not in (NON_COMMITTING_REFUSE, NON_COMMITTING_FLAT):
+        raise TransferRequestError(
+            f"a transfer's non-committing mode is {NON_COMMITTING_REFUSE!r} "
+            f"or {NON_COMMITTING_FLAT!r} — got {value!r}; "
+            f"{NON_COMMITTING_REFUSE!r} is today's behaviour (a stored miss "
+            f"is refused like any other non-finite reading) and "
+            f"{NON_COMMITTING_FLAT!r} is "
+            "docs/preregistration/2026-10-17-m3-dreaming.md's rule — a "
+            "non-committing world's reading enters the statistic as 0.0. "
+            "There is no third rule to ask for"
         )
     return value
 
@@ -848,6 +884,7 @@ def pooled_family_transfer(
     delta: Any = 0.0,
     power: Any = POWER,
     env: Mapping[str, str] | None = None,
+    non_committing: Any = NON_COMMITTING_REFUSE,
 ) -> FamilyTransfer:
     """The delta on one held-out theme, over the pool's own rows — the store seam.
 
@@ -872,10 +909,23 @@ def pooled_family_transfer(
     entire theme root out of the pool"* is a claim about the pool and at this
     seam the pool is ground truth.
 
+    ``non_committing`` is :data:`~dreaming.paired.NON_COMMITTING_REFUSE` (the
+    default) or :data:`~dreaming.paired.NON_COMMITTING_FLAT`, passed straight
+    through to the same substitution :func:`dreaming.paired.paired_pool_difference`
+    performs: under the flat mode, a reading equal to
+    :data:`~dreaming.paired.NON_COMMITTING_SCORE` on either arm enters the
+    delta as ``0.0``, in the statistic only — the pool's own rows are never
+    rewritten.  The returned transfer's :attr:`~FamilyTransfer.difference`
+    carries each arm's commit count and rate over the held-out family's
+    worlds the same way the comparison's own store seam does, under both
+    modes.
+
     Refuses, in this order, each naming what it is about:
 
     1. a policy version that is not non-empty text, the same version named as
-       both arms, or ``themes``/``theme`` ask facts
+       both arms, ``themes``/``theme`` ask facts, or a ``non_committing`` that
+       is neither :data:`~dreaming.paired.NON_COMMITTING_REFUSE` nor
+       :data:`~dreaming.paired.NON_COMMITTING_FLAT`
        (:class:`~dreaming.errors.TransferRequestError`) — refused before any
        database is opened;
     2. a URL that names no database or one this member cannot speak
@@ -887,7 +937,9 @@ def pooled_family_transfer(
     4. families that disagree with the pool's membership, in either direction
        (:class:`~dreaming.errors.TransferStoreError`);
     5. the retained pool below the floor
-       (:class:`~dreaming.errors.PoolTooThinError`), and the pairing laws
+       (:class:`~dreaming.errors.PoolTooThinError`), and the pairing laws —
+       including a non-finite reading that is not
+       :data:`~dreaming.paired.NON_COMMITTING_SCORE`
        (:class:`~dreaming.errors.PairedComparisonError`,
        :class:`~dreaming.errors.ProportionComparisonError`) — delegated, by
        :func:`family_transfer`.
@@ -903,6 +955,7 @@ def pooled_family_transfer(
             "transfer while looking like a measurement of it. Name the arm "
             "this policy is to be transferred against"
         )
+    mode = _validated_non_committing(non_committing)
     families = _validated_themes(themes)
     root = _carried_root(families, _validated_theme(theme))
 
@@ -942,13 +995,26 @@ def pooled_family_transfer(
                 "pool's families for every world it holds"
             )
         )
-    return family_transfer(
-        _pool_arm(path, candidate),
-        _pool_arm(path, baseline),
+    raw_candidate = _pool_arm(path, candidate)
+    raw_baseline = _pool_arm(path, baseline)
+    result = family_transfer(
+        _flattened_arm(raw_candidate, mode=mode),
+        _flattened_arm(raw_baseline, mode=mode),
         themes=families,
         theme=root,
         floor=floor,
         spread=spread,
         delta=delta,
         power=power,
+    )
+    paired_ids = [world_id for world_id, _ in result.difference.differences]
+    return FamilyTransfer(
+        theme=result.theme,
+        held_out=result.held_out,
+        retained_worlds=result.retained_worlds,
+        difference=_carrying_commits(
+            result.difference,
+            candidate_commits=_arm_commit_count(raw_candidate, paired_ids),
+            baseline_commits=_arm_commit_count(raw_baseline, paired_ids),
+        ),
     )

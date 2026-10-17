@@ -67,7 +67,13 @@ from dreaming import (
     rejects_proportion_comparison,
     sqlite_path,
 )
-from dreaming.paired import _proportion_arm_size
+from dreaming.paired import (
+    NON_COMMITTING_FLAT,
+    NON_COMMITTING_REFUSE,
+    NON_COMMITTING_SCORE,
+    _flattened_arm,
+    _proportion_arm_size,
+)
 
 #: §11.0's two worked figures, spelled once so every test below is written
 #: against the documents rather than against a number this file invented.
@@ -1122,6 +1128,309 @@ class TestTheStoreSeam:
         assert differences["w-a"] == pytest.approx(0.4)
         # w-b: the id-3 row is also last, so 0.8 − 0.3.
         assert differences["w-b"] == pytest.approx(0.5)
+
+
+class TestTheFlatBook:
+    """``non_committing`` — docs/preregistration/2026-10-17-m3-dreaming.md's rule.
+
+    *"A world where a policy commits nothing"*: the stored reading stays
+    ``-inf``, and only the statistic maps a miss to the flat book, ``0.0``.
+    The real store this feature exists for has 49 of 84 ``m2-fixed`` rows at
+    exactly that sentinel, and :func:`paired_pool_difference` refuses the
+    comparison outright without this mode.
+    """
+
+    def test_the_sentinel_is_negative_infinity(self):
+        """The one figure this module flattens — pinned, not assumed.
+
+        ``replay.NON_COMMITTING_SCORE`` and ``policy_runtime.NON_COMMITTING_SCORE``
+        fix this same value; this member spells it again rather than importing
+        either (neither is this member's dependency), so its own copy is
+        pinned here rather than trusted to stay in step by convention alone.
+        """
+        assert NON_COMMITTING_SCORE == float("-inf")
+        assert not math.isnan(NON_COMMITTING_SCORE)
+
+    def test_the_pure_statistic_takes_no_non_committing_keyword(self):
+        """Scope: the flat book is a store-reading fact, not the pure statistic's.
+
+        ``paired_ir_difference`` is unchanged by this feature — a caller
+        handing it raw readings has no pool row for either arm, so there is
+        nothing for this module to tell a commit from a flattened figure.
+        """
+        with pytest.raises(TypeError):
+            paired_ir_difference(
+                {"w-a": 0.5}, {"w-a": 0.1}, non_committing=NON_COMMITTING_FLAT
+            )
+
+    def test_refuse_is_todays_behaviour_and_the_default(self, pool, monkeypatch):
+        """Every existing caller is unaffected: the default still refuses a miss."""
+        _write_arm(pool, "pi-0", {"w-a": 0.1, "w-b": NON_COMMITTING_SCORE, "w-c": 0.3})
+        _write_arm(pool, "pi-1", {"w-a": 0.5, "w-b": 0.6, "w-c": 0.7})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        with pytest.raises(PairedComparisonError) as by_default:
+            paired_pool_difference("pi-1", "pi-0")
+        with pytest.raises(PairedComparisonError) as explicit:
+            paired_pool_difference("pi-1", "pi-0", non_committing=NON_COMMITTING_REFUSE)
+
+        assert str(by_default.value) == str(explicit.value)
+
+    def test_flat_substitutes_the_sentinel_and_matches_the_hand_computation(
+        self, pool, monkeypatch
+    ):
+        """A baseline miss enters the paired difference as a flat ``0.0`` book.
+
+        The candidate holds a figure on every world; the baseline misses two
+        of five.  The hand computation substitutes ``0.0`` for each miss
+        before differencing — the same arithmetic the flat mode must perform.
+        """
+        candidate = {"w-a": 0.5, "w-b": 0.3, "w-c": 0.2, "w-d": 0.1, "w-e": 0.4}
+        baseline = {
+            "w-a": 0.1,
+            "w-b": NON_COMMITTING_SCORE,
+            "w-c": 0.05,
+            "w-d": NON_COMMITTING_SCORE,
+            "w-e": 0.2,
+        }
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        hand = statistics.fmean(
+            candidate[world] - (0.0 if reading == NON_COMMITTING_SCORE else reading)
+            for world, reading in baseline.items()
+        )
+        assert math.isfinite(record.mean_difference)
+        assert record.mean_difference == pytest.approx(hand)
+        assert record.paired_worlds == 5
+
+    def test_nan_does_not_match_the_sentinel_and_is_refused_downstream(self):
+        """``nan`` is not :data:`NON_COMMITTING_SCORE` — refused, flat or not.
+
+        A real pool can never hand this module a ``nan`` reading in the first
+        place: SQLite converts a stored ``nan`` to ``NULL`` on write (its own
+        documented behaviour), and :func:`dreaming.paired._pool_arm`'s
+        ``score IS NOT NULL`` filter then excludes the row entirely — so this
+        pins the mapping's own law directly, the one a stray ``nan`` would
+        meet if it ever reached the flattening step by some other path.
+        ``nan`` never compares equal to anything, including the sentinel, so
+        flattening leaves it exactly as it found it under either mode, and
+        the statistic that receives it still refuses it.
+        """
+        arm = {"w-a": 0.5, "w-b": float("nan")}
+
+        for mode in (NON_COMMITTING_REFUSE, NON_COMMITTING_FLAT):
+            flattened = _flattened_arm(arm, mode=mode)
+            assert math.isnan(flattened["w-b"])
+            with pytest.raises(PairedComparisonError):
+                paired_ir_difference(flattened, {"w-a": 0.1, "w-b": 0.2})
+
+    def test_nan_is_refused_under_both_modes_through_the_store_seam(
+        self, pool, monkeypatch
+    ):
+        """The full call, end to end, with ``_pool_arm`` stubbed to hand back a ``nan``.
+
+        A real pool can never *store* ``nan`` (SQLite converts it to ``NULL``
+        on write, which :func:`dreaming.paired._pool_arm`'s own filter then
+        excludes), so this is the only way to drive :func:`paired_pool_difference`
+        itself — not just the flattening helper — with one.  Monkeypatching
+        the module's own name rather than the import site, because
+        ``paired_pool_difference`` resolves ``_pool_arm`` from its module's
+        globals at call time.
+        """
+        import dreaming.paired as paired_module
+
+        def _stub_pool_arm(path, policy_version):
+            if policy_version == "pi-0":
+                return {"w-a": 0.1, "w-b": float("nan")}
+            return {"w-a": 0.5, "w-b": 0.6}
+
+        _write_arm(pool, "pi-0", {"w-a": 0.1})  # only needs a table to exist
+        monkeypatch.setenv("DATABASE_URL", pool)
+        monkeypatch.setattr(paired_module, "_pool_arm", _stub_pool_arm)
+
+        with pytest.raises(PairedComparisonError):
+            paired_pool_difference("pi-1", "pi-0", non_committing="refuse")
+        with pytest.raises(PairedComparisonError):
+            paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+    def test_positive_infinity_is_refused_under_both_modes(self, pool, monkeypatch):
+        """``+inf`` is not :data:`NON_COMMITTING_SCORE` either — refused, flat or not."""
+        _write_arm(pool, "pi-0", {"w-a": 0.1, "w-b": float("inf"), "w-c": 0.3})
+        _write_arm(pool, "pi-1", {"w-a": 0.5, "w-b": 0.6, "w-c": 0.7})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        with pytest.raises(PairedComparisonError):
+            paired_pool_difference("pi-1", "pi-0", non_committing="refuse")
+        with pytest.raises(PairedComparisonError):
+            paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+    def test_an_unknown_mode_is_refused(self, pool, monkeypatch):
+        """Only the two spelled modes are legal — anything else names no rule."""
+        _write_arm(pool, "pi-0", {"w-a": 0.1})
+        _write_arm(pool, "pi-1", {"w-a": 0.5})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        with pytest.raises(PairedComparisonError) as refusal:
+            paired_pool_difference("pi-1", "pi-0", non_committing="zero-fill")
+
+        message = str(refusal.value)
+        assert message.startswith(PAIRED_CODE)
+        assert "'zero-fill'" in message
+
+    def test_commit_counts_and_rates_match_the_inputs(self, pool, monkeypatch):
+        """Each arm's commit count/rate is measured over the paired worlds.
+
+        The candidate commits on every world; the baseline misses two of
+        five, so its commit rate is ``3 / 5``.
+        """
+        candidate = {"w-a": 0.5, "w-b": 0.3, "w-c": 0.2, "w-d": 0.1, "w-e": 0.4}
+        baseline = {
+            "w-a": 0.1,
+            "w-b": NON_COMMITTING_SCORE,
+            "w-c": 0.05,
+            "w-d": NON_COMMITTING_SCORE,
+            "w-e": 0.2,
+        }
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        assert record.candidate_commits == 5
+        assert record.candidate_commit_rate == pytest.approx(1.0)
+        assert record.baseline_commits == 3
+        assert record.baseline_commit_rate == pytest.approx(3 / 5)
+
+    def test_the_candidate_arm_is_flattened_symmetrically_with_the_baseline(
+        self, pool, monkeypatch
+    ):
+        """The substitution is a fact about the *reading*, not about which arm it is on.
+
+        Every test above puts the miss on the baseline, the way the real
+        ``m2-fixed`` arm holds it; this pins that a miss on the *candidate*
+        is substituted and counted exactly the same way.
+        """
+        candidate = {
+            "w-a": 0.5,
+            "w-b": NON_COMMITTING_SCORE,
+            "w-c": 0.2,
+            "w-d": NON_COMMITTING_SCORE,
+        }
+        baseline = {"w-a": 0.1, "w-b": 0.2, "w-c": 0.05, "w-d": 0.3}
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        hand = statistics.fmean(
+            (0.0 if reading == NON_COMMITTING_SCORE else reading) - baseline[world]
+            for world, reading in candidate.items()
+        )
+        assert record.mean_difference == pytest.approx(hand)
+        assert record.candidate_commits == 2
+        assert record.candidate_commit_rate == pytest.approx(0.5)
+        assert record.baseline_commits == 4
+        assert record.baseline_commit_rate == pytest.approx(1.0)
+
+    def test_commit_rates_are_independent_per_arm_on_disjoint_misses(
+        self, pool, monkeypatch
+    ):
+        """Both arms can miss, on different worlds, without the rates conflating.
+
+        The candidate misses one world the baseline commits on, and the
+        baseline misses a different world the candidate commits on, so each
+        arm's rate must come from its *own* readings alone.
+        """
+        candidate = {
+            "w-a": 0.5,
+            "w-b": NON_COMMITTING_SCORE,
+            "w-c": 0.2,
+            "w-d": 0.4,
+        }
+        baseline = {
+            "w-a": 0.1,
+            "w-b": 0.2,
+            "w-c": NON_COMMITTING_SCORE,
+            "w-d": 0.3,
+        }
+        _write_arm(pool, "pi-0", baseline)
+        _write_arm(pool, "pi-1", candidate)
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        assert record.candidate_commits == 3
+        assert record.candidate_commit_rate == pytest.approx(3 / 4)
+        assert record.baseline_commits == 3
+        assert record.baseline_commit_rate == pytest.approx(3 / 4)
+        hand = statistics.fmean(
+            [0.5 - 0.1, 0.0 - 0.2, 0.2 - 0.0, 0.4 - 0.3]
+        )
+        assert record.mean_difference == pytest.approx(hand)
+
+    def test_commit_rate_is_full_when_nobody_missed(self, pool, monkeypatch):
+        """No sentinel on either arm: both rates read 1.0, under either mode."""
+        _write_arm(pool, "pi-0", {"w-a": 0.1, "w-b": 0.2, "w-c": 0.3})
+        _write_arm(pool, "pi-1", {"w-a": 0.5, "w-b": 0.6, "w-c": 0.7})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0")
+
+        assert record.candidate_commits == record.baseline_commits == 3
+        assert record.candidate_commit_rate == record.baseline_commit_rate == 1.0
+
+    def test_the_pure_records_row_carries_no_commit_fields(self):
+        """A caller of the pure statistic sees today's row, unchanged."""
+        record = paired_ir_difference({"w-a": 0.5, "w-b": 0.6}, {"w-a": 0.1, "w-b": 0.2})
+
+        assert record.candidate_commits is None
+        assert record.candidate_commit_rate is None
+        assert "candidate_commits" not in record.row()
+        assert "baseline_commit_rate" not in record.row()
+
+    def test_the_pool_seams_row_carries_the_commit_fields(self, pool, monkeypatch):
+        """A caller of the store seam sees the four new keys, measured."""
+        _write_arm(pool, "pi-0", {"w-a": 0.1, "w-b": NON_COMMITTING_SCORE})
+        _write_arm(pool, "pi-1", {"w-a": 0.5, "w-b": 0.6})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        record = paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        row = record.row()
+        assert row["candidate_commits"] == 2
+        assert row["candidate_commit_rate"] == 1.0
+        assert row["baseline_commits"] == 1
+        assert row["baseline_commit_rate"] == 0.5
+
+    def test_the_stored_sentinel_is_never_rewritten(self, pool, monkeypatch):
+        """The flat book is a statistic's fiction — the pool keeps its ``-inf``.
+
+        Asserted the hard way: run the flat comparison first, then read the
+        row back and confirm it is still the sentinel, and that a *second*
+        comparison under ``refuse`` over the same, untouched pool still
+        refuses exactly as the first one in this module's suite did.
+        """
+        _write_arm(pool, "pi-0", {"w-a": 0.1, "w-b": NON_COMMITTING_SCORE, "w-c": 0.3})
+        _write_arm(pool, "pi-1", {"w-a": 0.5, "w-b": 0.6, "w-c": 0.7})
+        monkeypatch.setenv("DATABASE_URL", pool)
+
+        paired_pool_difference("pi-1", "pi-0", non_committing="flat")
+
+        with closing(sqlite3.connect(sqlite_path(pool))) as connection:
+            stored = connection.execute(
+                "SELECT score FROM replay_score WHERE policy_version = 'pi-0' "
+                "AND world_id = 'w-b'"
+            ).fetchone()[0]
+        assert stored == NON_COMMITTING_SCORE
+
+        with pytest.raises(PairedComparisonError):
+            paired_pool_difference("pi-1", "pi-0", non_committing="refuse")
 
 
 class TestTheVocabulary:
