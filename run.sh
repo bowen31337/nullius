@@ -24,6 +24,11 @@
 #   ./run.sh closeout [args]    python -m orchestrator.closeout, with ONLY the
 #                               NULLIUS_ research keys (.env.campaign.tpl),
 #                               because it needs the sidecar key reference
+#   ./run.sh m3-verdict [args]  python -m orchestrator.m3_verdict, with ONLY
+#                               the NULLIUS_ research keys (.env.campaign.tpl),
+#                               because it needs the sidecar key reference for
+#                               criterion 2's FDR_deploy; e.g.
+#                               ./run.sh m3-verdict --iteration-id ID
 #   ./run.sh shadow-book [args] python -m orchestrator.shadow, with ONLY the
 #                               NULLIUS_ research keys (.env.campaign.tpl),
 #                               never .env.tpl, as closeout does; defaults
@@ -273,6 +278,24 @@ case "${cmd}" in
     cd "${SCRIPT_DIR}"
     exec op run --env-file="${ENV_CAMPAIGN_TPL}" -- \
       uv run --all-packages python -m orchestrator.shadow "$@"
+    ;;
+
+  m3-verdict)
+    # The M3 dreaming-gate verdict reads the sidecar key reference (it is the
+    # scorer process for criterion 2's FDR_deploy), so it gets the same
+    # NULLIUS_ research keys as `campaign`/`closeout`, from the same env
+    # file, never .env.tpl.
+    if [[ ! -f "${ENV_CAMPAIGN_TPL}" ]]; then
+      echo "error: ${ENV_CAMPAIGN_TPL} not found. Copy .env.campaign.tpl.example to" >&2
+      echo "       .env.campaign.tpl, set your 1Password references, and fill in" >&2
+      echo "       deploy/campaign/{authoring,evaluation}-config.json." >&2
+      exit 1
+    fi
+    mkdir -p "$HOME/.local/share/nullius"
+    export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
+    cd "${SCRIPT_DIR}"
+    exec op run --env-file="${ENV_CAMPAIGN_TPL}" -- \
+      uv run --all-packages python -m orchestrator.m3_verdict "$@"
     ;;
 
   # ── No-secret commands ──────────────────────────────────────────────────────
