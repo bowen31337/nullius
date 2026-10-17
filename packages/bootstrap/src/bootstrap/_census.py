@@ -133,8 +133,9 @@ this package to fire its ``@register`` — pays nothing for the census.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ._pool import POOL_TABLE
@@ -200,15 +201,29 @@ WHERE r.{REPLAY_SCORE_WORLD_COLUMN} IS NOT NULL
 class WorldCensus:
     """Both pools' sizes, held separately — feature 186's whole value.
 
-    Two fields and no third, because the feature's sentence says *both
-    figures separately* and one figure that mixed them is the thing
-    §10.6 exists to forbid.  ``n_financial`` counts the stored worlds of
-    the replay pool that are **not** bootstrap worlds — the number §10.6
-    says the orchestrator tracks independently and §10.6.1 says can never
-    be padded — and ``n_bootstrap`` counts the worlds
-    ``bootstrap_world`` holds, authored and ported alike, which §10.6's
-    *"Authored worlds and ported external worlds both qualify"* is the
-    reason to count as one figure rather than two.
+    Two figures and no third in the sense that matters — *mixed* —
+    because the feature's sentence says *both figures separately* and one
+    figure that mixed them is the thing §10.6 exists to forbid.
+    ``n_financial`` counts the stored worlds of the replay pool that are
+    **not** bootstrap worlds — the number §10.6 says the orchestrator
+    tracks independently and §10.6.1 says can never be padded — and
+    ``n_bootstrap`` counts the worlds ``bootstrap_world`` holds, authored
+    and ported alike, which §10.6's *"Authored worlds and ported external
+    worlds both qualify"* is the reason to count as one figure rather than
+    two.
+
+    ``n_bootstrap_by_domain`` (feature 7) is a breakdown *of*
+    ``n_bootstrap``, not a third pool: a mapping of domain name to count —
+    ``{"hpo": 45, "featsel": 10, "symreg": 10}`` — read beside the two
+    totals so a caller can check
+    docs/preregistration/2026-10-17-m3-dreaming.md's own precondition
+    shape (at least 10 worlds in each of hpo, featsel and symreg, 50+ in
+    total) without re-deriving it.  It defaults to an empty mapping, so
+    every existing construction of this class — positional or by keyword —
+    is unchanged, and it is excluded from equality and hashing
+    (``compare=False``): two censuses are still equal, as documented
+    below, "by those two fields" even when one happens to carry a
+    breakdown the other does not.
 
     Frozen, so two callers holding one census hold the same pair of
     numbers, and equal by those two fields, so a census taken twice over
@@ -222,28 +237,60 @@ class WorldCensus:
 
     n_financial: int
     n_bootstrap: int
+    n_bootstrap_by_domain: Mapping[str, int] = field(
+        default_factory=dict, compare=False
+    )
 
     def __post_init__(self) -> None:
-        for field in ("n_financial", "n_bootstrap"):
-            value = getattr(self, field)
+        for name in ("n_financial", "n_bootstrap"):
+            value = getattr(self, name)
             # A ``bool`` is refused where a count belongs for the reason
             # the member refuses one on an axis and on an evidential bar:
             # ``True`` is ``1`` in Python, so a flag where a count belongs
             # would silently report a pool of one.
             if isinstance(value, bool) or not isinstance(value, int):
                 raise BootstrapPoolError(
-                    f"{field} is a count of worlds — got {value!r} "
+                    f"{name} is a count of worlds — got {value!r} "
                     f"({type(value).__name__}); the two figures are the "
                     "pools' sizes, and a value that is not a whole number "
                     "is a size no database could report"
                 )
             if value < 0:
                 raise BootstrapPoolError(
-                    f"{field} is a count of worlds and cannot be negative "
+                    f"{name} is a count of worlds and cannot be negative "
                     f"— got {value!r}; a pool holds zero worlds or more, "
                     "and a negative size would reach §12.1's ladder as a "
                     "pool thinner than any pool this system can hold"
                 )
+        if not isinstance(self.n_bootstrap_by_domain, Mapping):
+            raise BootstrapPoolError(
+                "n_bootstrap_by_domain is a mapping of domain to count — "
+                f"got {self.n_bootstrap_by_domain!r} "
+                f"({type(self.n_bootstrap_by_domain).__name__}); the "
+                "per-domain figure is the bootstrap figure's own "
+                "breakdown, and a value that is not a mapping names no "
+                "breakdown this census could report"
+            )
+        validated: dict[str, int] = {}
+        for domain, count in self.n_bootstrap_by_domain.items():
+            if not isinstance(domain, str) or not domain.strip():
+                raise BootstrapPoolError(
+                    "a domain name in n_bootstrap_by_domain is a "
+                    f"non-empty string — got {domain!r}"
+                )
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise BootstrapPoolError(
+                    f"n_bootstrap_by_domain[{domain!r}] is a count of "
+                    f"worlds — got {count!r} ({type(count).__name__}); a "
+                    "value that is not a non-negative whole number is a "
+                    "size no database could report"
+                )
+            validated[domain] = count
+        # Normalised to a fresh plain dict, the way every other row() this
+        # member hands out is fresh per call: a caller mutating the dict it
+        # passed the constructor must not be able to move this census's
+        # own view of it afterwards.
+        object.__setattr__(self, "n_bootstrap_by_domain", validated)
 
     @property
     def total(self) -> int:
@@ -287,8 +334,8 @@ class WorldCensus:
         )
 
 
-def _counting_pool(pool: Any) -> tuple[Any, Any]:
-    """Check that ``pool`` is a bootstrap pool, and return its two readers.
+def _counting_pool(pool: Any) -> tuple[Any, Any, Any]:
+    """Check that ``pool`` is a bootstrap pool, and return its three readers.
 
     Duck-typed rather than ``isinstance``, for the reason feature 184's
     question and feature 189's labeling are: the module loader imports the
@@ -296,9 +343,11 @@ def _counting_pool(pool: Any) -> tuple[Any, Any]:
     ``create_app()`` hands out is a *second* ``BootstrapPool`` class
     object, and an ``isinstance`` gate here would refuse the very pool the
     composition seam serves.  What is checked is the surface the census
-    calls through — the ``world_count()`` it asks for the bootstrap figure
-    and the ``path`` it reads the financial figure from — so a string, a
-    dict or a bare object is refused naming what was missing.
+    calls through — the ``world_count()`` it asks for the bootstrap
+    figure, the ``world_count_by_domain()`` it asks for the per-domain
+    breakdown (feature 7), and the ``path`` it reads the financial figure
+    from — so a string, a dict or a bare object is refused naming what
+    was missing.
 
     The attributes are *checked* here and *called* by
     :func:`world_census`, so a pool that is refused for its shape is
@@ -315,6 +364,15 @@ def _counting_pool(pool: Any) -> tuple[Any, Any]:
             "pool's own count, and an object that is not a pool holds no "
             "worlds for it to report"
         )
+    by_domain_counter = getattr(pool, "world_count_by_domain", None)
+    if not callable(by_domain_counter):
+        raise BootstrapPoolError(
+            f"a census counts a bootstrap pool by domain too — got "
+            f"{pool!r} ({type(pool).__name__}), which has no callable "
+            "``world_count_by_domain``; the per-domain breakdown is read "
+            "beside the pool's own total, and an object that is not a "
+            "pool holds no per-domain counts for it to report"
+        )
     path = getattr(pool, "path", None)
     if path is None:
         raise BootstrapPoolError(
@@ -324,7 +382,7 @@ def _counting_pool(pool: Any) -> tuple[Any, Any]:
             "and where the bootstrap pool lives is where those scores "
             "live (§10.6's pool is one pool)"
         )
-    return counter, path
+    return counter, by_domain_counter, path
 
 
 def _bootstrap_count(counter: Any) -> int:
@@ -352,6 +410,42 @@ def _bootstrap_count(counter: Any) -> int:
             "cannot report as measured"
         )
     return held
+
+
+def _bootstrap_count_by_domain(counter: Any) -> dict[str, int]:
+    """The per-domain breakdown, as the pool itself answers it.
+
+    Read through the pool rather than recounted here, the discipline
+    :func:`_bootstrap_count` takes for the combined figure: a second
+    ``GROUP BY`` over the same table would be a second spelling of "how
+    many worlds does each domain hold", free to drift from the pool's own
+    answer the day a domain is added or renamed.
+    """
+    counts = counter()
+    if not isinstance(counts, Mapping):
+        raise BootstrapPoolError(
+            "a pool's ``world_count_by_domain()`` answers a mapping of "
+            f"domain to count — got {counts!r} ({type(counts).__name__}); "
+            "the per-domain figure reaches the M3 precondition as a "
+            "breakdown of the bootstrap figure, and a value that is not a "
+            "mapping is a breakdown the census cannot report as measured"
+        )
+    validated: dict[str, int] = {}
+    for domain, count in counts.items():
+        if not isinstance(domain, str) or not domain.strip():
+            raise BootstrapPoolError(
+                "a domain name in world_count_by_domain() is a non-empty "
+                f"string — got {domain!r} ({type(domain).__name__})"
+            )
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise BootstrapPoolError(
+                f"world_count_by_domain()[{domain!r}] is a count of "
+                f"worlds — got {count!r} ({type(count).__name__}); a "
+                "value that is not a non-negative whole number is a size "
+                "the census cannot report as measured"
+            )
+        validated[domain] = count
+    return validated
 
 
 def _has_replay_pool(connection: sqlite3.Connection) -> bool:
@@ -396,8 +490,9 @@ def world_census(pool: Any) -> WorldCensus:
 
     Refuses, in this order, each naming what it is about:
 
-    1. an object that is not a bootstrap pool — no ``world_count`` to ask
-       or no ``path`` to read — refused before anything touches the disk;
+    1. an object that is not a bootstrap pool — no ``world_count`` or
+       ``world_count_by_domain`` to ask, or no ``path`` to read — refused
+       before anything touches the disk;
     2. a pool whose ``world_count()`` answers something that is not a
        non-negative whole number, and a database the pool cannot speak
        (:class:`~bootstrap.BootstrapPoolError`, raised by the pool's own
@@ -413,11 +508,12 @@ def world_census(pool: Any) -> WorldCensus:
     pool's own read performs, so taking a census can never change the
     figures the next census reports.
     """
-    counter, path = _counting_pool(pool)
+    counter, by_domain_counter, path = _counting_pool(pool)
     # The pool's own count first, and through the pool's own connection:
     # it is the read that brings ``bootstrap_world`` to its shape, so the
     # exclusion below is asked of a table that certainly exists.
     held = _bootstrap_count(counter)
+    by_domain = _bootstrap_count_by_domain(by_domain_counter)
     with closing(sqlite3.connect(path)) as connection:
         if not _has_replay_pool(connection):
             raise BootstrapPoolError(
@@ -429,4 +525,8 @@ def world_census(pool: Any) -> WorldCensus:
                 "database the replay pool lives in, or migrate it)"
             )
         (n_financial,) = connection.execute(_FINANCIAL_COUNT).fetchone()
-    return WorldCensus(n_financial=int(n_financial), n_bootstrap=held)
+    return WorldCensus(
+        n_financial=int(n_financial),
+        n_bootstrap=held,
+        n_bootstrap_by_domain=by_domain,
+    )

@@ -40,14 +40,18 @@ import sqlite3
 
 import pytest
 from bootstrap import (
+    FEATSEL_DOMAIN,
     MAX_POOL_SIZE,
     MIN_POOL_SIZE,
     POOL_DOMAIN,
     POOL_SEED,
     POOL_TABLE,
+    SYMREG_DOMAIN,
     BootstrapPool,
     BootstrapPoolError,
+    FeatureSelectionWorld,
     HyperparameterWorld,
+    SymbolicRegressionWorld,
     draw_world_seed,
     world_id_for,
 )
@@ -293,6 +297,113 @@ def test_one_seed_under_two_names_is_refused(
         connection.commit()
     with pytest.raises(BootstrapPoolError, match="under another world_id"):
         pool.persist_worlds()
+
+
+# -- Feature 7: filling the featsel and symreg domains -----------------------------
+
+
+def test_filling_featsel_and_symreg_over_an_existing_hpo_pool_leaves_hpo_byte_identical(
+    pool: BootstrapPool, database_url: str
+) -> None:
+    # The verification claim, taken literally: fill the hpo domain first
+    # (today's default behaviour, unchanged), then fill 10 featsel and 10
+    # symreg worlds over it — the hpo rows must come back exactly as they
+    # were, because the three domains occupy disjoint address space and
+    # disjoint world ids.  Compared two ways: WorldRecord equality (id,
+    # seed, domain, pool_seed) and the raw table rows byte for byte
+    # (including created_at, which WorldRecord.__eq__ deliberately leaves
+    # out of its own comparison) -- "byte-identical" is a claim about the
+    # stored row, not only the four fields the dataclass compares.
+    pool.persist_worlds()  # 45 hpo worlds, today's default
+    hpo_before = [record for record in pool.worlds() if record.domain == POOL_DOMAIN]
+    assert len(hpo_before) == 45
+    with sqlite3.connect(database_url.removeprefix("sqlite:///")) as connection:
+        rows_before = connection.execute(
+            f"SELECT * FROM {POOL_TABLE} WHERE domain = ? ORDER BY world_id",
+            (POOL_DOMAIN,),
+        ).fetchall()
+
+    pool.persist_worlds(10, domain=FEATSEL_DOMAIN)
+    pool.persist_worlds(10, domain=SYMREG_DOMAIN)
+
+    hpo_after = [record for record in pool.worlds() if record.domain == POOL_DOMAIN]
+    assert hpo_after == hpo_before
+    with sqlite3.connect(database_url.removeprefix("sqlite:///")) as connection:
+        rows_after = connection.execute(
+            f"SELECT * FROM {POOL_TABLE} WHERE domain = ? ORDER BY world_id",
+            (POOL_DOMAIN,),
+        ).fetchall()
+    assert rows_after == rows_before
+    assert pool.world_count() == 65
+    assert pool.world_count_by_domain() == {
+        POOL_DOMAIN: 45,
+        FEATSEL_DOMAIN: 10,
+        SYMREG_DOMAIN: 10,
+    }
+
+
+def test_a_non_hpo_domain_has_no_40_to_50_band(pool: BootstrapPool) -> None:
+    # The hpo band is hpo's own §10.6 target, not a floor every domain
+    # shares — the M3 precondition instead wants at least 10 worlds per
+    # domain, so featsel and symreg accept any positive count.
+    report = pool.persist_worlds(10, domain=FEATSEL_DOMAIN)
+    assert report.count == 10
+    report = pool.persist_worlds(1, domain=SYMREG_DOMAIN)
+    assert report.count == 1
+
+
+@pytest.mark.parametrize("bad_count", [0, -1])
+def test_a_non_hpo_domain_still_refuses_a_non_positive_count(
+    pool: BootstrapPool, bad_count: int
+) -> None:
+    with pytest.raises(BootstrapPoolError, match="positive integer"):
+        pool.persist_worlds(bad_count, domain=FEATSEL_DOMAIN)
+
+
+def test_an_unknown_domain_is_refused(pool: BootstrapPool) -> None:
+    with pytest.raises(BootstrapPoolError, match="pool domain"):
+        pool.persist_worlds(10, domain="not-a-domain")
+
+
+def test_world_ids_carry_their_own_domain(pool: BootstrapPool) -> None:
+    pool.persist_worlds(10, domain=FEATSEL_DOMAIN, pool_seed=POOL_SEED)
+    pool.persist_worlds(10, domain=SYMREG_DOMAIN, pool_seed=POOL_SEED)
+    featsel_ids = {record.world_id for record in pool.worlds() if record.domain == FEATSEL_DOMAIN}
+    symreg_ids = {record.world_id for record in pool.worlds() if record.domain == SYMREG_DOMAIN}
+    assert featsel_ids == {world_id_for(POOL_SEED, i, domain=FEATSEL_DOMAIN) for i in range(10)}
+    assert symreg_ids == {world_id_for(POOL_SEED, i, domain=SYMREG_DOMAIN) for i in range(10)}
+
+
+def test_two_domains_sharing_one_pool_seed_never_draw_the_same_seed(
+    pool: BootstrapPool,
+) -> None:
+    # Without the per-domain address block, featsel's draw at (pool_seed,
+    # index) would equal hpo's draw at the same (pool_seed, index) and trip
+    # the table's seed UNIQUE constraint the moment both domains were
+    # filled from one pool_seed.
+    pool.persist_worlds(45, domain=POOL_DOMAIN, pool_seed=POOL_SEED)
+    pool.persist_worlds(10, domain=FEATSEL_DOMAIN, pool_seed=POOL_SEED)
+    pool.persist_worlds(10, domain=SYMREG_DOMAIN, pool_seed=POOL_SEED)
+    seeds = [record.seed for record in pool.worlds()]
+    assert len(seeds) == len(set(seeds)) == 65
+
+
+def test_world_builds_a_featsel_world_through_its_own_class(pool: BootstrapPool) -> None:
+    report = pool.persist_worlds(10, domain=FEATSEL_DOMAIN)
+    world = pool.world(report.worlds[0].world_id)
+    assert type(world) is FeatureSelectionWorld
+    assert world.seed == report.worlds[0].seed
+
+
+def test_world_builds_a_symreg_world_through_its_own_class(pool: BootstrapPool) -> None:
+    report = pool.persist_worlds(10, domain=SYMREG_DOMAIN)
+    world = pool.world(report.worlds[0].world_id)
+    assert type(world) is SymbolicRegressionWorld
+    assert world.seed == report.worlds[0].seed
+
+
+def test_world_count_by_domain_is_empty_for_an_empty_pool(pool: BootstrapPool) -> None:
+    assert pool.world_count_by_domain() == {}
 
 
 # -- The reads --------------------------------------------------------------------

@@ -39,8 +39,11 @@ import sqlite3
 
 import pytest
 from bootstrap import (
+    FEATSEL_DOMAIN,
     MIN_POOL_SIZE,
+    POOL_DOMAIN,
     POOL_TABLE,
+    SYMREG_DOMAIN,
     BootstrapPool,
     BootstrapPoolError,
     Provenance,
@@ -337,6 +340,80 @@ def test_the_census_is_frozen_and_equal_by_its_two_fields() -> None:
         WorldCensus(1, 2).n_financial = 3  # type: ignore[misc]
 
 
+def test_two_censuses_are_equal_even_with_different_breakdowns() -> None:
+    # n_bootstrap_by_domain is a breakdown *of* n_bootstrap, not a third
+    # pool: equality still reads "by those two fields", so two censuses
+    # over the same two totals are equal whatever each one's breakdown is.
+    first = WorldCensus(n_financial=1, n_bootstrap=45, n_bootstrap_by_domain={"hpo": 45})
+    second = WorldCensus(n_financial=1, n_bootstrap=45)
+    assert first == second
+
+
+# -- The per-domain breakdown (feature 7) ---------------------------------------------
+
+
+def test_world_census_reports_n_bootstrap_by_domain(
+    pool: BootstrapPool, database_url: str
+) -> None:
+    # Filling 10 featsel and 10 symreg worlds over an existing 45-world hpo
+    # pool: the census reports 45/10/10, beside the unchanged n_bootstrap
+    # total of 65 and the n_financial figure.
+    _seed_score(database_url, world_id=_FINANCIAL_WORLD)
+    pool.persist_worlds(45, domain=POOL_DOMAIN)
+    pool.persist_worlds(10, domain=FEATSEL_DOMAIN)
+    pool.persist_worlds(10, domain=SYMREG_DOMAIN)
+
+    census = world_census(pool)
+
+    assert census.n_bootstrap == 65
+    assert census.n_bootstrap_by_domain == {
+        POOL_DOMAIN: 45,
+        FEATSEL_DOMAIN: 10,
+        SYMREG_DOMAIN: 10,
+    }
+    assert census.n_financial == 1
+
+
+def test_an_empty_pool_reports_an_empty_breakdown(
+    pool: BootstrapPool, database_url: str
+) -> None:
+    _seed_replay_pool(database_url)
+    census = world_census(pool)
+    assert census.n_bootstrap_by_domain == {}
+
+
+def test_n_bootstrap_by_domain_must_be_a_mapping() -> None:
+    with pytest.raises(BootstrapPoolError, match="mapping"):
+        WorldCensus(n_financial=1, n_bootstrap=1, n_bootstrap_by_domain="hpo")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad_count", [-1, True, "10", 1.5, None])
+def test_a_domain_count_that_is_not_a_pool_size_is_refused(bad_count: object) -> None:
+    with pytest.raises(BootstrapPoolError, match="hpo"):
+        WorldCensus(
+            n_financial=1, n_bootstrap=1, n_bootstrap_by_domain={"hpo": bad_count}
+        )  # type: ignore[arg-type]
+
+
+def test_a_blank_domain_name_is_refused() -> None:
+    with pytest.raises(BootstrapPoolError, match="non-empty string"):
+        WorldCensus(n_financial=1, n_bootstrap=1, n_bootstrap_by_domain={"": 1})
+
+
+def test_a_pool_with_no_world_count_by_domain_is_refused() -> None:
+    # The duck-typed surface grows a third required reader alongside
+    # world_count and path (feature 7); an object missing it is refused
+    # naming what was missing, before anything touches disk.
+    class Old:
+        path = ":memory:"
+
+        def world_count(self) -> int:
+            return 0
+
+    with pytest.raises(BootstrapPoolError, match="world_count_by_domain"):
+        world_census(Old())
+
+
 # -- The refusals --------------------------------------------------------------------
 
 
@@ -391,6 +468,9 @@ def test_a_pool_whose_count_is_not_a_size_is_refused() -> None:
 
         def world_count(self) -> object:
             return "45"
+
+        def world_count_by_domain(self) -> dict:
+            return {}
 
     with pytest.raises(BootstrapPoolError, match="non-negative whole number"):
         world_census(Sloppy())

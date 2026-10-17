@@ -64,6 +64,25 @@ own state never survives across two calls, and :meth:`HyperparameterWorld.label`
 is a pure function of ``(world, node)``. Two calls of
 :func:`score_on_world` over the same source, world and round cap therefore
 answer the same pick and the same score.
+
+**Feature 7 (additions_spec_dreaming_m3.xml): a featsel or symreg world is
+fronted by its own question class, not the generic one.**  Before feature
+7, ``world`` here was always a :class:`~bootstrap.HyperparameterWorld`, so
+wrapping it with the base :func:`~bootstrap.question_for` was the whole
+story.  Now that :class:`~bootstrap.BootstrapPool` fills and reads
+featsel and symreg worlds too, the generic adapter is the wrong front for
+them: its ``meta()`` hardcodes the hpo ``theme_root``, which would report
+a featsel or symreg node as a member of the hpo family — exactly the
+family-conditioning corruption :class:`~bootstrap.FeatureQuestion` and
+:class:`~bootstrap.SymbolicQuestion` exist to avoid.  :func:`_question_for`
+dispatches on ``world.theme_root`` — the same duck-typing check those two
+classes' own constructors make (``hasattr(world, "theme_root")``), not an
+``isinstance`` on the world's class — because a world's own declared
+family, not its class identity, is the fact that distinguishes the three
+domains.  A :class:`~bootstrap.HyperparameterWorld` declares no
+``theme_root`` and falls through to the base :func:`~bootstrap.question_for`
+unchanged, so this feature changes nothing about how an hpo world is
+scored.
 """
 
 from __future__ import annotations
@@ -72,7 +91,13 @@ import sys
 import types
 from typing import Any
 
-from bootstrap import question_for
+from bootstrap import (
+    FEATSEL_THEME_ROOT,
+    SYMREG_THEME_ROOT,
+    featsel_question_for,
+    question_for,
+    symreg_question_for,
+)
 from policy_runtime import (
     POLICY_MODULE_NAME,
     CommittedPick,
@@ -87,13 +112,35 @@ from ._policy import POLICY_LOAD_CODE, PolicyLoadError
 __all__ = ["score_on_world"]
 
 
+def _question_for(world: Any) -> Any:
+    """Front ``world`` through its own domain's question adapter.
+
+    A world that declares ``theme_root`` naming ``featsel`` or ``symreg``
+    is fronted by that domain's own factory, so its ``meta()`` reports its
+    own family rather than the hpo one the base adapter hands out.  Every
+    other world — an hpo world (no ``theme_root``) or anything else this
+    member does not yet recognise — falls through to the base
+    :func:`~bootstrap.question_for`, which is today's behaviour, unchanged.
+    """
+    theme_root = getattr(world, "theme_root", None)
+    if theme_root == FEATSEL_THEME_ROOT:
+        return featsel_question_for(world)
+    if theme_root == SYMREG_THEME_ROOT:
+        return symreg_question_for(world)
+    return question_for(world)
+
+
 def score_on_world(candidate_source: str, world: Any, *, round_cap: int) -> TerminalPick:
     """Score one (candidate, world) pair — the evaluator ``dreaming.sweep_candidates`` drives.
 
     Screens ``candidate_source``, imports it under
     :data:`policy_runtime.POLICY_MODULE_NAME` and drives its top-level
-    ``select(question)`` over ``bootstrap.question_for(world)``, one round
-    per call under :func:`policy_runtime.guard_policy`, revealing each
+    ``select(question)`` over ``world`` fronted by its own domain's
+    question adapter (:func:`_question_for` — the base
+    ``bootstrap.question_for`` for an hpo world, ``bootstrap.
+    featsel_question_for``/``symreg_question_for`` for a featsel or
+    symreg one), one round per call under :func:`policy_runtime.guard_policy`,
+    revealing each
     round's answered batch through :meth:`~bootstrap.BootstrapQuestion.
     probe_batch` — until ``select`` answers no batch or ``round_cap`` rounds
     have run.  Reads :attr:`~bootstrap.BootstrapQuestion.committed`
@@ -111,7 +158,7 @@ def score_on_world(candidate_source: str, world: Any, *, round_cap: int) -> Term
     """
     cap = _validated_round_cap(round_cap)
     select = _load_select(candidate_source)
-    question = question_for(world)
+    question = _question_for(world)
     rounds = 0
     while rounds < cap:
         with guard_policy(policy_module=POLICY_MODULE_NAME):

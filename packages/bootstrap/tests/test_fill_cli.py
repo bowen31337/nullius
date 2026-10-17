@@ -156,6 +156,8 @@ def test_fill_persists_worlds_and_prints_the_census(database_url: str) -> None:
         "n_financial": 0,
         "total": 40,
         "pool_seed": 777,
+        "domain": bootstrap.POOL_DOMAIN,
+        "n_bootstrap_by_domain": {bootstrap.POOL_DOMAIN: 40},
     }
 
     pool = bootstrap.BootstrapPool(database_url)
@@ -247,6 +249,132 @@ def test_rerunning_with_the_same_pool_seed_is_not_a_conflict(
     assert first_exit == second_exit == EXIT_OK
 
 
+# -- ``--domain`` (feature 7, additions_spec_dreaming_m3.xml) ----------------------
+
+
+def test_filling_featsel_and_symreg_over_an_existing_hpo_pool_reports_45_10_10(
+    database_url: str,
+) -> None:
+    # The verification claim: fill the default (hpo) domain first, then 10
+    # featsel and 10 symreg worlds over it -- the hpo rows are untouched,
+    # and the printed census reports the three domains' counts apart.
+    env = {"DATABASE_URL": database_url}
+    hpo_exit = main([], env=env, emit=lambda _l: None)
+    assert hpo_exit == EXIT_OK
+    hpo_before = list(bootstrap.BootstrapPool(database_url).worlds())
+
+    featsel_lines: list[str] = []
+    featsel_exit = main(
+        ["--domain", "featsel", "--count", "10"], env=env, emit=featsel_lines.append
+    )
+    symreg_lines: list[str] = []
+    symreg_exit = main(
+        ["--domain", "symreg", "--count", "10"], env=env, emit=symreg_lines.append
+    )
+
+    assert featsel_exit == symreg_exit == EXIT_OK
+    symreg_payload = json.loads(symreg_lines[0])
+    assert symreg_payload["n_bootstrap"] == 65
+    assert symreg_payload["n_bootstrap_by_domain"] == {
+        "hpo": 45,
+        "featsel": 10,
+        "symreg": 10,
+    }
+    assert symreg_payload["domain"] == "symreg"
+
+    pool = bootstrap.BootstrapPool(database_url)
+    hpo_after = [record for record in pool.worlds() if record.domain == "hpo"]
+    assert hpo_after == hpo_before
+
+
+def test_a_pool_seed_conflict_is_scoped_to_its_own_domain(database_url: str) -> None:
+    # The three domains fill independently: a pool_seed already held by
+    # hpo must not block a *different* pool_seed being used to fill
+    # featsel -- only a conflict within the same domain is refused.
+    env = {"DATABASE_URL": database_url}
+    hpo_exit = main(
+        ["--pool-seed", "111"], env=env, emit=lambda _l: None
+    )
+    featsel_exit = main(
+        ["--domain", "featsel", "--count", "10", "--pool-seed", "222"],
+        env=env,
+        emit=lambda _l: None,
+    )
+    assert hpo_exit == featsel_exit == EXIT_OK
+
+
+def test_an_unknown_domain_is_rejected_by_the_cli(database_url: str) -> None:
+    stderr = io.StringIO()
+    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+        main(["--domain", "not-a-domain"], env={"DATABASE_URL": database_url}, emit=lambda _l: None)
+    assert excinfo.value.code == 2
+    assert "not-a-domain" in stderr.getvalue()
+
+
+def test_a_different_pool_seed_refuses_within_a_non_hpo_domain_too(
+    database_url: str,
+) -> None:
+    # The populated-seed refusal is not an hpo-only behaviour: a second,
+    # disagreeing pool_seed for the *same* non-hpo domain must refuse
+    # exactly as it does for hpo, so a mistaken --pool-seed cannot grow
+    # featsel past the band an operator meant to fill once.
+    env = {"DATABASE_URL": database_url}
+    first_exit = main(
+        ["--domain", "featsel", "--count", "10", "--pool-seed", "111"],
+        env=env,
+        emit=lambda _l: None,
+    )
+    assert first_exit == EXIT_OK
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        second_exit = main(
+            ["--domain", "featsel", "--count", "10", "--pool-seed", "222"],
+            env=env,
+            emit=lambda _l: None,
+        )
+
+    assert second_exit == EXIT_REFUSED
+    message = stderr.getvalue()
+    assert POPULATED_CODE in message
+    assert "111" in message
+    assert "222" in message
+
+    pool = bootstrap.BootstrapPool(database_url)
+    featsel_worlds = [record for record in pool.worlds() if record.domain == "featsel"]
+    assert len(featsel_worlds) == 10
+    assert {record.pool_seed for record in featsel_worlds} == {111}
+
+
+def test_rerunning_a_non_hpo_domain_with_the_same_pool_seed_is_idempotent(
+    database_url: str,
+) -> None:
+    argv = ["--domain", "symreg", "--count", "10", "--pool-seed", "333"]
+    env = {"DATABASE_URL": database_url}
+    first: list[str] = []
+    second: list[str] = []
+
+    first_exit = main(argv, env=env, emit=first.append)
+    before = [
+        record
+        for record in bootstrap.BootstrapPool(database_url).worlds()
+        if record.domain == "symreg"
+    ]
+    second_exit = main(argv, env=env, emit=second.append)
+    after = [
+        record
+        for record in bootstrap.BootstrapPool(database_url).worlds()
+        if record.domain == "symreg"
+    ]
+
+    assert first_exit == second_exit == EXIT_OK
+    assert first == second
+    assert len(before) == len(after) == 10
+    assert [record.created_at for record in before] == [
+        record.created_at for record in after
+    ]
+
+
 # -- ``--census`` ------------------------------------------------------------------
 
 
@@ -269,6 +397,8 @@ def test_census_only_on_an_untouched_store_prints_zeros_and_writes_nothing(
         "n_financial": 0,
         "total": 0,
         "pool_seed": bootstrap.POOL_SEED,
+        "domain": bootstrap.POOL_DOMAIN,
+        "n_bootstrap_by_domain": {},
     }
     assert bootstrap.BootstrapPool(database_url).world_count() == 0
 
@@ -293,6 +423,8 @@ def test_census_only_on_a_migrated_but_scoreless_store_also_prints_zeros(
         "n_financial": 0,
         "total": 0,
         "pool_seed": bootstrap.POOL_SEED,
+        "domain": bootstrap.POOL_DOMAIN,
+        "n_bootstrap_by_domain": {},
     }
 
 

@@ -134,12 +134,14 @@ it holds (:meth:`~bootstrap.BootstrapPool.worlds`,
 :meth:`~bootstrap.BootstrapPool.world_count`) but does not tally it
 *against* the financial pool — feature 186's independent count and
 feature 187's headline refusal are statements about both pools, made
-where both are visible.  It draws only hyperparameter worlds (the
-``hpo`` domain §10.6's tree names first) and seats only their ported
-counterparts; the feature-selection and symbolic-regression domains
-(features 182-183) join the same table through the same ``domain``
-column when they exist, which is why the column is part of the row
-rather than a fact about the table.  And it charges no budget,
+where both are visible.  It draws :data:`GENERATED_DOMAINS` — the
+hyperparameter world (§10.6's tree names it first), feature selection and
+symbolic regression (features 182-183) — through one ``domain``-parameterised
+:meth:`~bootstrap.BootstrapPool.persist_worlds`, and seats ported worlds'
+counterparts separately; the three generated domains and the ported
+domain join the same table through the same ``domain`` column, which is
+why the column is part of the row rather than a fact about the table.
+And it charges no budget,
 decrements nothing and consults no clock beyond the authoring stamp —
 feature 185's ``charges_budget`` is a fact about the *trial*, recorded
 by the trial ledger (:mod:`bootstrap._trial`) rather than by the pool,
@@ -163,14 +165,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from ._featsel import FEATSEL_DOMAIN, FeatureSelectionWorld
 from ._ported import Provenance
 from ._stream import GOLDEN_GAMMA, MASK64, mix64
+from ._symreg import SYMREG_DOMAIN, SymbolicRegressionWorld
 from ._world import HyperparameterWorld
 from .errors import BootstrapPoolError, BootstrapWorldError
 
 __all__ = [
     "DATABASE_URL_ENV",
     "DEFAULT_POOL_SIZE",
+    "GENERATED_DOMAINS",
     "MAX_POOL_SIZE",
     "MIN_POOL_SIZE",
     "POOL_COMPONENT_NAME",
@@ -253,6 +258,52 @@ POOL_DOMAIN = "hpo"
 #: the pool is reported per §10.6 and the domain is how a report tells
 #: the authored half from the ported one.
 PORTED_DOMAIN = "ported"
+
+#: The domains :meth:`BootstrapPool.persist_worlds` may draw into — the
+#: hyperparameter world first, feature selection second, symbolic
+#: regression third, exactly as §10.6's tree names them.  ``ported``
+#: (feature 191) is deliberately excluded: it has no seed and no draw, and
+#: is seated by :meth:`BootstrapPool.persist_ported_world` through its own
+#: caller, never by the generated-domain authoring this tuple gates.
+#: docs/preregistration/2026-10-17-m3-dreaming.md's M3 precondition reads
+#: these three names directly: at least 50 bootstrap worlds in total, with
+#: at least 10 in each.
+GENERATED_DOMAINS = (POOL_DOMAIN, FEATSEL_DOMAIN, SYMREG_DOMAIN)
+
+#: Which world class a domain's rows build back into — the one mapping
+#: :meth:`BootstrapPool.persist_worlds` validates a draw against (a world
+#: this member cannot construct is never written) and
+#: :meth:`BootstrapPool.world` reads a row through, so the two cannot name
+#: two different worlds for one domain.
+_DOMAIN_WORLD_TYPES: dict[str, type] = {
+    POOL_DOMAIN: HyperparameterWorld,
+    FEATSEL_DOMAIN: FeatureSelectionWorld,
+    SYMREG_DOMAIN: SymbolicRegressionWorld,
+}
+
+#: A small, disjoint per-domain token folded into :func:`draw_world_seed`'s
+#: address — see :data:`_DOMAIN_BLOCK` for why it keeps three domains
+#: sharing one ``pool_seed`` from ever drawing the same seed.  ``hpo`` is
+#: ``0`` so a bare ``draw_world_seed(pool_seed, index)`` — every call this
+#: member made before this feature — computes the identical address it
+#: always did, which is what keeps the committed hpo pool's rows
+#: byte-identical across this change.
+_DOMAIN_TOKENS: dict[str, int] = {
+    POOL_DOMAIN: 0,
+    FEATSEL_DOMAIN: 1,
+    SYMREG_DOMAIN: 2,
+}
+
+#: The width, in index units, of one domain's block of the pre-mix address
+#: space.  ``2**40`` is far beyond any ``index`` this member will ever draw
+#: (the hpo band tops out at 50, and no deployment fills billions of
+#: featsel or symreg worlds), so the three domains' draws occupy disjoint
+#: addresses before :func:`~bootstrap._stream.mix64` ever sees them —
+#: :func:`draw_world_seed` can therefore never hand two domains of one
+#: ``pool_seed`` the same seed, which would otherwise trip the table's own
+#: ``seed`` UNIQUE constraint the moment a second domain was filled over an
+#: existing one.
+_DOMAIN_BLOCK = 1 << 40
 
 #: The row's column names, in declaration order — the one spelling of
 #: what a pool row is made of, shared by the DDL, the insert and the
@@ -430,7 +481,7 @@ def _evolve_pool_schema(connection: sqlite3.Connection) -> None:
     connection.execute(f"ALTER TABLE {_STAGING_TABLE} RENAME TO {POOL_TABLE}")
 
 
-def draw_world_seed(pool_seed: int, index: int) -> int:
+def draw_world_seed(pool_seed: int, index: int, *, domain: str = POOL_DOMAIN) -> int:
     """The seed of the ``index``-th world of the draw ``pool_seed`` names.
 
     The SplitMix64 stream construction — the golden-ratio increment added
@@ -439,10 +490,21 @@ def draw_world_seed(pool_seed: int, index: int) -> int:
     authored once as a batch, so what it needs from randomness is a
     sequence of independent seeds rather than the content-addressed draws
     a world's cells need (:mod:`bootstrap._stream`'s split).  Pure
-    function of ``(pool_seed, index)``: re-authoring re-draws the same
-    worlds, and :func:`~bootstrap._stream.mix64` is a bijection over the
-    64-bit words while ``γ`` is odd, so two indices of one draw can never
-    collide onto one seed.
+    function of ``(pool_seed, index, domain)``: re-authoring re-draws the
+    same worlds, and :func:`~bootstrap._stream.mix64` is a bijection over
+    the 64-bit words while ``γ`` is odd, so two indices of one domain's
+    draw can never collide onto one seed.
+
+    ``domain`` shifts the address by a disjoint per-domain block
+    (:data:`_DOMAIN_BLOCK`) before the draw, so two domains sharing one
+    ``pool_seed`` never draw the same seed either — without it, filling
+    ``featsel`` worlds over an existing ``hpo`` pool at the same
+    ``pool_seed`` would silently redraw the hpo pool's own seeds and trip
+    the table's ``seed`` UNIQUE constraint.  ``domain`` defaults to
+    :data:`POOL_DOMAIN`, whose token is ``0``, so a bare
+    ``draw_world_seed(pool_seed, index)`` — every call site that predates
+    this feature — computes the identical address it always did, which is
+    what keeps the committed hpo pool's rows byte-identical.
 
     The drawn word is returned in its **signed** spelling — ``w - 2⁶⁴``
     when the unsigned word's top bit is set — because SQLite's ``INTEGER``
@@ -452,11 +514,13 @@ def draw_world_seed(pool_seed: int, index: int) -> int:
     its mask, so the signed seed and the unsigned word address the same
     dataset, to the last bit, in any process.
     """
-    word = mix64((pool_seed + (index + 1) * GOLDEN_GAMMA) & MASK64)
+    token = _DOMAIN_TOKENS[domain]
+    offset = (index + 1) + token * _DOMAIN_BLOCK
+    word = mix64((pool_seed + offset * GOLDEN_GAMMA) & MASK64)
     return word - (1 << 64) if word >= (1 << 63) else word
 
 
-def world_id_for(pool_seed: int, index: int) -> str:
+def world_id_for(pool_seed: int, index: int, *, domain: str = POOL_DOMAIN) -> str:
     """The world id the ``index``-th world of a draw is named by.
 
     ``bootstrap-hpo-20260922-07`` — the domain, the pool seed and the
@@ -467,11 +531,13 @@ def world_id_for(pool_seed: int, index: int) -> str:
     wants to see which world it came from), and deterministic for the
     reason the seed is: the id is a function of the draw, so a re-run
     upserts the same rows rather than appending a second generation under
-    new names.  Two digits of index carry the whole band — 50 worlds,
+    new names.  Two digits of index carry the whole hpo band — 50 worlds,
     indices 0-49 — so the ids sort lexicographically in draw order and
-    ``ORDER BY world_id`` is the pool's own order.
+    ``ORDER BY world_id`` is the pool's own order.  ``domain`` defaults to
+    :data:`POOL_DOMAIN`, so a bare ``world_id_for(pool_seed, index)``
+    names the same id it always has.
     """
-    return f"bootstrap-{POOL_DOMAIN}-{pool_seed}-{index:02d}"
+    return f"bootstrap-{domain}-{pool_seed}-{index:02d}"
 
 
 def validated_instant(value: dt.datetime) -> dt.datetime:
@@ -891,16 +957,21 @@ class BootstrapPool:
     """The bootstrap half of the replay pool — features 188 and 191's store.
 
     Constructed with the database URL it persists into;
-    :meth:`persist_worlds` authors 40-50 generated worlds into the table
-    on demand; :meth:`persist_ported_world` seats a ported world's
-    provenance beside them; :meth:`worlds` and :meth:`ported_worlds` read
-    the two halves the pool holds, :meth:`world_count` the count of both;
+    :meth:`persist_worlds` authors a ``domain``'s generated worlds into the
+    table on demand (40-50 for the hpo domain, any positive count for
+    featsel and symreg — feature 7's cross-domain M3 precondition);
+    :meth:`persist_ported_world` seats a ported world's provenance beside
+    them; :meth:`worlds` and :meth:`ported_worlds` read the two halves the
+    pool holds, :meth:`world_count` the count of both and
+    :meth:`world_count_by_domain` that count broken out by domain;
     :meth:`verify_ported_world` is the upstream check feature 191's
-    sentence turns on; :meth:`world` builds the
-    :class:`~bootstrap.HyperparameterWorld` a persisted *authored* row
-    names, which is the read the replay engine makes — the pool is the
-    thing that turns a world id in a ``replay_score`` row back into the
-    world that score was earned on.
+    sentence turns on; :meth:`world` builds the persisted row's own
+    domain's world class (:class:`~bootstrap.HyperparameterWorld`,
+    :class:`~bootstrap.FeatureSelectionWorld` or
+    :class:`~bootstrap.SymbolicRegressionWorld`) from an *authored* row,
+    which is the read the replay engine makes — the pool is the thing that
+    turns a world id in a ``replay_score`` row back into the world that
+    score was earned on.
 
     The class resolves its path lazily, so constructing one performs no
     I/O — composition-time work must not touch the disk, the contract
@@ -1010,31 +1081,46 @@ class BootstrapPool:
         self,
         count: int = DEFAULT_POOL_SIZE,
         *,
+        domain: str = POOL_DOMAIN,
         pool_seed: int = POOL_SEED,
         persisted_at: dt.datetime | None = None,
     ) -> PersistedPool:
-        """Persist ``count`` generated worlds into the pool — the feature's whole call.
+        """Persist ``count`` generated worlds of ``domain`` into the pool.
 
         Draws ``count`` seeds from ``pool_seed`` (the SplitMix stream of
-        :func:`draw_world_seed`), names each world
-        (:func:`world_id_for`), constructs it — the self-check that a
-        row is written only for a world this member can build, which is
+        :func:`draw_world_seed`, addressed by ``domain`` so two domains
+        sharing one ``pool_seed`` never draw the same seed), names each
+        world (:func:`world_id_for`), constructs it — the self-check that
+        a row is written only for a world this member can build, which is
         the identity level of the pool's honesty; the *label* level
         needs no gate because the committed lattice's ridge floor keeps
         every cell answerable, and a draw of a world that cannot answer
         is not a draw this pool can make — and upserts the rows in one
         transaction.  Returns the :class:`PersistedPool` report.
 
+        ``domain`` defaults to :data:`POOL_DOMAIN` — today's behaviour,
+        unchanged — and names which of :data:`GENERATED_DOMAINS` this call
+        draws into; the feature-selection and symbolic-regression domains
+        join the same table through the same ``domain`` column the hpo
+        rows have always carried.
+
         Refuses, in this order, and each refusal names what it is about:
 
-        1. a ``count`` that is not an integer in ``[40, 50]`` — the band
-           of the feature's own sentence, load-bearing in both directions
-           (below it the first dreaming cycle runs on a pool §12.1 rates
-           as weaker; above it bootstrap worlds dominate the pool's
-           composition, the imbalance feature 187 rejects on the
-           reporting side);
-        2. a ``pool_seed`` that is not an integer;
-        3. a database this store cannot speak, or a draw that would seat
+        1. a ``domain`` outside :data:`GENERATED_DOMAINS`;
+        2. a ``count`` that is not an integer, or — for the hpo domain
+           only — not in ``[40, 50]``, the band of §10.6's own sentence,
+           load-bearing in both directions (below it the first dreaming
+           cycle runs on a pool §12.1 rates as weaker; above it bootstrap
+           worlds dominate the pool's composition, the imbalance feature
+           187 rejects on the reporting side).  The 40-50 band is the hpo
+           domain's own target, not a floor every domain shares — the
+           featsel and symreg domains instead answer to
+           docs/preregistration/2026-10-17-m3-dreaming.md's cross-domain
+           M3 precondition (at least 10 worlds in each of the three
+           domains, 50+ in total), so a non-hpo ``count`` is refused only
+           when it is not a positive integer;
+        3. a ``pool_seed`` that is not an integer;
+        4. a database this store cannot speak, or a draw that would seat
            one world under two names (a seed another row already holds) —
            the UNIQUE constraint speaking, translated here so the refusal
            names the world rather than the constraint.
@@ -1046,6 +1132,14 @@ class BootstrapPool:
         leaves ``created_at`` alone — the same world re-asserted is the
         same world (§10.6.1), not an updated one.
         """
+        if domain not in _DOMAIN_WORLD_TYPES:
+            raise BootstrapPoolError(
+                f"a pool domain is one of {sorted(_DOMAIN_WORLD_TYPES)} — "
+                f"got {domain!r}; persist_worlds draws a generated "
+                "domain's worlds (the ported domain is seated by "
+                "persist_ported_world instead), and a name outside that "
+                "set draws no world this member can build"
+            )
         if isinstance(count, bool) or not isinstance(count, int):
             raise BootstrapPoolError(
                 f"a pool size is an integer — got {count!r} "
@@ -1053,17 +1147,28 @@ class BootstrapPool:
                 "worlds, and a value that is not one names no pool this "
                 "feature can author"
             )
-        if not MIN_POOL_SIZE <= count <= MAX_POOL_SIZE:
+        if domain == POOL_DOMAIN:
+            if not MIN_POOL_SIZE <= count <= MAX_POOL_SIZE:
+                raise BootstrapPoolError(
+                    f"the replay pool persists {MIN_POOL_SIZE} to "
+                    f"{MAX_POOL_SIZE} bootstrap worlds — got {count!r}; "
+                    f"docs/nullius-tech-architecture.md §10.6 targets that "
+                    "band before the first financial dreaming cycle (below "
+                    "it, §12.1 rates the pool too thin to dream on; above "
+                    "it, bootstrap worlds would dominate the pool §10.6 "
+                    "says to then fine-tune on financial worlds against), "
+                    "and a size outside it is a decision the operator must "
+                    "make visible rather than one this store rounds away"
+                )
+        elif count < 1:
             raise BootstrapPoolError(
-                f"the replay pool persists {MIN_POOL_SIZE} to "
-                f"{MAX_POOL_SIZE} bootstrap worlds — got {count!r}; "
-                f"docs/nullius-tech-architecture.md §10.6 targets that "
-                "band before the first financial dreaming cycle (below "
-                "it, §12.1 rates the pool too thin to dream on; above "
-                "it, bootstrap worlds would dominate the pool §10.6 "
-                "says to then fine-tune on financial worlds against), "
-                "and a size outside it is a decision the operator must "
-                "make visible rather than one this store rounds away"
+                f"a {domain!r} pool size is a positive integer — got "
+                f"{count!r}; the {MIN_POOL_SIZE}-{MAX_POOL_SIZE} band is "
+                "the hpo domain's own §10.6 target, not a floor every "
+                "domain shares — docs/preregistration/2026-10-17-"
+                "m3-dreaming.md sets the cross-domain floor instead (at "
+                "least 10 worlds in each of hpo, featsel and symreg, 50+ "
+                "in total), and a count below one draws no world at all"
             )
         if isinstance(pool_seed, bool) or not isinstance(pool_seed, int):
             raise BootstrapPoolError(
@@ -1075,21 +1180,22 @@ class BootstrapPool:
         stamp = _stamp(
             persisted_at if persisted_at is not None else dt.datetime.now(dt.UTC)
         )
+        world_type = _DOMAIN_WORLD_TYPES[domain]
         records: list[WorldRecord] = []
         for index in range(count):
-            world_id = world_id_for(pool_seed, index)
-            seed = draw_world_seed(pool_seed, index)
+            world_id = world_id_for(pool_seed, index, domain=domain)
+            seed = draw_world_seed(pool_seed, index, domain=domain)
             # Constructed before it is written: the constructor validates
             # the id and the seed, so a row reaches the table only for a
             # world this member can build back from it — and construction
             # performs no arithmetic (the dataset is first-label lazy), so
             # the check costs nothing.
-            HyperparameterWorld(world_id, seed=seed)
+            world_type(world_id, seed=seed)
             records.append(
                 WorldRecord(
                     world_id=world_id,
                     seed=seed,
-                    domain=POOL_DOMAIN,
+                    domain=domain,
                     pool_seed=pool_seed,
                     created_at=parsed_instant(stamp),
                 )
@@ -1311,6 +1417,28 @@ class BootstrapPool:
             ).fetchone()
         return int(held)
 
+    def world_count_by_domain(self) -> dict[str, int]:
+        """How many worlds the pool holds, broken out by domain.
+
+        The breakdown feature 7's census reads beside :meth:`world_count`'s
+        total — every generated domain's authored rows (hpo, featsel,
+        symreg) and the ported domain's rows alike, each under its own
+        ``domain`` key, so a caller can read
+        docs/preregistration/2026-10-17-m3-dreaming.md's own precondition
+        shape (at least 10 worlds in each of hpo, featsel and symreg, 50+
+        in total) directly off the pool rather than deriving it by
+        grouping :meth:`worlds` and :meth:`ported_worlds` by hand.  A
+        domain with zero rows is simply absent from the mapping — the
+        same "empty is a statement about what has been authored, not
+        about composition" reading :meth:`worlds` documents for its own
+        empty tuple.
+        """
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT domain, COUNT(*) FROM {POOL_TABLE} GROUP BY domain"
+            ).fetchall()
+        return {str(domain): int(count) for domain, count in rows}
+
     def verify_ported_world(
         self, world_id: str, upstream: Provenance
     ) -> PortedWorldRecord:
@@ -1367,11 +1495,14 @@ class BootstrapPool:
             )
         return _reconcile_ported_row(row, upstream)
 
-    def world(self, world_id: str) -> HyperparameterWorld:
+    def world(self, world_id: str) -> Any:
         """The world a persisted row names — the replay engine's read.
 
-        Builds the :class:`~bootstrap.HyperparameterWorld` from the row's
-        own seed, so the world the caller labels against is the world
+        Builds the row's domain's own world class (:data:`_DOMAIN_WORLD_TYPES`
+        — :class:`~bootstrap.HyperparameterWorld` for ``hpo``,
+        :class:`~bootstrap.FeatureSelectionWorld` for ``featsel``,
+        :class:`~bootstrap.SymbolicRegressionWorld` for ``symreg``) from the
+        row's own seed, so the world the caller labels against is the world
         the row recorded — bit for bit, in any process, because the
         dataset is a pure function of that seed.  Construction stays
         lazy: this method returns the world holding no dataset, and the
@@ -1419,7 +1550,16 @@ class BootstrapPool:
                 "environment's to answer, not a draw's"
             )
         record = _record_from_row(row)
-        return HyperparameterWorld(record.world_id, seed=record.seed)
+        world_type = _DOMAIN_WORLD_TYPES.get(record.domain)
+        if world_type is None:
+            raise BootstrapPoolError(
+                f"the world {world_id!r} carries an unrecognised domain "
+                f"{record.domain!r}; the authored read builds a world "
+                "from the domain's own class, and a domain outside "
+                f"{sorted(_DOMAIN_WORLD_TYPES)} names no class this "
+                "member can build"
+            )
+        return world_type(record.world_id, seed=record.seed)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return f"BootstrapPool(database_url={self._database_url!r})"

@@ -12,6 +12,17 @@ that join and nothing more: :meth:`~bootstrap.BootstrapPool.ensure_schema`,
 then :meth:`~bootstrap.BootstrapPool.persist_worlds`, then
 :func:`~bootstrap.world_census`, printed as one JSON line.
 
+**``--domain`` (feature 7, additions_spec_dreaming_m3.xml) fills across the
+three generated domains.**  docs/preregistration/2026-10-17-m3-dreaming.md's
+M3 precondition reads *at least 50 bootstrap worlds, drawn from all three
+generated domains (hpo, featsel, symreg) with at least 10 worlds per
+domain* -- a shape one domain's own 40-50 band cannot satisfy alone.
+``--domain`` names which of :data:`bootstrap._pool.GENERATED_DOMAINS` this
+call draws into, defaulting to :data:`bootstrap.POOL_DOMAIN` -- today's
+behaviour, unchanged.  The printed census carries ``n_bootstrap_by_domain``
+so an operator can read the precondition's own shape directly off the line
+this command prints, beside the ``n_bootstrap`` total it has always printed.
+
 **Idempotence is the library's, inherited rather than reimplemented.**
 :meth:`~bootstrap.BootstrapPool.persist_worlds`'s own upsert keeps a
 world's first ``created_at`` and rewrites nothing else on a re-run with
@@ -22,19 +33,21 @@ adds no idempotence of its own; it only must not stand in the way of the
 library's.
 
 **The one refusal this module adds: a ``pool_seed`` that disagrees with
-what is already held.**  ``persist_worlds`` draws every world's id from
-``(pool_seed, index)`` (:func:`~bootstrap.world_id_for`), so a *different*
-``pool_seed`` does not collide with the held rows -- it draws a second,
-differently-named batch and seats it beside the first, silently growing
-the pool past the 40-50 band docs/nullius-tech-architecture.md §10.6
-targets, with two draws under one roof.  That is a state no operator
-asking "fill the pool" meant to reach, so this command reads the pool's
-held authored worlds *before* drawing: if any exist and name a
+what ``--domain`` already holds.**  ``persist_worlds`` draws every world's
+id from ``(pool_seed, index, domain)`` (:func:`~bootstrap.world_id_for`),
+so a *different* ``pool_seed`` for the same domain does not collide with
+the held rows -- it draws a second, differently-named batch and seats it
+beside the first, silently growing that domain past the band an operator
+meant to fill once.  That is a state no operator asking "fill the pool"
+meant to reach, so this command reads the pool's held authored worlds *of
+the requested domain* before drawing: if any exist and name a
 ``pool_seed`` other than the one asked for, it refuses -- naming both
 seeds, writing nothing -- with the code word ``bootstrap_pool_populated``.
-An empty pool has no held seed to disagree with, and a re-run naming the
-same seed is the refresh feature 188 already made idempotent; neither is
-refused.
+An empty domain has no held seed to disagree with, a re-run naming the
+same seed is the refresh feature 188 already made idempotent, and a
+*different* domain's held seed is simply irrelevant -- the three domains
+fill independently, each against its own history -- so none of those
+three is refused.
 
 **``--census`` skips the draw, not the schema.**  It still runs
 ``ensure_schema()`` (a lazy ``CREATE TABLE IF NOT EXISTS``, not a write of
@@ -86,6 +99,15 @@ from dataclasses import dataclass
 
 import bootstrap
 
+# GENERATED_DOMAINS is read from the submodule directly rather than through
+# the package's own __init__.py: that module is a shared seam several
+# features touch (every component's registration lives there), and this
+# command's own file-claim scope is _pool.py, fill.py and _census.py --
+# not __init__.py -- so the one new name this feature needs is imported
+# from where it is defined instead of widening __init__.py's own export
+# list.
+from bootstrap._pool import GENERATED_DOMAINS
+
 __all__ = [
     "EXIT_CONFIG",
     "EXIT_OK",
@@ -118,22 +140,30 @@ EXIT_CONFIG = 2
 
 @dataclass(frozen=True)
 class FillResult:
-    """The one JSON line this command prints -- the census, beside the seed it was taken against."""
+    """The one JSON line this command prints -- the census, beside the seed and domain it was taken against."""
 
     n_bootstrap: int
     n_financial: int
     total: int
     pool_seed: int
+    domain: str
+    n_bootstrap_by_domain: Mapping[str, int]
 
-    def to_payload(self) -> dict[str, int]:
+    def to_payload(self) -> dict[str, object]:
         """The result as the one JSON line this command prints, field order
         matching the feature's own sentence: ``n_bootstrap``, ``n_financial``,
-        ``total``, ``pool_seed``."""
+        ``total``, ``pool_seed``, ``domain``, ``n_bootstrap_by_domain`` --
+        the last the per-domain breakdown feature 7 adds, so the M3
+        precondition's own shape (at least 10 worlds in each of hpo,
+        featsel and symreg, 50+ in total) is readable off this line
+        directly."""
         return {
             "n_bootstrap": self.n_bootstrap,
             "n_financial": self.n_financial,
             "total": self.total,
             "pool_seed": self.pool_seed,
+            "domain": self.domain,
+            "n_bootstrap_by_domain": dict(self.n_bootstrap_by_domain),
         }
 
 
@@ -173,13 +203,18 @@ def _take_census(pool: bootstrap.BootstrapPool) -> bootstrap.WorldCensus:
     """
     if _has_replay_score_table(pool):
         return bootstrap.world_census(pool)
-    return bootstrap.WorldCensus(n_financial=0, n_bootstrap=pool.world_count())
+    return bootstrap.WorldCensus(
+        n_financial=0,
+        n_bootstrap=pool.world_count(),
+        n_bootstrap_by_domain=pool.world_count_by_domain(),
+    )
 
 
 def fill_pool(
     database_url: str,
     *,
     count: int = bootstrap.DEFAULT_POOL_SIZE,
+    domain: str = bootstrap.POOL_DOMAIN,
     pool_seed: int = bootstrap.POOL_SEED,
     census_only: bool = False,
 ) -> FillResult:
@@ -187,40 +222,43 @@ def fill_pool(
 
     Brings the database to the pool's shape
     (:meth:`~bootstrap.BootstrapPool.ensure_schema`), then -- unless
-    ``census_only`` -- checks the pool's held authored worlds against
+    ``census_only`` -- checks ``domain``'s held authored worlds against
     ``pool_seed`` (see the module docstring) and, if they agree or there are
     none, draws (:meth:`~bootstrap.BootstrapPool.persist_worlds`).  Either
     way, it finishes by taking the census (:func:`_take_census`) and
-    returns it paired with ``pool_seed``.
+    returns it paired with ``pool_seed`` and ``domain``.
 
     Raises :class:`~bootstrap.BootstrapPoolError` -- unchanged, with the
-    code word :data:`POPULATED_CODE` -- when the pool already holds
+    code word :data:`POPULATED_CODE` -- when ``domain`` already holds
     authored worlds drawn from a different ``pool_seed``; propagates
-    :meth:`~bootstrap.BootstrapPool.persist_worlds`'s own refusal of a
-    ``count`` outside ``[40, 50]`` or of a seed collision unchanged, and
-    (once ``replay_score`` exists) :func:`~bootstrap.world_census`'s own
+    :meth:`~bootstrap.BootstrapPool.persist_worlds`'s own refusal of an
+    unknown ``domain``, of a ``count`` outside ``[40, 50]`` for the hpo
+    domain or below ``1`` for any other, or of a seed collision, unchanged;
+    and (once ``replay_score`` exists) :func:`~bootstrap.world_census`'s own
     refusals unchanged.
     """
     pool = bootstrap.BootstrapPool(database_url)
     pool.ensure_schema()
 
     if not census_only:
-        held_seeds = {record.pool_seed for record in pool.worlds()}
+        held_seeds = {
+            record.pool_seed for record in pool.worlds() if record.domain == domain
+        }
         if held_seeds and held_seeds != {pool_seed}:
             held = ", ".join(str(seed) for seed in sorted(held_seeds))
             raise bootstrap.BootstrapPoolError(
                 f"{POPULATED_CODE}: the replay pool already holds authored "
-                f"worlds drawn from pool_seed {held} -- asked to fill from "
-                f"pool_seed {pool_seed!r} instead; persist_worlds draws "
-                "every world's id from (pool_seed, index), so a different "
-                "pool_seed would not refresh the held worlds, it would seat "
-                "a second generation beside them -- growing the pool past "
-                "the 40-50 band docs/nullius-tech-architecture.md §10.6 "
-                "targets, with two draws under one roof.  Point "
-                "--pool-seed at the seed already held, or fill a fresh "
-                "database"
+                f"{domain!r} worlds drawn from pool_seed {held} -- asked to "
+                f"fill from pool_seed {pool_seed!r} instead; persist_worlds "
+                "draws every world's id from (pool_seed, index, domain), "
+                "so a different pool_seed would not refresh the held "
+                f"{domain!r} worlds, it would seat a second generation "
+                "beside them -- growing that domain past the band an "
+                "operator meant to fill once, with two draws under one "
+                "roof.  Point --pool-seed at the seed already held for "
+                f"--domain {domain!r}, or fill a fresh database"
             )
-        pool.persist_worlds(count, pool_seed=pool_seed)
+        pool.persist_worlds(count, domain=domain, pool_seed=pool_seed)
 
     census = _take_census(pool)
     return FillResult(
@@ -228,6 +266,8 @@ def fill_pool(
         n_financial=census.n_financial,
         total=census.total,
         pool_seed=pool_seed,
+        domain=domain,
+        n_bootstrap_by_domain=census.n_bootstrap_by_domain,
     )
 
 
@@ -236,8 +276,19 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m bootstrap.fill",
         description=(
             "Persist generated bootstrap worlds into the replay pool, and "
-            "print the pool's census -- n_bootstrap, n_financial, total "
-            "and pool_seed -- as one JSON line."
+            "print the pool's census -- n_bootstrap, n_financial, total, "
+            "pool_seed, domain and n_bootstrap_by_domain -- as one JSON "
+            "line."
+        ),
+    )
+    parser.add_argument(
+        "--domain",
+        choices=list(GENERATED_DOMAINS),
+        default=bootstrap.POOL_DOMAIN,
+        help=(
+            "the domain to fill -- one of "
+            f"{', '.join(GENERATED_DOMAINS)} "
+            f"(default {bootstrap.POOL_DOMAIN!r})"
         ),
     )
     parser.add_argument(
@@ -246,8 +297,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=bootstrap.DEFAULT_POOL_SIZE,
         metavar="N",
         help=(
-            f"worlds to persist, {bootstrap.MIN_POOL_SIZE}-"
-            f"{bootstrap.MAX_POOL_SIZE} (default {bootstrap.DEFAULT_POOL_SIZE})"
+            f"worlds to persist -- {bootstrap.MIN_POOL_SIZE}-"
+            f"{bootstrap.MAX_POOL_SIZE} for --domain {bootstrap.POOL_DOMAIN!r}, "
+            f"any positive count for the other domains (default "
+            f"{bootstrap.DEFAULT_POOL_SIZE})"
         ),
     )
     parser.add_argument(
@@ -272,7 +325,7 @@ def main(
     env: Mapping[str, str] | None = None,
     emit: Callable[[str], object] = print,
 ) -> int:
-    """``python -m bootstrap.fill [--count N] [--pool-seed S] [--census]``.
+    """``python -m bootstrap.fill [--domain D] [--count N] [--pool-seed S] [--census]``.
 
     Reads ``DATABASE_URL`` from ``env`` (the process environment when
     ``None``) -- a missing or blank value exits :data:`EXIT_CONFIG`, naming
@@ -306,6 +359,7 @@ def main(
         result = fill_pool(
             database_url,
             count=arguments.count,
+            domain=arguments.domain,
             pool_seed=arguments.pool_seed,
             census_only=arguments.census,
         )
