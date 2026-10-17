@@ -14,10 +14,11 @@ that clear the discovery bar (``ir_tstat`` where a node carries one,
 nothing when no node clears the bar. A dreaming cycle's own incumbent is
 meant to start *at* that baseline, so this module restates the identical
 rule over the one reading ``question.*`` actually reveals:
-:mod:`orchestrator._live_tree` folds a node's ``ir_tstat``-or-``ic_mean``
-reading into one field, ``ic_insample`` -- the same substitution close-out's
-own selection value makes for its fallback case -- so comparing
-``ic_insample`` against one threshold and ranking by it reproduces
+:mod:`orchestrator._live_tree` folds a node's ``ir_tstat``-or-``ic_tstat``
+reading (the same fallback close-out's own selection value falls back to --
+``ic_mean`` only when neither is available, the state a test plants rather
+than a real evaluation ever leaves) into one field, ``ic_insample`` -- so
+comparing ``ic_insample`` against one threshold and ranking by it reproduces
 close-out's commit without this module ever reading the tree's raw columns
 itself.
 

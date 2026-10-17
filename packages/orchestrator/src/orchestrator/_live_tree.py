@@ -37,18 +37,27 @@ tree can hold names exactly one.
 
 **``ic_insample`` carries the post-cost value when the row has one
 (additions_spec_cost_aware_selection.xml, "Cost-Aware Selection", feature
-3).**  ``value`` above is ``ir_tstat`` when the row's ``ir_tstat`` is not
-``NULL``, and ``ic_mean`` otherwise — the fallback feature 3 names "as
-before".  :class:`~policy_runtime.PolicyObservation` carries exactly one
-numeric field a ranking policy reads (``ic_insample``;
-:mod:`orchestrator._policy`'s ``BaselinePolicy`` sorts by nothing else), so
-giving the policy post-cost evidence without a second field — one
-:mod:`policy_runtime` does not carry and this spec does not add — means
-reusing the one field the view already has.  This is the "one place" the
-feature's own sentence names: the rename happens here, in this payload, and
-nowhere downstream.  ``r2_insample`` is unaffected — it stays ``ic_mean``'s
-own square, the live evaluator's in-sample R² stand-in, never
-``ir_tstat``'s.
+3), and close-out's own fallback otherwise (bug_spec fix: the m2 incumbent
+equivalence).**  ``value`` above is ``ir_tstat`` when the row's ``ir_tstat``
+is not ``NULL`` and either ``ic_tstat`` is unknown or positive — the sign
+leg :mod:`orchestrator.closeout`'s own ``_is_discovery`` checks before
+trusting ``ir_tstat`` — ``ic_tstat`` when that row carries one, and
+``ic_mean`` only when neither reading is available (a row a test plants
+with no ``ic_tstat`` at all).  This restates
+:func:`orchestrator.closeout._selection_value`'s own fallback, which reads
+``ic_tstat``, not ``ic_mean``, for a node with no ``ir_tstat`` — the
+distinction :mod:`deploy.dreaming.incumbent.m2` depends on to reproduce
+close-out's commit, since ``ic_mean`` and ``ic_tstat`` are different
+readings of the same node and need not agree.
+:class:`~policy_runtime.PolicyObservation` carries exactly one numeric field
+a ranking policy reads (``ic_insample``; :mod:`orchestrator._policy`'s
+``BaselinePolicy`` sorts by nothing else), so giving the policy post-cost
+evidence without a second field — one :mod:`policy_runtime` does not carry
+and this spec does not add — means reusing the one field the view already
+has.  This is the "one place" the feature's own sentence names: the rename
+happens here, in this payload, and nowhere downstream.  ``r2_insample`` is
+unaffected — it stays ``ic_mean``'s own square, the live evaluator's
+in-sample R² stand-in, never ``ir_tstat``'s or ``ic_tstat``'s.
 
 **A node with no metrics freezes an empty payload, and is never revealed.**
 ``ic_mean IS NULL`` means the node failed or has not reached evaluation yet —
@@ -79,14 +88,19 @@ handed to :meth:`~policy_runtime.PolicyQuestion.reveal_many` in one call, so
 the batch is validated against the tree it was just built from and reveals in
 one ascending pass rather than one :meth:`reveal` per row.
 
-**The module reads four columns and nothing else, plus the one optional
+**The module reads five columns and nothing else, plus the one optional
 column feature 3 adds.**  ``id``, ``parent_id`` and ``depth`` are the tree's
 own structural skeleton (migration ``0118``, feature 97); ``ic_mean``
-(migration ``0114``, feature 101) is read because it is both the reveal
-witness (by the tree writer's own all-or-nothing contract, a non-``NULL``
-``ic_mean`` means the row's other five core metrics landed too — a second
-column would read a fact this one already carries) and the fallback half of
-``ic_insample``.  ``ir_tstat`` (additions_spec_cost_aware_selection.xml,
+(migration ``0114``, feature 101) is read because it is the reveal witness
+(by the tree writer's own all-or-nothing contract, a non-``NULL`` ``ic_mean``
+means the row's other five core metrics landed too — a second column would
+read a fact this one already carries) and the source of ``r2_insample``;
+``ic_tstat``, added by the same migration and read unconditionally beside
+it (never probed — a tree old enough to carry ``ic_mean`` carries this
+sibling column too), is ``ic_insample``'s fallback whenever the row carries
+no usable ``ir_tstat``, matching :func:`orchestrator.closeout.
+_selection_value`'s own fallback rather than restating ``ic_mean`` under a
+different name.  ``ir_tstat`` (additions_spec_cost_aware_selection.xml,
 feature 1) is read in the same query, *probed* rather than demanded: feature
 1 adds the column by probe-then-``ALTER`` in the tree writer rather than a
 migration, so a tree a live evaluation has not yet written through still
@@ -161,17 +175,32 @@ CAMPAIGN_ID_COLUMN = "campaign_id"
 #: core metrics in one transaction or none, a non-``NULL`` reading here is a
 #: reliable witness that the row's other five core metrics landed too; see
 #: the module docstring for why a second metric column would read a fact
-#: this one already carries.  It is also ``ic_insample``'s fallback value,
-#: used whenever :data:`IR_TSTAT_COLUMN` is absent or ``NULL`` on the row.
+#: this one already carries.  It is also ``ic_insample``'s last-resort
+#: fallback — read only when neither :data:`IR_TSTAT_COLUMN` nor
+#: :data:`IC_TSTAT_COLUMN` has a usable reading on the row (a row a test
+#: plants with no ``ic_tstat`` at all; a real evaluation always writes both).
 METRIC_COLUMN = "ic_mean"
+
+#: The column migration ``0114`` adds beside :data:`METRIC_COLUMN` — read
+#: unconditionally in the same query, never probed, because the two land in
+#: the same ``ALTER TABLE`` chain.  Preferred over :data:`METRIC_COLUMN` for
+#: ``ic_insample`` whenever the row carries one: this is
+#: :func:`orchestrator.closeout._selection_value`'s own fallback for a node
+#: with no ``ir_tstat``, and matching it (rather than ``ic_mean``, a
+#: different reading of the same node) is what lets
+#: :mod:`deploy.dreaming.incumbent.m2` reproduce close-out's commit.
+IC_TSTAT_COLUMN = "ic_tstat"
 
 #: The post-cost column feature 3 adds to ``ic_insample``
 #: (additions_spec_cost_aware_selection.xml, "Cost-Aware Selection", feature
 #: 3) — feature 1's ``ir_tstat``, added to the ``node`` table by
 #: probe-then-``ALTER`` in the tree writer rather than a migration, so it is
 #: read only when :func:`_load_rows`'s own probe finds it on the row's table.
-#: Preferred over :data:`METRIC_COLUMN` for ``ic_insample`` whenever the row
-#: carries a non-``NULL`` value, per the module docstring.
+#: Preferred over :data:`IC_TSTAT_COLUMN` for ``ic_insample`` whenever the
+#: row carries a non-``NULL`` value and the row's own ``ic_tstat`` is either
+#: unknown or positive — the sign leg :mod:`orchestrator.closeout`'s
+#: ``_is_discovery`` checks before trusting ``ir_tstat``, per the module
+#: docstring.
 IR_TSTAT_COLUMN = "ir_tstat"
 
 #: The constant every evaluated node's payload carries for ``n_features``:
@@ -219,15 +248,22 @@ def live_question(
     """Build a fresh :class:`~policy_runtime.PolicyQuestion` over one campaign's rows.
 
     Reads every node the campaign has planted — ``id``, ``parent_id``,
-    ``depth``, ``ic_mean`` and, when the row's table carries it, ``ir_tstat``
-    — and freezes them into a :class:`~policy_runtime.CampaignTree`.  A node
-    whose ``ic_mean`` is ``NULL`` (not yet evaluated, or failed before
-    landing one) freezes an empty payload and is left out of the reveal;
-    every other node's payload is ``{ic_insample: value, r2_insample:
-    ic_mean ** 2, n_periods: evaluation_periods, n_features: 1}``, where
-    ``value`` is the node's ``ir_tstat`` when it is not ``NULL`` and
-    ``ic_mean`` otherwise (additions_spec_cost_aware_selection.xml,
-    "Cost-Aware Selection", feature 3) — and is revealed, in one
+    ``depth``, ``ic_mean``, ``ic_tstat`` and, when the row's table carries
+    it, ``ir_tstat`` — and freezes them into a
+    :class:`~policy_runtime.CampaignTree`.  A node whose ``ic_mean`` is
+    ``NULL`` (not yet evaluated, or failed before landing one) freezes an
+    empty payload and is left out of the reveal; every other node's payload
+    is ``{ic_insample: value, r2_insample: ic_mean ** 2, n_periods:
+    evaluation_periods, n_features: 1}``, where ``value`` is the node's
+    ``ir_tstat`` when it is not ``NULL`` and the row's own ``ic_tstat`` is
+    either unknown or positive (additions_spec_cost_aware_selection.xml,
+    "Cost-Aware Selection", feature 3, folded with
+    :func:`orchestrator.closeout._is_discovery`'s sign check), the row's
+    ``ic_tstat`` when that is known, and ``ic_mean`` only when neither is —
+    the fallback :func:`orchestrator.closeout._selection_value` itself takes
+    for a node with no ``ir_tstat``, which is what lets
+    :mod:`deploy.dreaming.incumbent.m2` reproduce close-out's own commit over
+    this payload.  The payload is revealed, in one
     :meth:`~policy_runtime.PolicyQuestion.reveal_many` call, before this
     function returns — so the question a caller receives already answers
     :meth:`~policy_runtime.PolicyQuestion.observed` for every evaluated node
@@ -261,11 +297,16 @@ def live_question(
         )
     node_specs: dict[str, tuple[str | None, int, dict[str, Any]]] = {}
     evaluated: list[str] = []
-    for node_id, parent_id, depth, ic_mean, ir_tstat in rows:
+    for node_id, parent_id, depth, ic_mean, ic_tstat, ir_tstat in rows:
         if ic_mean is None:
             node_specs[node_id] = (parent_id, depth, {})
             continue
-        value = ir_tstat if ir_tstat is not None else ic_mean
+        if ir_tstat is not None and (ic_tstat is None or ic_tstat > 0):
+            value = ir_tstat
+        elif ic_tstat is not None:
+            value = ic_tstat
+        else:
+            value = ic_mean
         node_specs[node_id] = (
             parent_id,
             depth,
@@ -359,24 +400,33 @@ def _resolve_path(database_url: Any) -> Path:
 
 def _load_rows(
     path: Path, campaign_id: str, *, database_url: str
-) -> list[tuple[str, str | None, int, float | None, float | None]]:
-    """The campaign's node rows — ``(id, parent_id, depth, ic_mean, ir_tstat)``, ascending by id.
+) -> list[tuple[str, str | None, int, float | None, float | None, float | None]]:
+    """The campaign's node rows — ``(id, parent_id, depth, ic_mean, ic_tstat,
+    ir_tstat)``, ascending by id.
 
-    Reads exactly these four columns, plus a fifth probed rather than
+    Reads exactly these five columns, plus a sixth probed rather than
     demanded — see the module docstring for why ``ic_mean`` alone stands in
-    for "this node has been evaluated" and why ``ir_tstat`` is read only when
-    :func:`_table_has_ir_tstat` finds it on the row's own table.  A table that
-    lacks the column answers ``ir_tstat`` as ``None`` for every row, the same
-    reading a ``NULL`` value there would give — a tree feature 1 has not
-    written through yet carries no post-cost evidence, which is exactly the
-    fallback case. A database the ``node`` migration has not reached answers
-    :class:`LiveTreeError` naming the migration; any other store fault is the
-    same class, naming the error SQLite gave.
+    for "this node has been evaluated", why ``ic_tstat`` is read
+    unconditionally beside it (the same migration adds both), and why
+    ``ir_tstat`` is read only when :func:`_table_has_ir_tstat` finds it on
+    the row's own table.  A table that lacks the column answers ``ir_tstat``
+    as ``None`` for every row, the same reading a ``NULL`` value there would
+    give — a tree feature 1 has not written through yet carries no post-cost
+    evidence, which is exactly the fallback case. A database the ``node``
+    migration has not reached answers :class:`LiveTreeError` naming the
+    migration; any other store fault is the same class, naming the error
+    SQLite gave.
     """
     try:
         with closing(sqlite3.connect(path)) as connection:
             has_ir_tstat = _table_has_ir_tstat(connection)
-            select_columns = [NODE_ID_COLUMN, PARENT_ID_COLUMN, DEPTH_COLUMN, METRIC_COLUMN]
+            select_columns = [
+                NODE_ID_COLUMN,
+                PARENT_ID_COLUMN,
+                DEPTH_COLUMN,
+                METRIC_COLUMN,
+                IC_TSTAT_COLUMN,
+            ]
             if has_ir_tstat:
                 select_columns.append(IR_TSTAT_COLUMN)
             cursor = connection.execute(
@@ -409,9 +459,10 @@ def _load_rows(
             (str(parent_id) if parent_id is not None else None),
             int(depth),
             (float(ic_mean) if ic_mean is not None else None),
+            (float(ic_tstat) if ic_tstat is not None else None),
             (float(ir_tstat) if ir_tstat is not None else None),
         )
-        for node_id, parent_id, depth, ic_mean, ir_tstat in rows
+        for node_id, parent_id, depth, ic_mean, ic_tstat, ir_tstat in rows
     ]
 
 

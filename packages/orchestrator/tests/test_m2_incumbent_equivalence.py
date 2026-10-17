@@ -29,19 +29,26 @@ two calls naming the *same* committed node answer the identical score
 without coincidence, while two calls that (wrongly) named different nodes
 would almost certainly disagree -- the comparison has teeth.
 
-Every planted node carries ``ic_mean == ic_tstat``: the dreaming side's own
-reading (``orchestrator._live_tree``'s ``ic_insample``, which falls back to
-``ic_mean`` because this fixture's ``node`` table never carries
-``ir_tstat``) must equal close-out's own fallback selection value
-(``ic_tstat``) for the two paths to ever agree, and setting them equal is
-what makes that true by construction rather than by coincidence of chosen
-values.
+The four fixtures below plant every node with ``ic_mean == ic_tstat``: the
+dreaming side's own reading (``orchestrator._live_tree``'s ``ic_insample``,
+which falls back to ``ic_tstat`` because this fixture's ``node`` table never
+carries ``ir_tstat``) must equal close-out's own fallback selection value
+(``ic_tstat``) for the two paths to ever agree, and setting ``ic_mean`` equal
+to ``ic_tstat`` is one way to make that true. A fifth fixture,
+:func:`test_fallback_reads_ic_tstat_not_ic_mean_when_the_two_readings_disagree`,
+plants the two readings *distinctly* instead -- the shape close-out's own 84
+real campaigns actually take, and the one this suite's equal-by-construction
+convention could never catch a wrong fallback against: it pins the regression
+this module was fixed for, deploy/dreaming/incumbent.m2.py failing to
+reproduce close-out's pick because ``orchestrator._live_tree`` folded a
+node's reading into ``ic_mean`` rather than close-out's own ``ic_tstat``
+fallback.
 
 Four fixtures, one per claim the feature's test list makes: a clear winner
 (several nodes clear the bar, one strictly highest), a tie (two nodes share
 the top value, broken by node id ascending), a below-bar campaign (no node
 clears the bar -- a miss on both paths), and a single eligible node (only
-one node clears the bar at all). A fifth test asserts
+one node clears the bar at all). A sixth test asserts
 ``policy_runtime.screen_policy`` adopts the module unchanged.
 
 No test opens a network connection or reads a real credential, and no state
@@ -151,6 +158,28 @@ def _plant_node(database_url: str, campaign_id: str, *, node_id: str, value: flo
             "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth, "
             "ic_mean, ic_tstat) VALUES (?, NULL, ?, ?, 0, ?, ?)",
             (node_id, campaign_id, "macro", value, value),
+        )
+    return node_id
+
+
+def _plant_node_with_metrics(
+    database_url: str, campaign_id: str, *, node_id: str, ic_mean: float, ic_tstat: float
+) -> str:
+    """Plant one evaluated root node whose ``ic_mean`` and ``ic_tstat`` differ.
+
+    Every fixture above plants the two equal, by construction, so that the
+    pre-fix ``orchestrator._live_tree`` -- whose ``ic_insample`` fell back to
+    ``ic_mean`` rather than close-out's own fallback, ``ic_tstat`` -- could
+    not be told apart from a correct reading by this suite. This helper is
+    for the one test that must tell them apart: it plants the two readings
+    distinctly, so a path that reads the wrong one picks a different node
+    (or no node) than close-out's own ``_commit_top_node`` does.
+    """
+    with closing(sqlite3.connect(_path_of(database_url))) as connection, connection:
+        connection.execute(
+            "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth, "
+            "ic_mean, ic_tstat) VALUES (?, NULL, ?, ?, 0, ?, ?)",
+            (node_id, campaign_id, "macro", ic_mean, ic_tstat),
         )
     return node_id
 
@@ -410,6 +439,81 @@ def test_single_eligible_node_commits_it_on_both_paths(
     assert result.committed_pick == expected
     assert pick.pick is not None
     assert pick.pick.node_id == expected
+    assert result.oos_ir == pytest.approx(pick.score, abs=1e-12)
+
+
+def test_fallback_reads_ic_tstat_not_ic_mean_when_the_two_readings_disagree(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect this suite exists to catch (deploy/dreaming/incumbent.m2.py
+    did not reproduce close-out's pick on real campaigns): a node whose
+    ``ic_mean`` would win under a fallback that (wrongly) read ``ic_mean``,
+    but whose ``ic_tstat`` -- close-out's own fallback for a node with no
+    ``ir_tstat`` -- leaves it below the discovery bar, paired with a second
+    node whose low ``ic_mean`` hides a bar-clearing ``ic_tstat``. Both call
+    paths must commit the ``ic_tstat``-eligible node, not the higher-``ic_mean``
+    one a reader comparing only ``ic_mean`` would expect.
+    """
+    campaign_id = str(uuid.uuid4())
+    discovery.create_campaign(
+        discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url,
+    )
+    null_ids = [
+        _plant_node(database_url, campaign_id, node_id=str(uuid.uuid4()), value=v)
+        for v in (0.4, 1.1, 1.8)
+    ]
+    high_mean_low_tstat = _plant_node_with_metrics(
+        database_url, campaign_id, node_id=str(uuid.uuid4()), ic_mean=5.0, ic_tstat=1.0
+    )
+    low_mean_high_tstat = _plant_node_with_metrics(
+        database_url, campaign_id, node_id=str(uuid.uuid4()), ic_mean=0.1, ic_tstat=2.5
+    )
+    real_ids = [high_mean_low_tstat, low_mean_high_tstat]
+    all_ids = null_ids + real_ids
+    for index, node_id in enumerate(all_ids):
+        _charge_ledger(database_url, node_id, campaign_id, epoch_id=f"epoch-{index}")
+    assignments = [_assignment(campaign_id, n, is_null=True) for n in null_ids]
+    assignments += [_assignment(campaign_id, n, is_null=False) for n in real_ids]
+    env = {"DATABASE_URL": database_url, **_seal_sidecar(tmp_path, assignments)}
+
+    evaluated = [
+        closeout._EvaluatedNode(
+            node_id=high_mean_low_tstat, ic_mean=5.0, ic_tstat=1.0, perturb_stability=None, ir_tstat=None,
+        ),
+        closeout._EvaluatedNode(
+            node_id=low_mean_high_tstat, ic_mean=0.1, ic_tstat=2.5, perturb_stability=None, ir_tstat=None,
+        ),
+    ]
+    termination = closeout._commit_top_node(evaluated)
+    expected = termination.pick.node_id if termination.committed else None
+    # The premise this test is built on: close-out's own rule picks the
+    # bar-clearing ic_tstat, not the bar-clearing ic_mean.
+    assert expected == low_mean_high_tstat
+
+    # Both real nodes carry an artifact -- a real campaign evaluates and
+    # stores every node's code, not only the one later committed to -- so a
+    # policy that (wrongly) reached for the other real node would still find
+    # code to score, and this test's own assertions (not a missing artifact)
+    # are what tell the two readings apart.
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_id, high_mean_low_tstat)
+    _write_code_artifact(artifact_dir, campaign_id, low_mean_high_tstat)
+
+    monkeypatch.setattr(closeout, "evaluate_on_dates", _stub_evaluate_on_dates)
+    monkeypatch.setattr(_financial_eval, "evaluate_on_dates", _stub_evaluate_on_dates)
+
+    scorer, sidecar = _resolved_scorer_and_sidecar(env)
+    context = _fake_evaluation_context(database_url=database_url, artifact_dir=artifact_dir)
+
+    result = close_out(
+        campaign_id, database_url=database_url, scorer=scorer, sidecar=sidecar, context=context,
+    )
+    financial_context = FinancialEvalContext(evaluation=context)
+    pick = score_on_financial_world(_m2_source(), campaign_id, context=financial_context)
+
+    assert result.committed_pick == low_mean_high_tstat
+    assert pick.pick is not None
+    assert pick.pick.node_id == low_mean_high_tstat
     assert result.oos_ir == pytest.approx(pick.score, abs=1e-12)
 
 

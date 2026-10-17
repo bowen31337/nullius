@@ -27,10 +27,16 @@ One test per claim the feature sentence makes:
 * **the tree is rebuilt from the rows on every call** — a child planted
   between two calls is invisible to the first question and visible to the
   second.
-* **the module reads only id, parent_id, depth and a metric column** — a
+* **the module reads only id, parent_id, depth and two metric columns** — a
   database carrying none of the identity/provenance/authoring-model columns
   still answers correctly, and the source holds no reference to the sidecar
   or an ``is_null`` bit.
+* **``ic_insample`` falls back to ``ic_tstat``, not ``ic_mean``, for a node
+  with no ``ir_tstat``** — close-out's own fallback selection value
+  (:func:`orchestrator.closeout._selection_value`) reads ``ic_tstat``, and a
+  node whose two readings disagree must rank, and clear the discovery bar,
+  by ``ic_tstat`` — falling back further to ``ic_mean`` only when a row
+  carries no ``ic_tstat`` at all.
 * **the wiring refusals** — a bad ``database_url``, an empty campaign, an
   unmigrated database and a bad ``evaluation_periods`` all raise
   :class:`~orchestrator._live_tree.LiveTreeError`; a bad ``budget`` is left
@@ -136,22 +142,25 @@ def _plant_node(
     parent_id: str | None = None,
     depth: int = 0,
     ic_mean: float | None = None,
+    ic_tstat: float | None = None,
 ) -> str:
     """Insert one node row directly — the state a live campaign would write.
 
     Deliberately raw SQL against the migrated tree, the way
     :mod:`test_tree_writer` plants a node: :func:`live_question` never
-    writes a row, so the test must. Only ``ic_mean`` is ever set among the
-    seven metric columns — the other six stay ``NULL`` throughout this
-    suite, which is itself part of the proof that this feature reads no
-    metric column but this one.
+    writes a row, so the test must. ``ic_tstat`` defaults to ``NULL`` (the
+    state every test that does not pass one plants, and the state a row
+    with no measured ``ic_tstat`` at all — a test fixture, never a real
+    evaluation — leaves); every other metric column stays ``NULL``
+    throughout this suite, which is itself part of the proof that this
+    feature reads no metric column but these two.
     """
     identifier = node_id or str(uuid.uuid4())
     with closing(sqlite3.connect(_path_of(database_url))) as connection, connection:
         connection.execute(
             "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth, "
-            "ic_mean) VALUES (?, ?, ?, ?, ?, ?)",
-            (identifier, parent_id, campaign_id, "macro", depth, ic_mean),
+            "ic_mean, ic_tstat) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (identifier, parent_id, campaign_id, "macro", depth, ic_mean, ic_tstat),
         )
     return identifier
 
@@ -216,6 +225,74 @@ def test_a_zero_ic_mean_is_still_evaluated_and_revealed(tree_database: str) -> N
     assert question.revealed == frozenset({root})
     assert question.observed()[root].ic_insample == 0.0
     assert question.observed()[root].r2_insample == 0.0
+
+
+# -- ic_insample falls back to ic_tstat, not ic_mean, for a node with no
+# -- ir_tstat (the m2-incumbent-equivalence fix) --------------------------------
+
+
+def test_ic_insample_falls_back_to_ic_tstat_not_ic_mean_when_they_differ(
+    tree_database: str,
+) -> None:
+    # The defect this test pins: orchestrator._live_tree used to fold a node
+    # with no ir_tstat into ic_insample=ic_mean, while
+    # orchestrator.closeout._selection_value falls back to ic_tstat for the
+    # identical node -- so a node whose two readings disagree told the
+    # dreaming side and close-out two different stories about the same row.
+    campaign_id = str(uuid.uuid4())
+    root = _plant_node(tree_database, campaign_id, ic_mean=5.0, ic_tstat=0.2)
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    observed = question.observed()[root]
+    assert observed.ic_insample == pytest.approx(0.2)
+    # r2_insample is unaffected -- it stays ic_mean's own square.
+    assert observed.r2_insample == pytest.approx(25.0)
+
+
+def test_ic_insample_falls_back_to_ic_mean_when_ic_tstat_is_null(
+    tree_database: str,
+) -> None:
+    # A row with no measured ic_tstat at all (a state only a test fixture
+    # leaves; a real evaluation always writes both) keeps the original
+    # ic_mean fallback rather than reading a NULL ic_tstat as a reading of
+    # zero.
+    campaign_id = str(uuid.uuid4())
+    root = _plant_node(tree_database, campaign_id, ic_mean=0.08, ic_tstat=None)
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    assert question.observed()[root].ic_insample == pytest.approx(0.08)
+
+
+def test_a_node_ranks_by_ic_tstat_not_ic_mean_when_they_disagree(
+    tree_database: str,
+) -> None:
+    campaign_id = str(uuid.uuid4())
+    high_mean = _plant_node(
+        tree_database, campaign_id, node_id="high-mean", ic_mean=5.0, ic_tstat=0.1
+    )
+    high_tstat = _plant_node(
+        tree_database, campaign_id, node_id="high-tstat", ic_mean=0.1, ic_tstat=2.5
+    )
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    observed = question.observed()
+    # ic_mean alone would rank high-mean first; ic_tstat reverses it.
+    assert observed[high_tstat].ic_insample > observed[high_mean].ic_insample
 
 
 # -- A node with no metrics is not revealed, but is still a legal move ---------
