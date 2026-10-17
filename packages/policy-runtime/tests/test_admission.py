@@ -33,9 +33,14 @@ tests pin are the ones the guarantee depends on:
   id a policy legitimately carries is never mistaken for a hardcoded node id;
 * **commit reachability is intra-procedural and inline** — every terminating
   path (``return``, ``raise``, or falling off the end) of a function that
-  contains a ``commit()`` must be preceded by a ``commit()``; a ``while True``
-  that returns its commit from inside the loop (the canonical policy shape, docs
-  §476) is admitted because an infinite loop never falls off the end.
+  contains a ``commit()`` or an ``abstain()`` must be preceded by one; a
+  ``while True`` that returns its commit from inside the loop (the canonical
+  policy shape, docs §476) is admitted because an infinite loop never falls off
+  the end.  A module that declares ``CONTRACT = "question"`` is judged by the
+  stricter rule instead — every terminating path of its one ``select``
+  entrypoint must reach an act, following same-module helpers transitively, so
+  the one-line-helper loophole ``incumbent.m2.py`` abstained through is refused
+  — while every unmarked module keeps the rule above exactly as it was.
 
 The headline case is the barrier's whole point: a policy that carries an
 absolute score constant is refused — it is reading past the prefix the barrier
@@ -44,6 +49,8 @@ promises it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from policy_runtime import (
     AdmissionReason,
@@ -51,6 +58,10 @@ from policy_runtime import (
     PolicyRuntimeError,
     screen_policy,
 )
+
+#: Three parents up from this file is the repository root, the same resolution
+#: the orchestrator's own incumbent tests use.
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # ---------------------------------------------------------------------------
 # The canonical clean policy — the shape a policy is written in
@@ -514,3 +525,305 @@ def test_admission_decision_adopted_is_computed_from_reason() -> None:
     decision = screen_policy("def policy(q):\n    return None\n")
     assert decision.adopted is False
     assert decision.reason is not AdmissionReason.CLEAN
+
+
+# ---------------------------------------------------------------------------
+# Abstain counts wherever commit counts — the unmarked rule, unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_screen_policy_admits_an_abstain_on_every_terminating_path() -> None:
+    # An abstained episode is a declared decision, not a fall-off
+    # (docs/preregistration/2026-10-17-m3-dreaming.md), so abstain() counts
+    # wherever commit() counts: a policy whose one terminating path abstains has
+    # declared what it does, and is admitted.
+    source = (
+        "def policy(q):\n"
+        "    (root,) = q.legal_roots()\n"
+        "    if not q.legal_actions(root):\n"
+        "        q.abstain()\n"
+        "        return ()\n"
+        "    return q.commit(root)\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is True
+    assert decision.reason is AdmissionReason.CLEAN
+
+
+def test_screen_policy_refuses_a_fall_off_where_only_an_abstain_exists() -> None:
+    # Abstain counts like commit, and the standard is the same either way: a
+    # policy that can fall off its end after abstaining only on one branch has a
+    # terminating path that declares nothing, so it is refused.
+    source = (
+        "def policy(q):\n"
+        "    (root,) = q.legal_roots()\n"
+        "    if q.legal_actions(root):\n"
+        "        q.abstain()\n"
+        "    x = 1\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+    assert any("fall off" in offender for offender in decision.offenders)
+
+
+def test_screen_policy_refuses_a_source_with_neither_commit_nor_abstain() -> None:
+    # One of the two acts is mandatory: a source with neither can never declare
+    # anything, so it is refused naming that both are missing.
+    source = "def policy(q):\n    (root,) = q.legal_roots()\n    return ()\n"
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+    assert any(
+        "no commit() or abstain()" in offender for offender in decision.offenders
+    )
+
+
+# ---------------------------------------------------------------------------
+# CONTRACT = "question" — the strict rule, and the helper loophole it closes
+# ---------------------------------------------------------------------------
+#
+# A module that declares CONTRACT = "question" is called through one entrypoint,
+# select(question), so the gate judges it as a whole program: every terminating
+# path of select must reach a commit() or an abstain() on that path, or route
+# through a same-module top-level function that does on every one of its own
+# paths.  This is the loophole deploy/dreaming/incumbent.m2.py abstained
+# through — select keeps ``.commit(`` out of its own body, calls a one-line
+# ``_commit`` helper on the branch where a node clears the bar, and returns () on
+# the branch where none does.  Under the old inline rule that made ``select`` a
+# helper the check did not hold to any standard at all; under this one the
+# silent branch is exactly what is refused.
+
+#: The loophole's shape, marked as a question contract: ``select`` has no
+#: ``.commit(`` of its own and a path that ends without the helper running.
+QUESTION_LOOPHOLE_POLICY = """
+CONTRACT = "question"
+
+
+def _commit(question, node_id):
+    question.commit(node_id)
+
+
+def select(question):
+    threshold = 2.0
+    best = None
+    for node_id, observation in question.observed().items():
+        if observation.ic_insample < threshold:
+            continue
+        best = node_id
+    if best is not None:
+        _commit(question, best)
+    return ()
+"""
+
+
+def test_screen_policy_refuses_the_helper_loophole_under_the_question_contract() -> None:
+    # The feature's headline: the identical helper shape that was admitted while
+    # the gate only judged functions containing ``.commit(`` turns into a refusal
+    # the moment the module says which contract it answers to — the terminating
+    # path that returns () declares neither a pick nor an abstention.
+    decision = screen_policy(QUESTION_LOOPHOLE_POLICY)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+    # The detail names the terminating line, so the author is pointed at the
+    # path to repair rather than at the module as a whole.
+    assert AdmissionReason.UNREACHABLE_COMMIT.value in decision.detail
+    assert any(
+        "select line" in offender and "no commit() or abstain()" in offender
+        for offender in decision.offenders
+    )
+
+
+def test_screen_policy_refuses_the_same_shape_when_the_else_branch_is_unsafe() -> None:
+    # The same loophole with the branch reversed: the helper runs on the branch
+    # where the bar is *not* cleared, and the other branch falls through to a
+    # bare return.  Either way, one terminating path of select reaches no act.
+    source = QUESTION_LOOPHOLE_POLICY.replace(
+        "    if best is not None:\n        _commit(question, best)\n    return ()",
+        "    if best is None:\n        _commit(question, None)\n    return ()",
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+
+
+def test_screen_policy_admits_the_loophole_shape_when_the_other_branch_abstains() -> None:
+    # The repair the contract offers: the branch that used to return () now says
+    # so through abstain().  Both terminating paths of select reach an act, so
+    # the same module is admitted — abstaining is a decision, and declaring it is
+    # the difference the strict rule is about.
+    source = QUESTION_LOOPHOLE_POLICY.replace(
+        "    if best is not None:\n        _commit(question, best)\n    return ()",
+        "    if best is not None:\n        _commit(question, best)\n"
+        "    else:\n        question.abstain()\n    return ()",
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is True, decision.detail
+    assert decision.reason is AdmissionReason.CLEAN
+
+
+def test_screen_policy_follows_a_helper_that_acts_on_every_path() -> None:
+    # Following a same-module helper is what makes the rule usable: a select that
+    # delegates its terminal to one helper is judged by whether *that helper*
+    # acts on every one of its own paths.  This one abstains on the no-pick
+    # branch and commits on the other, so select is safe and the module admitted.
+    source = (
+        'CONTRACT = "question"\n'
+        "\n"
+        "\n"
+        "def _settle(question, best):\n"
+        "    if best is None:\n"
+        "        question.abstain()\n"
+        "        return\n"
+        "    question.commit(best)\n"
+        "\n"
+        "\n"
+        "def select(question):\n"
+        "    best = None\n"
+        "    for node_id, observation in question.observed().items():\n"
+        "        best = node_id\n"
+        "    _settle(question, best)\n"
+        "    return ()\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is True, decision.detail
+    assert decision.reason is AdmissionReason.CLEAN
+
+
+def test_screen_policy_refuses_a_helper_that_does_not_act_on_every_path() -> None:
+    # The follow is only as good as the helper: a helper that returns early
+    # without committing, on a path select cannot rule out, guarantees select
+    # nothing — refused, and the detail names the helper whose paths select
+    # inherited.
+    source = (
+        'CONTRACT = "question"\n'
+        "\n"
+        "\n"
+        "def _settle(question, best):\n"
+        "    if best is None:\n"
+        "        return\n"
+        "    question.commit(best)\n"
+        "\n"
+        "\n"
+        "def select(question):\n"
+        "    return _settle(question, None)\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+    assert any("_settle" in offender for offender in decision.offenders)
+    assert any("select line" in offender for offender in decision.offenders)
+
+
+def test_screen_policy_refuses_a_called_helper_that_never_acts_at_all() -> None:
+    # A helper that reaches no act on any path leaves select's terminating path
+    # just as undeclared as one that reaches it only sometimes — a call to it is
+    # not an act, and select is refused.
+    source = (
+        'CONTRACT = "question"\n'
+        "\n"
+        "\n"
+        "def _peek(question):\n"
+        "    return question.observed()\n"
+        "\n"
+        "\n"
+        "def select(question):\n"
+        "    _peek(question)\n"
+        "    return ()\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+
+
+def test_screen_policy_refuses_a_helper_cycle() -> None:
+    # A mutual recursion between two helpers cannot be answered "yes" without
+    # assuming the answer — the reasoning a barrier check may not use — so a
+    # cycle counts as not satisfying the standard, and the module is refused.
+    source = (
+        'CONTRACT = "question"\n'
+        "\n"
+        "\n"
+        "def _a(question, best):\n"
+        "    if best is None:\n"
+        "        return _b(question, best)\n"
+        "    question.commit(best)\n"
+        "\n"
+        "\n"
+        "def _b(question, best):\n"
+        "    return _a(question, best)\n"
+        "\n"
+        "\n"
+        "def select(question):\n"
+        "    _a(question, None)\n"
+        "    return ()\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+
+
+def test_screen_policy_follows_a_helper_chain_transitively() -> None:
+    # The follow is transitive — select calls _verify, which calls _settle, which
+    # is where the act lives — so a policy that layers its decision two helpers
+    # deep is still admitted.
+    source = (
+        'CONTRACT = "question"\n'
+        "\n"
+        "\n"
+        "def _settle(question, best):\n"
+        "    if best is None:\n"
+        "        question.abstain()\n"
+        "        return\n"
+        "    question.commit(best)\n"
+        "\n"
+        "\n"
+        "def _verify(question, best):\n"
+        "    _settle(question, best)\n"
+        "    return True\n"
+        "\n"
+        "\n"
+        "def select(question):\n"
+        "    best = None\n"
+        "    _verify(question, best)\n"
+        "    return ()\n"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is True, decision.detail
+
+
+def test_screen_policy_refuses_a_question_module_with_no_select() -> None:
+    # ``CONTRACT = "question"`` promises an interface the loader will call
+    # through: a module that declares the marker and defines no top-level
+    # ``select`` names an entrypoint that does not exist, and there is no
+    # reachability to judge — refused, naming that.
+    source = 'CONTRACT = "question"\n\n\ndef _commit(question):\n    question.commit(None)\n'
+    decision = screen_policy(source)
+    assert decision.adopted is False
+    assert decision.reason is AdmissionReason.UNREACHABLE_COMMIT
+    assert any("select" in offender for offender in decision.offenders)
+
+
+def test_screen_policy_judges_an_unmarked_module_by_the_inline_rule() -> None:
+    # The strict rule is bought by the marker, not imposed on everyone: the same
+    # source with no ``CONTRACT`` line is judged exactly as it was before — the
+    # one function containing ``.commit(`` is the helper, whose single statement
+    # clears the standard, and the ``select`` with no act is a helper the rule
+    # does not reach.  Nothing an unmarked module was admitted under is refused
+    # now.
+    unmarked = QUESTION_LOOPHOLE_POLICY.replace('CONTRACT = "question"\n\n\n', "")
+    decision = screen_policy(unmarked)
+    assert decision.adopted is True, decision.detail
+    assert decision.reason is AdmissionReason.CLEAN
+
+
+def test_screen_policy_admits_the_shipped_example_incumbent() -> None:
+    # deploy/dreaming/incumbent.example.py is a question-contract module committed
+    # on every path of its select, so the strict rule admits it unchanged — the
+    # shipped module is the first thing the strict rule must not break.
+    source = (REPO_ROOT / "deploy" / "dreaming" / "incumbent.example.py").read_text(
+        encoding="utf-8"
+    )
+    decision = screen_policy(source)
+    assert decision.adopted is True, decision.detail
+    assert decision.reason is AdmissionReason.CLEAN

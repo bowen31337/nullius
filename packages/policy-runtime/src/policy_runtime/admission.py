@@ -80,17 +80,32 @@ English word as an address, and refusing on it would be a false positive; the
 safe direction is to miss the rare bare-word root rather than to flag legitimate
 vocabulary.
 
-**Commit reachability is intra-procedural and inline.**  The gate walks each
-top-level function that contains a ``commit()`` call and asks whether every
-terminating path (``return``, ``raise``, or falling off the end) is preceded, on
-its own path, by a ``commit()``.  A function with no ``commit()`` call is treated
-as a helper and not held to the reachability standard — the committing happens
-elsewhere — but a source that contains *no* ``commit()`` at all is refused,
-because ``commit()`` is mandatory.  The boundary is documented and deliberate: a
-policy that commits only inside a helper it then calls, while its own body has an
-early return, is not modelled across the call boundary; the canonical policy
-commits inline at its terminal, and refusing what the analysis cannot prove is
-the safe direction for a barrier check.
+**Commit reachability — inline, or followed through a same-module helper for a
+question-contract policy.**  The gate asks whether every terminating path
+(``return``, ``raise``, or falling off the end) reaches a *terminating act* —
+``commit()`` or ``abstain()`` — since abstaining is a decision a policy is
+allowed to declare, not a silent fall-off, and the two are counted wherever
+either is (docs/preregistration/2026-10-17-m3-dreaming.md: an abstained arm is
+scored as a flat book).  Which paths are asked about depends on the contract the
+module declares:
+
+* **A module that declares ``CONTRACT = "question"``** is called through one
+  entrypoint, its top-level ``select``, so the walk starts there and every one of
+  ``select``'s terminating paths must reach a ``commit()`` or an ``abstain()``
+  *on that path*, or a call to a same-module top-level function that itself
+  reaches one on every one of its paths — followed transitively, with a cycle
+  counted as not satisfying.  That is what closes the helper loophole: a
+  ``select`` that keeps ``.commit(`` out of its own body, calls a one-line
+  ``_commit`` helper only on the branch where a node clears the bar, and returns
+  or falls off otherwise is refused, because the helper-shaped abstention it
+  performs on the other branch is exactly the path the check exists to find.
+* **Every other module** — the ``select(prefix_view)`` rankers, which declare no
+  marker — is judged as it always was, with ``abstain()`` counted like
+  ``commit()``: each top-level function that itself contains a terminating act is
+  walked, and a function with none is a helper not held to the standard, because
+  the committing happens elsewhere.  A source with neither ``commit()`` nor
+  ``abstain()`` anywhere is refused either way, because one of the two is
+  mandatory.
 
 Stdlib only, and import-cheap: :mod:`ast`, :mod:`re`, :mod:`enum`, :mod:`typing`
 and the member's own errors — no third-party import at module scope, so the
@@ -102,7 +117,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -158,9 +173,13 @@ class AdmissionReason(str, Enum):
     HARDCODED_NODE_ID = "hardcoded-node-id"
 
     #: Refused: a terminating path — a ``return``, a ``raise``, or falling off
-    #: the end — is reachable without a preceding ``commit()``.  ``commit()`` is
-    #: mandatory, so a path that can end without committing is a policy that can
-    #: score on a pick it never made; the repair is "commit on every path".
+    #: the end — is reachable without a preceding ``commit()`` or ``abstain()``.
+    #: One of the two is mandatory (an episode that ends with neither scores
+    #: ``-inf`` and has declared nothing), so a path that can end without either
+    #: is a policy that can score on a pick it never made and never said it would
+    #: not make; the repair is "commit() or abstain() on every path" — and, for
+    #: a module declaring ``CONTRACT = "question"``, on every path of ``select``
+    #: once same-module helpers are followed.
     UNREACHABLE_COMMIT = "unreachable-commit"
 
     #: Refused: the source reaches for a learned component — it imports a model
@@ -223,38 +242,109 @@ def _looks_like_node_id(text: object) -> bool:
     return any(ch.isalpha() for ch in text) and any(ch.isdigit() for ch in text)
 
 
-class _CommitFinder(ast.NodeVisitor):
-    """Does a subtree perform a ``commit()`` — a ``.commit(...)`` attribute call.
+#: The method names that count as an episode's terminating act in the
+#: reachability walk.  ``commit()`` is the pick; ``abstain()`` is the *declared*
+#: decision to make none (docs/preregistration/2026-10-17-m3-dreaming.md makes an
+#: abstained arm a legitimate outcome, scored as a flat book rather than as the
+#: fall-off it used to be indistinguishable from), so both are acts a terminating
+#: path may end on, and every walk below counts them wherever it counts either.
+_TERMINATING_ACTS = ("commit", "abstain")
 
-    Matches ``question.commit(node_id)`` by the method name alone, so the gate is
-    blind to whatever the policy names its question (``q``, ``ctx``, ``question``)
-    — the interface is the attribute, not the binding.  It does **not** descend
-    into a nested ``def``/``lambda``/``class``: a commit defined in a nested
-    scope is not performed when the enclosing statement runs, so counting it
-    would let a path look committed when it is not.
+#: The value of the module-level ``CONTRACT`` marker that names the question
+#: contract — the one contract whose policy is called through a single
+#: ``select(question)`` entrypoint, and therefore the one the gate judges as a
+#: whole program rather than function by function.
+_QUESTION_CONTRACT = "question"
+
+
+class _TerminatingActFinder(ast.NodeVisitor):
+    """Does a subtree perform a terminating act — a ``.commit(...)`` or
+    ``.abstain()`` attribute call.
+
+    Matches ``question.commit(node_id)`` and ``question.abstain()`` by the
+    method name alone, so the gate is blind to whatever the policy names its
+    question (``q``, ``ctx``, ``question``) — the interface is the attribute, not
+    the binding.  It does **not** descend into a nested ``def``/``lambda``/
+    ``class``: an act defined in a nested scope is not performed when the
+    enclosing statement runs, so counting it would let a path look committed
+    when it is not.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, methods: Sequence[str] = _TERMINATING_ACTS) -> None:
         self.found = False
+        self._methods = methods
 
     def visit(self, node: ast.AST) -> None:
         if isinstance(
             node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
         ):
-            return  # a nested scope's commit is not this statement's commit
+            return  # a nested scope's act is not this statement's act
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "commit"
+            and node.func.attr in self._methods
         ):
             self.found = True
             return
         super().visit(node)
 
 
-def _contains_commit(node: ast.AST) -> bool:
-    """Whether ``node``'s subtree performs a ``commit()`` (not through a nested scope)."""
-    finder = _CommitFinder()
+def _contains_act(node: ast.AST) -> bool:
+    """Whether ``node`` performs a ``commit()`` or ``abstain()`` (not nested).
+
+    The one predicate the reachability walk uses for "this statement is where a
+    path terminates", so ``abstain()`` counts exactly where ``commit()`` does.
+    """
+    finder = _TerminatingActFinder()
+    finder.visit(node)
+    return finder.found
+
+
+class _CalledNameFinder(ast.NodeVisitor):
+    """Which of ``names`` a subtree *calls*, directly or as ``return helper(x)``.
+
+    A call is a ``Name`` — ``_commit(q, best)`` — never an attribute, because
+    what can be followed is a same-module top-level function and nothing else.
+    Like :class:`_TerminatingActFinder` it does not descend into a nested scope:
+    a helper named inside a closure is that closure's call, not this
+    statement's.  It also does not descend into a comprehension or a generator,
+    and that one is not tidiness: ``[_settle(q, n) for n in nodes]`` calls the
+    helper *once per element*, so an empty ``nodes`` never calls it at all.
+    Following a call the statement may make zero times would report an act the
+    statement does not guarantee — the safe direction is to not see it.
+    """
+
+    def __init__(self, names: Sequence[str]) -> None:
+        self.found: set[str] = set()
+        self._names = set(names)
+
+    def visit(self, node: ast.AST) -> None:
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Lambda,
+                ast.ClassDef,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            return
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in self._names
+        ):
+            self.found.add(node.func.id)
+        super().visit(node)
+
+
+def _called_helpers(node: ast.AST, helpers: Mapping[str, ast.AST]) -> set[str]:
+    """The same-module top-level helpers ``node`` calls by name."""
+    finder = _CalledNameFinder(tuple(helpers))
     finder.visit(node)
     return finder.found
 
@@ -291,22 +381,132 @@ def _is_infinite_while(stmt: ast.AST) -> bool:
     )
 
 
-def _function_contains_commit(func: ast.AST) -> bool:
-    """Whether a function performs a ``commit()`` anywhere, nested scopes included.
+def _function_contains_act(func: ast.AST) -> bool:
+    """Whether a function performs a ``commit()`` or ``abstain()`` anywhere.
 
     Descends everywhere (a plain :func:`ast.walk`), because the question here is
-    only *is this function commit-related at all* — the gate that decides whether
-    to hold it to the reachability standard.  A function with no ``commit()``
-    call anywhere is a helper whose committing happens elsewhere, and is not
-    checked for reachability; a source with no ``commit()`` anywhere is refused
-    by the mandatory-commit check before any function is examined.
+    only *does this function terminate an episode at all* — the gate that decides
+    whether to hold it to the reachability standard.  A function with neither act
+    anywhere is a helper whose terminating happens elsewhere, and is not checked
+    for reachability; a source with neither act anywhere is refused by the
+    mandatory-act check before any function is examined.
     """
     return any(
         isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "commit"
+        and n.func.attr in _TERMINATING_ACTS
         for n in ast.walk(func)
     )
+
+
+def _module_functions(tree: ast.AST) -> dict[str, ast.AST]:
+    """The module's own top-level functions, keyed by name.
+
+    What a question-contract ``select`` may *call*: a same-module top-level
+    ``def``/``async def``.  Class methods and nested helpers are not followed —
+    they are not what the policy's entrypoint names, and the boundary is the
+    module's top level, the same one the loader reaches ``select`` through.
+    """
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _question_contract_marker(tree: ast.AST) -> bool:
+    """Whether the module declares ``CONTRACT = "question"`` at its top level.
+
+    The marker the loader (:func:`orchestrator._policy._module_contract`) reads
+    to decide which interface the module answers to, read here straight off the
+    AST — a module-level assignment to ``CONTRACT`` whose value is the string
+    ``"question"``, in either the plain or the annotated (``CONTRACT: Final``)
+    spelling, since the loader reads whichever binding the module ends up with.
+    A marker in any other spelling, value, or scope is not the marker, and the
+    module is judged by the unmarked rule.
+    """
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [
+                target.id
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            ]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            continue
+        if "CONTRACT" not in names:
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Constant)
+            and value.value == _QUESTION_CONTRACT
+        ):
+            return True
+    return False
+
+
+class _SelectCallGraph:
+    """Follows a question-contract ``select``'s calls, transitively, within the module.
+
+    The question contract is called through one entrypoint, so the reachability
+    question is asked of the module as a whole: a terminating path is safe when
+    it reaches a ``commit()``/``abstain()`` on that path or routes through a
+    same-module top-level function that reaches one on *every* one of its own
+    paths.  This walks that relation.
+
+    A helper already on the walk's own stack is a **cycle**, and a cycle does not
+    satisfy the standard: the only way a mutually recursive pair could answer
+    "yes" is to assume the answer, which is precisely the reasoning a barrier
+    check may not use.  Answers are cached, so a helper called on twenty branches
+    is scanned once.
+    """
+
+    def __init__(self, functions: Mapping[str, ast.AST]) -> None:
+        self._functions = dict(functions)
+        self._safe: dict[str, bool] = {}
+        self._active: set[str] = set()
+
+    def performs_act(self, stmt: ast.AST) -> bool:
+        """Whether ``stmt`` guarantees a terminating act when it runs to completion.
+
+        Either it writes ``.commit(``/``.abstain(`` itself, or every same-module
+        helper it calls is itself safe — *every*, because a statement that calls
+        two helpers with an unsafe one first may end inside that unsafe one.  A
+        statement that calls a helper which only *sometimes* acts guarantees
+        nothing, which is the whole point of following it.
+        """
+        if _contains_act(stmt):
+            return True
+        called = _called_helpers(stmt, self._functions)
+        if not called:
+            return False
+        return all(self._is_safe(name) for name in called)
+
+    def _is_safe(self, name: str) -> bool:
+        """Whether the named top-level function reaches an act on every path."""
+        if name in self._safe:
+            return self._safe[name]
+        if name in self._active:
+            return False  # a cycle: assuming the answer is not an answer
+        func = self._functions.get(name)
+        if func is None:
+            return False
+        self._active.add(name)
+        try:
+            offenders, falls_off = _scan_suite(
+                func.body, False, performs_act=self.performs_act
+            )
+            safe = not offenders and not falls_off
+        finally:
+            self._active.discard(name)
+        self._safe[name] = safe
+        return safe
+
+    def called_helpers(self, stmt: ast.AST) -> tuple[str, ...]:
+        """The same-module helpers ``stmt`` calls — named in a refusal's detail."""
+        return tuple(sorted(_called_helpers(stmt, self._functions)))
 
 
 def _top_level_functions(tree: ast.AST) -> list[ast.AST]:
@@ -333,55 +533,75 @@ def _top_level_functions(tree: ast.AST) -> list[ast.AST]:
 
 
 def _scan_suite(
-    body: Sequence[ast.stmt], seen_commit: bool
+    body: Sequence[ast.stmt],
+    seen_act: bool,
+    *,
+    performs_act: Callable[[ast.stmt], bool] = _contains_act,
 ) -> tuple[list[ast.stmt], bool]:
-    """Scan a statement suite for terminating paths that never reach a commit.
+    """Scan a statement suite for terminating paths that never reach an act.
 
-    Returns ``(offenders, can_fall_off_without_commit)``:
+    An *act* is a ``commit()`` or an ``abstain()`` — either terminates the
+    episode, so every count below counts them alike.
+
+    Returns ``(offenders, can_fall_off_without_act)``:
 
     * **``offenders``** — the ``return``/``raise`` statements reachable on some
-      path through this suite without a ``commit()`` having been seen on that
-      path.  A ``return question.commit(x)`` is not an offender: the commit is
-      performed *in* the terminating statement, so it is checked before the
-      return is judged.
-    * **``can_fall_off_without_commit``** — whether control can reach the end of
-      this suite (an implicit ``return None``) without a ``commit()`` having
-      been seen.  A suite that ends in a committing return cannot fall off.
+      path through this suite without an act having been seen on that path.  A
+      ``return question.commit(x)`` is not an offender: the act is performed *in*
+      the terminating statement, so it is checked before the return is judged.
+    * **``can_fall_off_without_act``** — whether control can reach the end of
+      this suite (an implicit ``return None``) without an act having been seen.
+      A suite that ends in a committing return cannot fall off.
 
     ``if``/``else`` is path-sensitive: both branches are scanned with the
-    ``seen_commit`` inherited from before the ``if``, and the ``if`` is
-    commit-safe afterwards only if it was already safe before or *both* branches
-    are.  ``for``/``while`` and ``try`` are scanned for offenders inside, but a
-    loop does not guarantee its body ran, so it cannot make the post-loop path
-    commit-safe — the conservative answer for a barrier check.
+    ``seen_act`` inherited from before the ``if``, and the ``if`` is act-safe
+    afterwards only if it was already safe before or *both* branches are.
+    ``for``/``while`` and ``try`` are scanned for offenders inside, but a loop
+    does not guarantee its body ran, so it cannot make the post-loop path
+    act-safe — the conservative answer for a barrier check.
+
+    ``performs_act`` is the one seam between the two rules.  By default a
+    statement acts when it writes the act itself, which is the rule for a module
+    that declares no contract: its committing happens inline.  A
+    question-contract :class:`_SelectCallGraph` hands in a follower instead,
+    which also counts a statement that calls a same-module helper that acts on
+    every one of its own paths.
     """
     offenders: list[ast.stmt] = []
     live = True  # statements after a terminating one are dead
-    seen = seen_commit
+    seen = seen_act
     for stmt in body:
         if not live:
             break
         if isinstance(stmt, (ast.Return, ast.Raise)):
-            if not (seen or _contains_commit(stmt)):
+            if not (seen or performs_act(stmt)):
                 offenders.append(stmt)
             live = False  # nothing after a bare return/raise is reachable
         elif isinstance(stmt, ast.If):
-            then_off, then_falls = _scan_suite(stmt.body, seen)
-            else_off, else_falls = _scan_suite(stmt.orelse, seen)
+            then_off, then_falls = _scan_suite(
+                stmt.body, seen, performs_act=performs_act
+            )
+            else_off, else_falls = _scan_suite(
+                stmt.orelse, seen, performs_act=performs_act
+            )
             offenders.extend(then_off)
             offenders.extend(else_off)
-            # The if can fall off without a commit if either branch can — unless
-            # a commit was already seen before the if, in which case every path
-            # through it is commit-safe.
+            # The if can fall off without an act if either branch can — unless
+            # an act was already seen before the if, in which case every path
+            # through it is act-safe.
             falls = (then_falls or else_falls) if not seen else False
             if falls:
-                seen = False  # a no-commit path reaches the statements after
+                seen = False  # a no-act path reaches the statements after
             else:
-                seen = True  # both branches committed (or it was committed before)
+                seen = True  # both branches acted (or it acted before)
                 live = False  # both branches terminate: what follows is dead code
         elif isinstance(stmt, (ast.For, ast.While)):
-            loop_off, _ = _scan_suite(stmt.body, seen)
-            orelse_off, _ = _scan_suite(stmt.orelse, seen)
+            loop_off, _ = _scan_suite(
+                stmt.body, seen, performs_act=performs_act
+            )
+            orelse_off, _ = _scan_suite(
+                stmt.orelse, seen, performs_act=performs_act
+            )
             offenders.extend(loop_off)
             offenders.extend(orelse_off)
             if isinstance(stmt, ast.While) and _is_infinite_while(stmt):
@@ -392,20 +612,23 @@ def _scan_suite(
                 # its commit from inside the loop), so it must be admitted.
                 live = False
             # A finite loop (or a ``for``) may never run, so it cannot make the
-            # post-loop path commit-safe; ``seen`` is unchanged, and an unsafe
+            # post-loop path act-safe; ``seen`` is unchanged, and an unsafe
             # return inside is already noted above.
         elif isinstance(stmt, ast.Try):
             for sub in (stmt.body, stmt.orelse, stmt.finalbody):
-                sub_off, _ = _scan_suite(sub, seen)
+                sub_off, _ = _scan_suite(sub, seen, performs_act=performs_act)
                 offenders.extend(sub_off)
             for handler in stmt.handlers:
-                handler_off, _ = _scan_suite(handler.body, seen)
+                handler_off, _ = _scan_suite(
+                    handler.body, seen, performs_act=performs_act
+                )
                 offenders.extend(handler_off)
-            # Conservatively, a try does not guarantee the post-try path committed.
+            # Conservatively, a try does not guarantee the post-try path acted.
         else:
             # An ordinary statement: an assignment, a probe, a loop step.  It
-            # performs a commit only if it contains a ``commit()`` call.
-            if _contains_commit(stmt):
+            # acts only if it contains a ``commit()``/``abstain()`` call — or,
+            # under a question contract, calls a helper that does.
+            if performs_act(stmt):
                 seen = True
     return offenders, (live and not seen)
 
@@ -492,6 +715,61 @@ def _refusal(
     )
 
 
+def _question_contract_offenders(tree: ast.AST) -> list[str]:
+    """The terminating paths of a question-contract ``select`` that reach no act.
+
+    The strict rule, asked of the module as a whole because the contract is
+    called through one entrypoint: ``select`` must exist at the module's top
+    level, and every terminating path through it — a ``return``, a ``raise``, or
+    falling off the end — must reach a ``commit()`` or ``abstain()`` on that
+    path, or route through a same-module top-level function that itself reaches
+    one on every one of its paths (followed transitively; a cycle does not
+    satisfy).  This is what the module's own ``CONTRACT = "question"`` marker
+    buys into, and it is why the helper loophole — ``select`` keeping ``.commit(``
+    out of its own body and calling a one-line helper on one branch only — is
+    refused here rather than waved through as a helper it does not judge.
+
+    One offender per terminating statement, each naming its line, so the refusal
+    points at the path to repair.  A module with no top-level ``select`` names
+    that instead: there is no entrypoint whose reachability could be judged, and
+    a marker promising an interface the module does not define is a refusal, not
+    a silent pass.
+    """
+    functions = _module_functions(tree)
+    graph = _SelectCallGraph(functions)
+    select = functions.get("select")
+    if select is None:
+        promised = (
+            "CONTRACT = 'question' promises a top-level select(question) "
+            "entrypoint, and the module defines none"
+        )
+        return [promised]
+
+    offenders: list[str] = []
+    paths, falls_off = _scan_suite(
+        select.body, seen_act=False, performs_act=graph.performs_act
+    )
+    for stmt in paths:
+        kind = type(stmt).__name__.lower()
+        helpers = graph.called_helpers(stmt)
+        through = (
+            f" (it calls {', '.join(helpers)}, which does not satisfy the "
+            f"standard on every path)"
+            if helpers
+            else ""
+        )
+        offenders.append(
+            f"select line {stmt.lineno}: a {kind} reachable with no commit() or "
+            f"abstain() on its path{through}"
+        )
+    if falls_off:
+        offenders.append(
+            "select: can finish (fall off the end) without reaching commit() "
+            "or abstain()"
+        )
+    return offenders
+
+
 def screen_policy(source: object) -> PolicyAdmissionDecision:
     """Admit one policy's authored source only if static checks find it clean.
 
@@ -516,12 +794,19 @@ def screen_policy(source: object) -> PolicyAdmissionDecision:
        excluded) is an offender, refused with :attr:`AdmissionReason.
        HARDCODED_NODE_ID`; a node id is the one address a node is revealed or
        committed on, and a policy that names one is reading past the prefix;
-    4. **its commit is reachable on every terminating path** — each top-level
-       function that contains a ``commit()`` call is walked, and a ``return``, a
-       ``raise``, or falling off the end that is reachable without a preceding
-       ``commit()`` is an offender, refused with :attr:`AdmissionReason.
-       UNREACHABLE_COMMIT``; a source with no ``commit()`` at all is refused the
-       same way, because ``commit()`` is mandatory.
+    4. **its commit is reachable on every terminating path** — a ``commit()`` or
+       an ``abstain()`` (either terminates the episode; ``abstain()`` is the
+       declared way to commit nothing) — each top-level function that contains
+       one is walked, and a ``return``, a ``raise``, or falling off the end that
+       is reachable without a preceding one is an offender, refused with
+       :attr:`AdmissionReason.UNREACHABLE_COMMIT`.  A source with neither at all
+       is refused the same way, because one of the two is mandatory.  A module
+       that declares ``CONTRACT = "question"`` is judged more strictly, and from
+       its one entrypoint: every terminating path of ``select`` must reach an
+       act, or route through a same-module top-level function that does on every
+       one of its own paths, followed transitively — see
+       :func:`_question_contract_offenders`, and the module docstring's
+       reachability paragraph for why the marker buys into it.
     5. **it reaches for no learned component** (feature 231) — a model-framework
        import, a checkpoint load, or an inference call is an offender, refused
        with :attr:`AdmissionReason.LEARNED_COMPONENT`; docs §11.2 defers the
@@ -632,37 +917,48 @@ def screen_policy(source: object) -> PolicyAdmissionDecision:
             ),
         )
 
-    # (4) Commit reachability — every terminating path must reach a commit().
+    # (4) Commit/abstain reachability — every terminating path must reach one.
+    #     A question-contract module is judged from its one entrypoint, with
+    #     same-module helpers followed; every other module keeps the inline rule.
     commit_offenders: list[str] = []
     functions = _top_level_functions(tree)
-    has_commit_anywhere = any(_function_contains_commit(fn) for fn in functions)
-    if not has_commit_anywhere:
-        commit_offenders.append("the source contains no commit() call at all")
+    has_act_anywhere = any(_function_contains_act(fn) for fn in functions)
+    if not has_act_anywhere:
+        commit_offenders.append(
+            "the source contains no commit() or abstain() call at all"
+        )
+    elif _question_contract_marker(tree):
+        commit_offenders.extend(_question_contract_offenders(tree))
     else:
         for func in functions:
-            if not _function_contains_commit(func):
-                continue  # a helper with no commit: the committing happens elsewhere
+            if not _function_contains_act(func):
+                continue  # a helper with no act: the acting happens elsewhere
             name = getattr(func, "name", "<policy>")
-            offenders, falls_off = _scan_suite(func.body, seen_commit=False)
+            offenders, falls_off = _scan_suite(func.body, seen_act=False)
             for off in offenders:
                 commit_offenders.append(
                     f"{name} line {off.lineno}: a return/raise reachable with no "
-                    f"commit() on its path"
+                    f"commit() or abstain() on its path"
                 )
             if falls_off:
                 commit_offenders.append(
-                    f"{name}: can finish (fall off the end) without reaching commit()"
+                    f"{name}: can finish (fall off the end) without reaching "
+                    f"commit() or abstain()"
                 )
     if commit_offenders:
         return _refusal(
             AdmissionReason.UNREACHABLE_COMMIT,
             tuple(commit_offenders),
-            lead="a terminating path is reachable without a preceding commit()",
+            lead=(
+                "a terminating path is reachable without a preceding commit() "
+                "or abstain()"
+            ),
             tail=(
                 "commit() is mandatory — a policy that terminates without "
-                "committing scores -inf — so a path that can end without a "
-                "commit() is a policy that can score on a pick it never made; "
-                "commit on every terminating path"
+                "committing scores -inf — and abstain() is the declared way to "
+                "commit nothing, so a path that can end with neither is a policy "
+                "that can score on a pick it never made and never said it would "
+                "not make; commit() or abstain() on every terminating path"
             ),
         )
 
@@ -697,7 +993,8 @@ def screen_policy(source: object) -> PolicyAdmissionDecision:
         detail=(
             f"{AdmissionReason.CLEAN.value}: the policy's source carries no "
             f"absolute score constant, no hardcoded node id, no terminating "
-            f"path that fails to reach commit(), and no learned component — "
+            f"path that fails to reach commit() or abstain(), and no learned "
+            f"component — "
             f"every check in features 230 and 231 is satisfied and the policy is "
             f"admitted (features 230, 231)."
         ),

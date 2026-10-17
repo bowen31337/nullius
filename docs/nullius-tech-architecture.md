@@ -632,7 +632,7 @@ assert len(set(plan.theme_roots)) >= 3
 lofo_delta_ir = evaluate(policy, worlds_of_theme(held_out_theme))
 ```
 
-**Static checks before any policy is admitted:** no absolute score constants, no hardcoded node ids, no imports outside the allowlist, `plan_grid` overridden on every path, `commit()` reachable on every terminating path, `theme_root` used only via `meta()`.
+**Static checks before any policy is admitted:** no absolute score constants, no hardcoded node ids, no imports outside the allowlist, `plan_grid` overridden on every path, `commit()` or `abstain()` reachable on every terminating path of `select`, following same-module helpers, `theme_root` used only via `meta()`.
 
 ### 11.2 Learned components in the policy — deferred, with conditions
 
