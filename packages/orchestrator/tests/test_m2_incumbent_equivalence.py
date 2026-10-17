@@ -409,6 +409,22 @@ def test_tie_breaks_by_node_id_ascending_on_both_paths(
 def test_below_bar_campaign_misses_on_both_paths(
     database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Captures the financial side's own episode-commit record -- the same
+    # recipe test_dream_financial_worlds.py's
+    # test_abstaining_policy_returns_a_miss_whose_record_reports_abstained
+    # uses -- so this test can assert not only that the replay misses but
+    # that incumbent.m2.py's select declared the miss through
+    # question.abstain() rather than falling off silently.
+    records: list[Any] = []
+    real_episode_commit = _financial_eval.episode_commit
+
+    def _capturing_episode_commit(question: Any) -> Any:
+        record = real_episode_commit(question)
+        records.append(record)
+        return record
+
+    monkeypatch.setattr(_financial_eval, "episode_commit", _capturing_episode_commit)
+
     result, pick, expected = _run_scenario(
         database_url,
         tmp_path,
@@ -422,6 +438,9 @@ def test_below_bar_campaign_misses_on_both_paths(
     assert result.oos_ir is None
     assert pick.pick is None
     assert pick.score == NON_COMMITTING_SCORE
+    assert len(records) == 1
+    assert records[0].abstained is True
+    assert records[0].committed is False
 
 
 def test_single_eligible_node_commits_it_on_both_paths(

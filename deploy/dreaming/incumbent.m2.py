@@ -28,16 +28,13 @@ additions_spec_dreaming_m3.xml's audit names as the reason
 ``deploy/dreaming/incumbent.example.py`` cannot stand in for it: that module
 commits on every call and never abstains, so a paired comparison against it
 would measure abstention, not dreaming. This module abstains exactly when
-close-out would. ``select`` never writes ``.commit(`` itself -- it calls
-:func:`_commit` only when a node clears the bar -- so
-:func:`policy_runtime.screen_policy`'s reachability check (which walks only
-a top-level function that itself contains a ``.commit(`` call, and holds
-every one of *that* function's terminating paths to reaching it) finds no
-``.commit(`` token in ``select`` at all and treats it as a helper the
-standard does not apply to; :func:`_commit` is the one function the check
-does hold to the standard, and its single, unconditional statement clears it
-trivially. That is what lets this module abstain on a real, exercised path
-without being refused as an unreachable commit.
+close-out would: ``select`` calls ``question.commit(...)`` inline on the one
+branch where a node clears the bar, and ``question.abstain()`` inline on the
+other, so every terminating path carries its own act and
+:func:`policy_runtime.screen_policy`'s per-``select`` reachability check for
+a ``CONTRACT = "question"`` module -- which holds every terminating path of
+``select`` itself to reaching a ``commit()`` or an ``abstain()`` -- finds one
+on both without needing a helper to carry either.
 
 **One call, replaying the tree already revealed.** A financial world's
 question (:func:`orchestrator._live_tree.live_question`) reveals every
@@ -66,11 +63,11 @@ module imports nothing: the sandboxed policy runtime reaches only the
 deterministic allowlist, and this policy needs none of it.
 ``CONTRACT = "question"`` names the policy contract this module is authored
 to -- ``select(question)`` over ``question.observed()``/
-``question.commit(...)`` -- for the loader additions_spec_dreaming_m3.xml
-feature 6 adds (out of this feature's scope). It is a string literal rather
-than a derived value because dreaming's default reviser jitters numeric
-literals only and leaves a string marker like this one untouched across a
-revision.
+``question.commit(...)``/``question.abstain()`` -- for the loader
+additions_spec_dreaming_m3.xml feature 6 adds (out of this feature's scope).
+It is a string literal rather than a derived value because dreaming's
+default reviser jitters numeric literals only and leaves a string marker
+like this one untouched across a revision.
 """
 
 CONTRACT = "question"
@@ -102,26 +99,8 @@ def _schedule(beta):
     return {"discovery_ic_insample": baseline + 0.0 * beta}
 
 
-def _commit(question, node_id):
-    """Perform the one ``.commit(`` call this module's source contains.
-
-    The only statement in this function, and the only place the text
-    ``.commit(`` appears anywhere in this module. ``policy_runtime.
-    screen_policy``'s reachability check walks only a top-level function
-    that itself contains such a call and demands every one of that
-    function's terminating paths reach it; a function with no such call of
-    its own is a helper the check does not hold to that standard. ``select``
-    never writes ``.commit(`` -- it calls this function only when a node
-    clears the bar -- so ``select`` is that kind of helper in the check's
-    own vocabulary, and this function, whose one statement commits
-    unconditionally the moment it is reached, trivially clears the standard
-    the check does hold it to.
-    """
-    question.commit(node_id)
-
-
 def select(question):
-    """Commit close-out's own pick, or nothing -- the M2 fixed rule.
+    """Commit close-out's own pick, or abstain -- the M2 fixed rule.
 
     Reads every node ``question.observed()`` already reveals -- a financial
     world's question reveals every evaluated node before a policy is ever
@@ -130,9 +109,10 @@ def select(question):
     ``ic_insample`` clears :func:`_schedule`'s threshold, ties broken by
     node id ascending, the same order ``orchestrator.closeout.
     _commit_top_node`` breaks its own tie by. Commits that node through
-    :func:`_commit`, or commits nothing when no node clears the bar.
-    Returns an empty batch either way, so the replay ends on this one call:
-    the M2 rule reads already-evaluated nodes and generates none.
+    ``question.commit(...)``, or declares the miss through
+    ``question.abstain()`` when no node clears the bar. Returns an empty
+    batch either way, so the replay ends on this one call: the M2 rule reads
+    already-evaluated nodes and generates none.
     """
     threshold = _schedule(_BETA)["discovery_ic_insample"]
 
@@ -151,5 +131,7 @@ def select(question):
             best_value = value
 
     if best_id is not None:
-        _commit(question, best_id)
+        question.commit(best_id)
+    else:
+        question.abstain()
     return ()
