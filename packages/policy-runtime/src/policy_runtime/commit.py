@@ -72,6 +72,34 @@ record enforces it as a one-way door, the same shape :class:`EpisodeBeta`
   commits nothing — the record is left exactly as it was, so a policy that
   fumbles one commit (a misspelled id, a batch) may still make its one call.
 
+**A deliberate abstention is recorded as one, and still scores −∞.**  There are
+two ways an episode can end without a pick, and the score's floor alone cannot
+tell them apart.  The first is a policy that *fell off its end* — it returned
+from its walk without making the terminal act, the runtime branch feature 230's
+static check could not prove, the case −∞ exists to score.  The second is a
+policy that *declared* it will not commit at all, which the M3 pre-registration
+makes a legitimate outcome of a world where committing badly would be worse
+(docs/preregistration/2026-10-17-m3-dreaming.md: an abstained arm is scored as
+a flat book).  The score is deliberately the same number for both — prd §438's
+"a policy that terminates without committing scores ``−∞``" is one law, not two,
+and an abstention that scored differently from a miss would silently rewrite
+every stored arm — so what differs is what the *record* says about the episode
+rather than what the episode is worth.  :meth:`EpisodeCommit.abstain` is the
+declaration, :attr:`Termination.abstained` is the frozen read of it, and the
+pick is absent and :attr:`Termination.committed` false either way.  A runtime
+can therefore count abstentions as the decisions they are — a policy that
+abstained did exactly what the contract now lets it do — while a fall-off stays
+the miss it always was, which is the distinction the minimum-score law alone
+never carried.
+
+**One door, two ways through it, and no episode takes both.**  ``abstain()`` is
+the *same* one-way door ``commit()`` is, drawn across both calls rather than
+beside them: abstain after commit, commit after abstain and a second abstain
+are each refused, naming both calls and the act already taken.  The terminal act
+is one act — an episode that could commit and then abstain (or the reverse)
+would be re-deciding after the fact, and a score would be earned under a
+decision the record no longer states.
+
 **A record over the question, not a method on it.**  The question (feature
 217) deliberately holds one piece of episode state — the reveal set, and
 nothing else — because everything else it answers is a pure function of
@@ -246,13 +274,37 @@ class Termination:
     ``score(pick, book, epoch, revealed, rounds)``), and this value routes it
     — calling it once, with the pick, when there is one, and never at all when
     there is not.
+
+    :attr:`abstained` is the third fact, and the one that separates the two
+    ways an episode can end without a pick.  It is ``True`` only for an
+    episode whose policy made the deliberate declaration
+    (:meth:`EpisodeCommit.abstain`) and ``False`` for one that simply fell off
+    its end — including every termination a runtime constructs by hand, which
+    is what keeps the fall-off reading the same as it was before abstention
+    existed.  The two are *not* distinguished by the score: both answer
+    :data:`NON_COMMITTING_SCORE`, because prd §438's floor is one law and an
+    abstention priced differently from a miss would restate every stored arm
+    (docs/preregistration/2026-10-17-m3-dreaming.md — an abstained arm is
+    scored as a flat book, which is what the floor already gives it).  What
+    the flag buys is the accounting: a runtime can count declarations without
+    ever mistaking one for a policy that never made it to the verb.
     """
 
     #: The episode's committed pick, or ``None`` for a policy that terminated
     #: without committing.  Absent rather than nil-valued: the miss is a
     #: decision that was never made, and it stays distinguishable from one
-    #: that was (migration 0109's nullable ``committed_pick``).
+    #: that was (migration 0109's nullable ``committed_pick``).  An abstained
+    #: episode leaves this ``None`` too — an abstention is the *declaration*
+    #: that no pick will be made, not a pick of nothing.
     pick: CommittedPick | None = None
+
+    #: Whether the episode's policy *declared* that it commits nothing —
+    #: ``True`` only after :meth:`EpisodeCommit.abstain`, ``False`` for a
+    #: policy that fell off its end (and for a policy that committed, whose
+    #: answer is :attr:`committed`).  Defaulted to ``False`` so a termination
+    #: constructed from a pick alone — the shape every existing caller and
+    #: every test already spells — reads as the fall-off-or-commit it was.
+    abstained: bool = False
 
     @property
     def committed(self) -> bool:
@@ -266,6 +318,18 @@ class Termination:
         the sentinel comparison this member already owns.
         """
         return self.pick is not None
+
+    @property
+    def missed(self) -> bool:
+        """Whether the episode ended with no pick *and* no declaration — the
+        policy that fell off its end.
+
+        The complement side of :attr:`abstained`, spelled for the caller that
+        is counting runs: an episode either committed, declared an abstention,
+        or fell through, and this is the third.  Computed rather than stored,
+        like :attr:`committed`, so the three answers cannot drift apart.
+        """
+        return self.pick is None and not self.abstained
 
     def score(self, scorer: Callable[[CommittedPick], float]) -> float:
         """The episode's score — the scorer's answer, or −∞ for the miss.
@@ -309,7 +373,10 @@ class Termination:
             # the system *scores* it — −∞, the floor every committing policy's
             # score sits above — rather than refusing, so the dreaming loop's
             # argmax ranks the miss last instead of dropping it from the
-            # comparison (prd §438, docs §598).
+            # comparison (prd §438, docs §598).  A declared abstention
+            # (:attr:`abstained`) lands here too and answers the *same*
+            # number: the floor is one law, and pricing a declaration
+            # differently from a fall-off would restate every stored arm.
             return NON_COMMITTING_SCORE
         return scorer(self.pick)
 
@@ -330,13 +397,26 @@ class EpisodeCommit:
       ``reveal`` refuses through;
     * a second commit is refused, naming the pick already made — the terminal
       act is one act, and the score is earned under the pick as it stood;
+    * :meth:`abstain` is the *other* way through the same door — the policy
+      declaring that it commits nothing — and it is mutually exclusive with
+      :meth:`commit` in both directions: abstain after commit, commit after
+      abstain and a second abstain are each refused, naming both calls;
     * after :meth:`terminate` has read the episode, the door is closed: a
-      commit landing later would be a pick the score never saw.
+      commit or an abstention landing later would be a decision the score
+      never saw.
 
     A refused attempt commits nothing — the record is left exactly as it was
     — so a policy that fumbles its one call (a misspelled id, a batch) may
     still make it.  The *absence* of a call is not the record's business at
     all: an episode that reaches termination uncommitted is a
+    :class:`Termination` with no pick, scored −∞ by :meth:`Termination.score`
+    — the miss is a score, not an error, which is the feature's whole point.
+
+    A refused attempt changes nothing — the record is left exactly as it was
+    — so a policy that fumbles its one call (a misspelled id, a batch, an
+    abstention on a branch it then decides against) may still take its one
+    terminal act.  The *absence* of any call is not the record's business at
+    all: an episode that reaches termination with neither is a
     :class:`Termination` with no pick, scored −∞ by :meth:`Termination.score`
     — the miss is a score, not an error, which is the feature's whole point.
 
@@ -347,7 +427,7 @@ class EpisodeCommit:
     own question.
     """
 
-    __slots__ = ("_pick", "_question", "_terminated")
+    __slots__ = ("_abstained", "_pick", "_question", "_terminated")
 
     def __init__(self, question: Any) -> None:
         # Duck-typed, not ``isinstance``: the module loader imports the member
@@ -373,9 +453,10 @@ class EpisodeCommit:
             )
         self._question = question
         self._pick: CommittedPick | None = None
+        self._abstained = False
         self._terminated = False
 
-    # -- the one write -----------------------------------------------------
+    # -- the writes: one door, taken once, one way or the other -------------
 
     def commit(self, node_id: str) -> CommittedPick:
         """Make the episode's one commit — name one node, and close the door.
@@ -388,7 +469,11 @@ class EpisodeCommit:
           was already read without it;
         * **one act** — a second commit is refused naming the pick already
           made: the pick is what the out-of-sample score is computed on, and
-          a policy that could re-commit would be re-deciding after the fact;
+          a policy that could re-commit would be re-deciding after the fact.
+          An episode that has *abstained* is refused here too, and the
+          refusal names the abstention: the terminal act is one act, and
+          declaring that no pick will be made and then making one is the same
+          re-decision seen from the other side;
         * **one node** — a call that names no node or several (``None``, a
           blank, a list or tuple of ids, a ``bool``) is refused, naming what
           it carried, because the feature's own sentence is *"a commit call
@@ -412,6 +497,16 @@ class EpisodeCommit:
                 "§598). Termination is the moment the requirement is read — "
                 "commit before it"
             )
+        if self._abstained:
+            raise PolicyCommitError(
+                "an episode takes one terminal act, and this episode has "
+                "already abstained: a commit() after abstain() would be an "
+                "episode that declared it commits nothing and then committed "
+                "— the declaration is the decision, and re-deciding it after "
+                "the fact is what the one-way door exists to refuse. The "
+                "record is left exactly as it stood, so the abstention stands "
+                "(feature 222, docs §598)"
+            )
         if self._pick is not None:
             raise PolicyCommitError(
                 f"an episode commits once, naming one node, and this episode "
@@ -431,6 +526,65 @@ class EpisodeCommit:
         pick = CommittedPick(node_id=node_id)
         self._pick = pick
         return pick
+
+    def abstain(self) -> None:
+        """Declare that this episode commits nothing — the other way through
+        the same door.
+
+        The policy's *deliberate* abstention, recorded as one.  docs §598 and
+        prd §438 make the commit mandatory and score its absence −∞; the M3
+        pre-registration makes abstaining a legitimate outcome of a world
+        where committing badly is worse
+        (docs/preregistration/2026-10-17-m3-dreaming.md — the arm is scored as
+        a flat book).  Those two laws meet here: the episode still earns
+        :data:`NON_COMMITTING_SCORE`, exactly as a policy that fell off its end
+        does, and what the call adds is the *record* that the ending was
+        chosen — :attr:`Termination.abstained` ``True`` for a runtime counting
+        declarations, instead of a fall-off that nothing distinguishes from a
+        policy which simply stopped.
+
+        Returns ``None``: there is no pick to hand back, and a value here
+        would be the pick this call exists to say will not be made.
+
+        The same one-way door :meth:`commit` is, drawn across both calls.  An
+        abstention is refused when the episode has terminated (the decision
+        landed after the score was read), when it has already committed
+        (declaring no pick after making one), and on a second abstention (the
+        terminal act is one act, and re-declaring it is re-deciding it).  Each
+        refusal names both calls and leaves the record exactly as it stood, so
+        a policy whose branch changed its mind can still commit — while a
+        policy that abstained has said everything it has to say, and its
+        termination answers one pick and no declaration whatever that pick
+        would have been.
+        """
+        if self._terminated:
+            raise PolicyCommitError(
+                "the episode has terminated and its commit door is closed: an "
+                "abstain() landing now would be a decision the score never "
+                "saw, because terminate() has already read the episode's "
+                "commit into the termination the scorer consumes (feature "
+                "222, docs §598). Termination is the moment the requirement is "
+                "read — abstain before it"
+            )
+        if self._pick is not None:
+            raise PolicyCommitError(
+                f"an episode takes one terminal act, and this episode has "
+                f"already committed to {self._pick.node_id!r}: an abstain() "
+                f"after commit() would be an episode that named the node it "
+                f"would deploy and then declared it commits nothing, and the "
+                f"out-of-sample score is computed on the pick as it stood — "
+                f"the terminal act is one act, so declare before committing or "
+                f"commit and do not declare (feature 222, docs §598)"
+            )
+        if self._abstained:
+            raise PolicyCommitError(
+                "an episode takes one terminal act, and this episode has "
+                "already abstained: a second abstain() would be the same "
+                "declaration made twice, and the terminal act is one act — the "
+                "record already reads abstained, and re-declaring it changes "
+                "nothing the score sees (feature 222, docs §598)"
+            )
+        self._abstained = True
 
     # -- the reads ---------------------------------------------------------
 
@@ -455,9 +609,23 @@ class EpisodeCommit:
         fact.  Deliberately not a *requirement* read: an uncommitted episode
         is not an error state, and this property answers ``False`` for one
         the same way :class:`Termination` does — the miss is a score, not a
-        refusal.
+        refusal.  An abstained episode answers ``False`` here too: an
+        abstention is a declaration that no pick will be made.
         """
         return self._pick is not None
+
+    @property
+    def abstained(self) -> bool:
+        """Whether the episode has declared that it commits nothing — the
+        live read of :meth:`abstain`.
+
+        ``False`` until the declaration lands, and ``True`` from then on
+        (both reads answer ``False`` for a policy that committed, and for one
+        that has so far made neither call).  The frozen answer the score is
+        read beside is :meth:`terminate`'s snapshot, not this one; this is
+        the live read for a runtime watching an episode in flight.
+        """
+        return self._abstained
 
     def terminate(self) -> Termination:
         """Read the episode's commit at termination — the moment the feature
@@ -465,25 +633,27 @@ class EpisodeCommit:
 
         The last act of the replay after the policy has returned (§10.1's
         ``pick = policy.commit()`` standing where this read stands): freezes
-        the record's door and snapshots the pick — or its absence — into a
-        frozen :class:`Termination` the scorer consumes.  Idempotent and pure
-        in its answer: calling it twice returns equal values, because the
-        snapshot is taken from state the closed door can no longer change.
+        the record's door and snapshots the pick — or its absence, and
+        whether that absence was *declared* — into a frozen
+        :class:`Termination` the scorer consumes.  Idempotent and pure in its
+        answer: calling it twice returns equal values, because the snapshot is
+        taken from state the closed door can no longer change.
 
         Refuses nothing, on purpose.  Termination itself is always allowed —
         a non-committing policy terminates like any other; what its
         termination carries is no pick and a score of −∞, which is the
         feature's answer to that policy rather than this method's refusal.
-        The commit door closes here and only here; every law the commit
-        itself carries (cardinality, one act, the address seam) was already
-        in force from construction.
+        The commit door closes here and only here; every law the terminal act
+        carries (cardinality, one act in either direction, the address seam)
+        was already in force from construction.
         """
         self._terminated = True
-        return Termination(pick=self._pick)
+        return Termination(pick=self._pick, abstained=self._abstained)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return (
             f"EpisodeCommit(committed={self._pick is not None}, "
+            f"abstained={self._abstained}, "
             f"terminated={self._terminated})"
         )
 

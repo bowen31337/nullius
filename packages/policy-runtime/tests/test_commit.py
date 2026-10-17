@@ -28,7 +28,14 @@ The invariants these tests pin are the ones the guarantee depends on:
   :data:`~policy_runtime.NON_COMMITTING_SCORE` *without the scorer being
   called at all*, which is what keeps a non-committing revision inside the
   dreaming loop's comparison, ranked last, instead of dropping out of it
-  the way a raised exception or a NaN would.
+  the way a raised exception or a NaN would;
+* **a declared abstention is recorded as one** — ``abstain()`` is the other
+  way through the *same* one-way door, and the episode it terminates answers
+  ``abstained=True`` while a policy that fell off its end answers
+  ``abstained=False``.  Neither the score nor the pick distinguishes the two:
+  both answer :data:`NON_COMMITTING_SCORE` with no pick, because the floor is
+  one law (prd §438) — what the flag separates is the *decision* from the
+  accident.
 
 The headline case is the one the feature names: a policy that terminates
 without committing scores −∞ — below a committing policy's disaster, never
@@ -49,6 +56,7 @@ from policy_runtime import (
     PolicyCommitError,
     PolicyQuestion,
     PolicyRuntimeError,
+    Termination,
     episode_commit,
 )
 
@@ -322,6 +330,159 @@ def test_termination_is_frozen(question: PolicyQuestion) -> None:
     termination = episode_commit(question).terminate()
     with pytest.raises(dataclasses.FrozenInstanceError):
         termination.pick = CommittedPick(node_id="n1")  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# abstain — the other way through the same one-way door
+# ---------------------------------------------------------------------------
+
+
+def test_abstain_records_a_deliberate_abstention(question: PolicyQuestion) -> None:
+    # The feature's headline: an episode that *declares* it commits nothing
+    # is recorded as having done so, rather than being indistinguishable from
+    # a policy that fell off its end.  abstain() is the declaration, it hands
+    # back no pick (there is none to hand back — that is what it says), and
+    # the record reads abstained from then on.
+    record = episode_commit(question)
+    assert record.abstain() is None
+    assert record.abstained is True
+    assert record.committed is False
+    assert record.pick is None
+
+
+def test_abstain_then_terminate_answers_the_miss_flagged_as_declared(
+    question: PolicyQuestion,
+) -> None:
+    # The frozen read carries all three facts at once — the declaration, the
+    # absent pick, and the absent commit — and the score is −∞ exactly as for
+    # a miss.  The score is the same number on purpose: prd §438's floor is
+    # one law, and pricing a declaration differently from a fall-off would
+    # restate every stored arm (docs/preregistration/2026-10-17-m3-dreaming.md
+    # scores an abstained arm as a flat book, which is what the floor gives).
+    calls: list[CommittedPick] = []
+    record = episode_commit(question)
+    record.abstain()
+    termination = record.terminate()
+    assert termination.abstained is True
+    assert termination.committed is False
+    assert termination.pick is None
+    assert termination.score(_spy_scorer(calls)) is NON_COMMITTING_SCORE
+    assert calls == []
+
+
+def test_a_fall_off_termination_is_not_an_abstention(question: PolicyQuestion) -> None:
+    # The distinction the flag exists to draw: an episode that reaches
+    # termination having made *neither* call fell off its end, and it answers
+    # abstained=False — so a runtime counting declarations never counts a
+    # policy that simply stopped.  The miss is the fall-off's answer; the
+    # declaration is not.
+    termination = episode_commit(question).terminate()
+    assert termination.abstained is False
+    assert termination.missed is True
+
+
+def test_an_abstained_episode_is_not_a_miss(question: PolicyQuestion) -> None:
+    # ``missed`` is the third answer beside ``committed`` and ``abstained``:
+    # an episode either committed, declared, or fell through, and an abstained
+    # one is not a fall-off however identical its score is.
+    record = episode_commit(question)
+    record.abstain()
+    termination = record.terminate()
+    assert termination.abstained is True
+    assert termination.missed is False
+
+
+def test_a_committed_episode_has_not_abstained(question: PolicyQuestion) -> None:
+    # The two terminal acts are mutually exclusive from the other side too: a
+    # committing episode answers committed=True, abstained=False, missed=False.
+    record = episode_commit(question)
+    record.commit("n1")
+    termination = record.terminate()
+    assert termination.committed is True
+    assert termination.abstained is False
+    assert termination.missed is False
+
+
+def test_a_commit_after_an_abstention_is_refused(question: PolicyQuestion) -> None:
+    # One way through the door, not two: an episode that declared it commits
+    # nothing and then committed would be re-deciding the declaration after
+    # the fact.  The refusal names both calls, and the abstention stands —
+    # the record is left exactly as it stood.
+    record = episode_commit(question)
+    record.abstain()
+    with pytest.raises(PolicyCommitError, match="abstain"):
+        record.commit("n1")
+    with pytest.raises(PolicyCommitError, match="commit"):
+        record.commit("n2")
+    assert record.abstained is True
+    assert record.committed is False
+    assert record.terminate().abstained is True
+
+
+def test_an_abstention_after_a_commit_is_refused(question: PolicyQuestion) -> None:
+    # The door closes the same way round: an episode that named the node it
+    # would deploy cannot then declare it commits nothing.  The refusal names
+    # the pick already made and both calls, and the commit stands.
+    record = episode_commit(question)
+    record.commit("n1")
+    with pytest.raises(PolicyCommitError, match="abstain"):
+        record.abstain()
+    with pytest.raises(PolicyCommitError, match="commit"):
+        record.abstain()
+    assert record.abstained is False
+    assert record.pick == CommittedPick(node_id="n1")
+
+
+def test_a_second_abstention_is_refused(question: PolicyQuestion) -> None:
+    # The terminal act is one act, and re-declaring it is re-deciding it —
+    # the same refusal the second commit gets, drawn over the other call.
+    record = episode_commit(question)
+    record.abstain()
+    with pytest.raises(PolicyCommitError, match="abstain"):
+        record.abstain()
+    assert record.abstained is True
+
+
+def test_an_abstention_after_termination_is_refused(question: PolicyQuestion) -> None:
+    # Termination is the moment the record is read: an abstention landing then
+    # would be a decision the score never saw, exactly as a late commit would.
+    record = episode_commit(question)
+    record.terminate()
+    with pytest.raises(PolicyCommitError, match="terminated"):
+        record.abstain()
+    assert record.abstained is False
+
+
+def test_a_refused_abstention_leaves_the_door_open(question: PolicyQuestion) -> None:
+    # An abstention refused after termination has changed nothing — and the
+    # commit that a fumbled attempt leaves behind is still refusable by the
+    # *closed* door rather than by a half-taken declaration.
+    record = episode_commit(question)
+    record.terminate()
+    with pytest.raises(PolicyCommitError):
+        record.abstain()
+    with pytest.raises(PolicyCommitError, match="terminated"):
+        record.commit("n1")
+    assert record.abstained is False
+    assert record.pick is None
+
+
+def test_an_abstention_is_idempotent_through_terminate(question: PolicyQuestion) -> None:
+    # The snapshot is frozen, so two terminations of an abstained episode
+    # answer equal values — the declaration cannot drift out of the read.
+    record = episode_commit(question)
+    record.abstain()
+    assert record.terminate() == record.terminate()
+    assert record.terminate().abstained is True
+
+
+def test_an_abstention_is_refused_by_a_termination_that_never_abstained() -> None:
+    # A Termination constructed directly — the shape every existing caller and
+    # test already spells — reads as the fall-off-or-commit it was: the flag
+    # is opt-in, so nothing that predates abstention starts claiming one.
+    assert Termination(pick=CommittedPick(node_id="n1")).abstained is False
+    assert Termination().abstained is False
+    assert Termination().missed is True
 
 
 # ---------------------------------------------------------------------------
