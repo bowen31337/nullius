@@ -33,8 +33,8 @@ import discovery
 import dreaming
 import pytest
 import scoring
+from orchestrator import dream as dream_module
 from orchestrator import m3_verdict
-from orchestrator.dream import FINANCIAL_SUFFIX
 from replay import NON_COMMITTING_SCORE
 
 # conftest-less suite: this file is under packages/orchestrator/tests, so the
@@ -90,6 +90,69 @@ def _insert_score(
                 created_at,
             ),
         )
+
+
+# -- Addendum 1's pinned evaluation configuration -----------------------------
+#
+# docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md pins criterion 1 (and
+# every financial-world score a dreaming cycle writes for M3) to one evaluation
+# configuration, and has the verdict record that file's sha256 and refuse a file
+# that hashes differently.  The verdict only ever hashes these bytes -- the
+# loaded context that scores against them is this suite's own duck-typed stub --
+# so the document below need not be a loadable evaluation config, only a stable
+# blob a test can point the pin at.
+EVALUATION_CONFIG_DOCUMENT = b"""{
+  "snapshot_mount": "/srv/nullius/snapshots/2026-10-12T03:50:56Z_75d0a1",
+  "evaluation_dates": ["2022-01-03", "2022-01-17"],
+  "horizon": 10,
+  "seed": 20261006,
+  "epoch_id": "archive-perp-bn",
+  "artifact_dir": "/srv/nullius/artifacts",
+  "sandbox_runtime": "gvisor",
+  "oos_dates": ["2025-08-04", "2025-08-18"],
+  "instrument": "perp"
+}
+"""
+
+
+def _pinned_config(tmp_path: Path) -> tuple[Path, str]:
+    """A fixture evaluation config and the sha256 the verdict must record."""
+    path = tmp_path / "evaluation-config-archive-perp-bn.json"
+    path.write_bytes(EVALUATION_CONFIG_DOCUMENT)
+    return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _pin(monkeypatch: pytest.MonkeyPatch, digest: str) -> None:
+    """Point the module's pin at a fixture file's own digest.
+
+    The real pin is a fixed 64-hex constant -- no fixture can be made to hash to
+    it -- so the happy path moves the pin rather than the file, exactly as a
+    deployment moves the file to the pin.
+    """
+    monkeypatch.setattr(m3_verdict, "M3_EVALUATION_CONFIG_SHA256", digest)
+
+
+def _baseline_version(config_sha256: str) -> str:
+    return dream_module.financial_policy_version(
+        m3_verdict.M2_INCUMBENT_POLICY_VERSION, config_sha256
+    )
+
+
+def _winner_version(module_id: str, config_sha256: str) -> str:
+    return dream_module.financial_policy_version(module_id, config_sha256)
+
+
+def test_evaluation_config_mismatch_is_refused(tmp_path: Path) -> None:
+    """The pin is the real 64-hex constant here, so the fixture refuses."""
+    config_path, _digest = _pinned_config(tmp_path)
+    with pytest.raises(m3_verdict.M3VerdictError, match="hashes to"):
+        m3_verdict._verify_evaluation_config(config_path)
+
+
+def test_evaluation_config_at_the_pin_is_admitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    assert m3_verdict._verify_evaluation_config(config_path) == digest
 
 
 def _create_node_table(database_url: str) -> None:
@@ -233,7 +296,8 @@ def test_duplicate_verdict_is_refused(tmp_path: Path) -> None:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(m3_verdict._VERDICT_SCHEMA)
         connection.execute(
-            "INSERT INTO m3_verdict (iteration_id, prereg_sha256, verdict, "
+            "INSERT INTO m3_verdict (iteration_id, prereg_sha256, "
+            "evaluation_config_sha256, verdict, "
             "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
             "criterion1_bar, criterion1_paired_worlds, criterion2_pass, "
             "criterion2_winner_fdr_deploy, criterion2_baseline_fdr_deploy, "
@@ -241,7 +305,7 @@ def test_duplicate_verdict_is_refused(tmp_path: Path) -> None:
             "criterion3_domain_transfers, winner_commit_rate, "
             "baseline_commit_rate, n_bootstrap, n_bootstrap_by_domain, "
             "n_financial, campaign_ids, winner_module_id, created_at) VALUES "
-            "('prior-iteration', 'deadbeef', 'PASS', 1, 0.5, 0.01, 0.1, 20, "
+            "('prior-iteration', 'deadbeef', 'cafe', 'PASS', 1, 0.5, 0.01, 0.1, 20, "
             "1, 0.0, 1.0, 1, 0.1, '{}', 1.0, 0.0, 50, '{}', 20, '[]', "
             "'cand-x', '2026-01-01T00:00:00Z')"
         )
@@ -254,18 +318,48 @@ def test_duplicate_verdict_is_refused(tmp_path: Path) -> None:
 # -- Criterion 1: paired delta IR --------------------------------------------
 
 
-def test_criterion1_passes_on_a_clear_winning_margin(tmp_path: Path) -> None:
-    database_url = _database_url(tmp_path)
-    _create_replay_score_table(database_url)
-    winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
-    diffs = [0.65, 0.70, 0.75] * 7  # 21 worlds, mean 0.70, small spread
+def _seed_criterion1_pool(
+    database_url: str, *, config_path: Path, winner_version: str, diffs: list[float],
+    baseline_scores: list[float] | None = None,
+) -> None:
+    """A criterion-1 fixture: the winner's and the re-scored baseline's rows.
+
+    Both arms are filed under the pinned config's digest, exactly as a dreaming
+    cycle writes them (docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's
+    *"Rows carry their config"*) -- never under the bare ``"m2-fixed"`` version,
+    which this criterion no longer reads at all.
+    """
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    financial_version = _winner_version(winner_version, config_sha256)
+    baseline_version = _baseline_version(config_sha256)
     for index, diff in enumerate(diffs):
         world_id = f"campaign-{index}"
-        _insert_score(database_url, policy_version=financial_version, world_id=world_id, score=diff)
-        _insert_score(database_url, policy_version="m2-fixed", world_id=world_id, score=0.0)
+        _insert_score(
+            database_url, policy_version=financial_version, world_id=world_id, score=diff
+        )
+        baseline_score = 0.0 if baseline_scores is None else baseline_scores[index]
+        _insert_score(
+            database_url, policy_version=baseline_version, world_id=world_id, score=baseline_score
+        )
+
+
+def test_criterion1_passes_on_a_clear_winning_margin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    diffs = [0.65, 0.70, 0.75] * 7  # 21 worlds, mean 0.70, small spread
+    _seed_criterion1_pool(
+        database_url, config_path=config_path, winner_version=winner_version, diffs=diffs
+    )
     difference, one_sided_p, bar, passed = m3_verdict._criterion1(
-        database_url=database_url, winner_version=winner_version, revision_cap=40
+        database_url=database_url,
+        winner_version=winner_version,
+        revision_cap=40,
+        evaluation_config_path=config_path,
     )
     assert passed is True
     assert difference.mean_difference > m3_verdict.CRITERION1_DELTA
@@ -273,60 +367,75 @@ def test_criterion1_passes_on_a_clear_winning_margin(tmp_path: Path) -> None:
     assert difference.mean_difference > bar
 
 
-def test_criterion1_fails_on_a_small_margin(tmp_path: Path) -> None:
+def test_criterion1_fails_on_a_small_margin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_url = _database_url(tmp_path)
     _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
     diffs = [0.08, 0.10, 0.12] * 7
-    for index, diff in enumerate(diffs):
-        world_id = f"campaign-{index}"
-        _insert_score(database_url, policy_version=financial_version, world_id=world_id, score=diff)
-        _insert_score(database_url, policy_version="m2-fixed", world_id=world_id, score=0.0)
+    _seed_criterion1_pool(
+        database_url, config_path=config_path, winner_version=winner_version, diffs=diffs
+    )
     _, _, _, passed = m3_verdict._criterion1(
-        database_url=database_url, winner_version=winner_version, revision_cap=40
+        database_url=database_url,
+        winner_version=winner_version,
+        revision_cap=40,
+        evaluation_config_path=config_path,
     )
     assert passed is False
 
 
-def test_criterion1_fails_when_the_bar_does_not_clear(tmp_path: Path) -> None:
+def test_criterion1_fails_when_the_bar_does_not_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A real, significant margin can still fail a wide-enough meta-level bar
     -- few paired worlds and a wide spread, at a realistic M."""
     database_url = _database_url(tmp_path)
     _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
     diffs = [0.3, 0.7]  # mean 0.5, n=2: the widest possible spread/n ratio
-    for index, diff in enumerate(diffs):
-        world_id = f"campaign-{index}"
-        _insert_score(database_url, policy_version=financial_version, world_id=world_id, score=diff)
-        _insert_score(database_url, policy_version="m2-fixed", world_id=world_id, score=0.0)
+    _seed_criterion1_pool(
+        database_url, config_path=config_path, winner_version=winner_version, diffs=diffs
+    )
     difference, _, bar, passed = m3_verdict._criterion1(
-        database_url=database_url, winner_version=winner_version, revision_cap=40
+        database_url=database_url,
+        winner_version=winner_version,
+        revision_cap=40,
+        evaluation_config_path=config_path,
     )
     assert difference.mean_difference > m3_verdict.CRITERION1_DELTA
     assert difference.mean_difference <= bar
     assert passed is False
 
 
-def test_criterion1_non_committing_worlds_score_flat_zero(tmp_path: Path) -> None:
+def test_criterion1_non_committing_worlds_score_flat_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The document's flat abstention rule: a miss reads as 0.0, not refused."""
     database_url = _database_url(tmp_path)
     _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
+    diffs = [NON_COMMITTING_SCORE] * 21
     baseline_scores = [-0.3, -0.4, -0.5] * 7  # varied, so the pool carries spread
-    for index, baseline_score in enumerate(baseline_scores):
-        world_id = f"campaign-{index}"
-        _insert_score(
-            database_url,
-            policy_version=financial_version,
-            world_id=world_id,
-            score=NON_COMMITTING_SCORE,
-        )
-        _insert_score(database_url, policy_version="m2-fixed", world_id=world_id, score=baseline_score)
+    _seed_criterion1_pool(
+        database_url,
+        config_path=config_path,
+        winner_version=winner_version,
+        diffs=diffs,
+        baseline_scores=baseline_scores,
+    )
     difference, _, _, _passed = m3_verdict._criterion1(
-        database_url=database_url, winner_version=winner_version, revision_cap=10
+        database_url=database_url,
+        winner_version=winner_version,
+        revision_cap=10,
+        evaluation_config_path=config_path,
     )
     # winner reads 0.0 on every world (a miss), baseline reads ~-0.4: the
     # paired difference averages +0.4, which proves the sentinel never reaches
@@ -334,15 +443,58 @@ def test_criterion1_non_committing_worlds_score_flat_zero(tmp_path: Path) -> Non
     assert difference.mean_difference == pytest.approx(0.4)
 
 
+def test_criterion1_ignores_stored_m2_fixed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect, pinned: stored ``m2-fixed`` rows are never paired against.
+
+    This is the regression test for the reported bug.  A store holds a stored
+    ``m2-fixed`` row for every world -- written by close-out under some *other*
+    campaign's evaluation config -- and *no* re-scored baseline arm at all.
+    Before the fix, criterion 1 paired the winner's fresh rows against those
+    stored ones and reported a comparison; after it, the stored rows carry no
+    digest, so they name no arm under the pinned config and the comparison is
+    refused rather than taken over evidence from a different configuration.
+    """
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    for index, diff in enumerate([0.65, 0.70, 0.75] * 7):
+        world_id = f"campaign-{index}"
+        _insert_score(
+            database_url,
+            policy_version=_winner_version(winner_version, config_sha256),
+            world_id=world_id,
+            score=diff,
+        )
+        # The stored row a different config's close-out wrote -- bare
+        # "m2-fixed", carrying no digest at all.
+        _insert_score(
+            database_url, policy_version="m2-fixed", world_id=world_id, score=0.0
+        )
+    with pytest.raises(dreaming.PairedComparisonError):
+        m3_verdict._criterion1(
+            database_url=database_url,
+            winner_version=winner_version,
+            revision_cap=40,
+            evaluation_config_path=config_path,
+        )
+
+
 # -- Criterion 2: FDR_deploy --------------------------------------------------
 
 
-def test_criterion2_passes_when_the_winner_avoids_nulls(tmp_path: Path) -> None:
-    database_url = _database_url(tmp_path)
-    _create_replay_score_table(database_url)
-    _create_node_table(database_url)
-    winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
+def _seed_criterion2(
+    database_url: str, *, config_path: Path, winner_version: str,
+    winner_commits_reals: bool,
+) -> tuple[tuple[str, ...], Any]:
+    """A criterion-2 fixture: 20 campaigns, both arms under the pinned digest."""
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    financial_version = _winner_version(winner_version, config_sha256)
+    baseline_version = _baseline_version(config_sha256)
     campaigns = tuple(f"campaign-{i}" for i in range(20))
     labels: dict[str, bool] = {}
     for i, campaign_id in enumerate(campaigns):
@@ -350,58 +502,74 @@ def test_criterion2_passes_when_the_winner_avoids_nulls(tmp_path: Path) -> None:
         is_null = i >= 10
         labels[root_id] = is_null
         _plant_root(database_url, campaign_id=campaign_id, node_id=root_id)
-        if is_null:
-            # The winner abstains on null-root campaigns; m2-fixed commits.
-            _insert_score(database_url, policy_version=financial_version, world_id=campaign_id, score=0.0)
-            _insert_score(
-                database_url, policy_version="m2-fixed", world_id=campaign_id,
-                score=0.0, committed_pick=root_id,
-            )
-        else:
-            # The winner commits on real-root campaigns; m2-fixed abstains.
+        winner_commits_here = (not is_null) if winner_commits_reals else is_null
+        if winner_commits_here:
             _insert_score(
                 database_url, policy_version=financial_version, world_id=campaign_id,
                 score=0.0, committed_pick=root_id,
             )
-            _insert_score(database_url, policy_version="m2-fixed", world_id=campaign_id, score=0.0)
-    scorer = scoring.NullPickScorer(_StubSidecar(labels))
+            _insert_score(
+                database_url, policy_version=baseline_version, world_id=campaign_id, score=0.0
+            )
+        else:
+            _insert_score(
+                database_url, policy_version=financial_version, world_id=campaign_id, score=0.0
+            )
+            _insert_score(
+                database_url, policy_version=baseline_version, world_id=campaign_id,
+                score=0.0, committed_pick=root_id,
+            )
+    return campaigns, scoring.NullPickScorer(_StubSidecar(labels))
+
+
+def test_criterion2_passes_when_the_winner_avoids_nulls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    _create_node_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    campaigns, scorer = _seed_criterion2(
+        database_url,
+        config_path=config_path,
+        winner_version=winner_version,
+        winner_commits_reals=True,
+    )
     winner_fdr, baseline_fdr, passed = m3_verdict._criterion2(
-        database_url=database_url, winner_version=winner_version, campaigns=campaigns, scorer=scorer
+        database_url=database_url,
+        winner_version=winner_version,
+        campaigns=campaigns,
+        scorer=scorer,
+        config_sha256=digest,
     )
     assert winner_fdr == pytest.approx(0.0)
     assert baseline_fdr == pytest.approx(1.0)
     assert passed is True
 
 
-def test_criterion2_fails_when_the_winner_chases_nulls(tmp_path: Path) -> None:
+def test_criterion2_fails_when_the_winner_chases_nulls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_url = _database_url(tmp_path)
     _create_replay_score_table(database_url)
     _create_node_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     winner_version = "cand-winner"
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
-    campaigns = tuple(f"campaign-{i}" for i in range(20))
-    labels: dict[str, bool] = {}
-    for i, campaign_id in enumerate(campaigns):
-        root_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"root-{i}"))
-        is_null = i >= 10
-        labels[root_id] = is_null
-        _plant_root(database_url, campaign_id=campaign_id, node_id=root_id)
-        if is_null:
-            # The winner commits the null roots this time; m2-fixed abstains.
-            _insert_score(
-                database_url, policy_version=financial_version, world_id=campaign_id,
-                score=0.0, committed_pick=root_id,
-            )
-            _insert_score(database_url, policy_version="m2-fixed", world_id=campaign_id, score=0.0)
-        else:
-            _insert_score(database_url, policy_version=financial_version, world_id=campaign_id, score=0.0)
-            _insert_score(
-                database_url, policy_version="m2-fixed", world_id=campaign_id,
-                score=0.0, committed_pick=root_id,
-            )
-    scorer = scoring.NullPickScorer(_StubSidecar(labels))
+    campaigns, scorer = _seed_criterion2(
+        database_url,
+        config_path=config_path,
+        winner_version=winner_version,
+        winner_commits_reals=False,
+    )
     winner_fdr, baseline_fdr, passed = m3_verdict._criterion2(
-        database_url=database_url, winner_version=winner_version, campaigns=campaigns, scorer=scorer
+        database_url=database_url,
+        winner_version=winner_version,
+        campaigns=campaigns,
+        scorer=scorer,
+        config_sha256=digest,
     )
     assert winner_fdr == pytest.approx(1.0)
     assert baseline_fdr == pytest.approx(0.0)
@@ -522,6 +690,7 @@ def _plant_cycle(
     n_campaigns: int,
     winner_commits_reals: bool,
     financial_diffs: list[float],
+    config_path: Path,
 ) -> dict[str, Any]:
     """Build a full, consistent fixture store for one dreaming cycle.
 
@@ -533,12 +702,14 @@ def _plant_cycle(
     _create_replay_score_table(database_url)
     _create_node_table(database_url)
 
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
     pool = _make_pool(database_url, per_domain=per_domain)
     total_worlds = per_domain * len(m3_verdict.BOOTSTRAP_DOMAINS)
     cap_record = dreaming.record_cycle_cap(iteration_id, total_worlds, database_url=database_url)
     widened = _widened(iteration_id, cap_record.revision_cap)
     winner = widened[1]  # widened[0] is the incumbent (include_incumbent's own contract)
-    financial_version = f"{winner.module_id}{FINANCIAL_SUFFIX}"
+    financial_version = _winner_version(winner.module_id, config_sha256)
+    baseline_version = _baseline_version(config_sha256)
 
     with closing(sqlite3.connect(_sqlite_path(database_url))) as connection, connection:
         connection.execute(
@@ -588,11 +759,13 @@ def _plant_cycle(
                 database_url, policy_version=financial_version, world_id=canonical_id,
                 score=diff, committed_pick=root_id,
             )
-            _insert_score(database_url, policy_version="m2-fixed", world_id=canonical_id, score=0.0)
+            _insert_score(
+                database_url, policy_version=baseline_version, world_id=canonical_id, score=0.0
+            )
         else:
             _insert_score(database_url, policy_version=financial_version, world_id=canonical_id, score=diff)
             _insert_score(
-                database_url, policy_version="m2-fixed", world_id=canonical_id,
+                database_url, policy_version=baseline_version, world_id=canonical_id,
                 score=0.0, committed_pick=root_id,
             )
 
@@ -604,6 +777,8 @@ def _plant_cycle(
         "scorer": scorer,
         "campaigns": canonical_campaigns,
         "iteration_id": iteration_id,
+        "config_path": config_path,
+        "config_sha256": config_sha256,
     }
 
 
@@ -619,9 +794,13 @@ def _pass_evaluator(incumbent_source: str):
     return evaluator
 
 
-def test_run_verdict_passes_and_persists_one_row(tmp_path: Path) -> None:
+def test_run_verdict_passes_and_persists_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     iteration_id = "it-end-to-end-pass"
     diffs = ([0.65, 0.70, 0.75] * 7)[:20]
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     fixture = _plant_cycle(
         tmp_path,
         iteration_id=iteration_id,
@@ -629,12 +808,14 @@ def test_run_verdict_passes_and_persists_one_row(tmp_path: Path) -> None:
         n_campaigns=20,
         winner_commits_reals=True,
         financial_diffs=diffs,
+        config_path=config_path,
     )
     result = m3_verdict.run_verdict(
         iteration_id,
         database_url=fixture["database_url"],
         scorer=fixture["scorer"],
         pool=fixture["pool"],
+        evaluation_config_path=config_path,
         evaluator=_pass_evaluator(INCUMBENT_SOURCE),
     )
     assert result.verdict == "PASS"
@@ -642,18 +823,24 @@ def test_run_verdict_passes_and_persists_one_row(tmp_path: Path) -> None:
     assert result.criterion2_pass is True
     assert result.criterion3_pass is True
     assert result.prereg_sha256 == hashlib.sha256(PREREG_PATH.read_bytes()).hexdigest()
+    assert result.evaluation_config_sha256 == digest
 
     with closing(sqlite3.connect(_sqlite_path(fixture["database_url"]))) as connection:
         rows = connection.execute(
-            "SELECT verdict, prereg_sha256 FROM m3_verdict WHERE iteration_id = ?",
+            "SELECT verdict, prereg_sha256, evaluation_config_sha256 FROM m3_verdict "
+            "WHERE iteration_id = ?",
             (iteration_id,),
         ).fetchall()
-    assert rows == [("PASS", result.prereg_sha256)]
+    assert rows == [("PASS", result.prereg_sha256, digest)]
 
 
-def test_run_verdict_fails_and_persists_the_fail_row(tmp_path: Path) -> None:
+def test_run_verdict_fails_and_persists_the_fail_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     iteration_id = "it-end-to-end-fail"
     diffs = ([0.05, 0.10, 0.15] * 7)[:20]  # a small margin: criterion 1 fails
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
     fixture = _plant_cycle(
         tmp_path,
         iteration_id=iteration_id,
@@ -661,12 +848,14 @@ def test_run_verdict_fails_and_persists_the_fail_row(tmp_path: Path) -> None:
         n_campaigns=20,
         winner_commits_reals=True,
         financial_diffs=diffs,
+        config_path=config_path,
     )
     result = m3_verdict.run_verdict(
         iteration_id,
         database_url=fixture["database_url"],
         scorer=fixture["scorer"],
         pool=fixture["pool"],
+        evaluation_config_path=config_path,
         evaluator=_pass_evaluator(INCUMBENT_SOURCE),
     )
     assert result.verdict == "FAIL"
@@ -679,9 +868,16 @@ def test_run_verdict_fails_and_persists_the_fail_row(tmp_path: Path) -> None:
     assert row == ("FAIL",)
 
 
-def test_main_exits_3_on_a_fail_verdict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    iteration_id = "it-cli-fail"
-    diffs = ([0.05, 0.10, 0.15] * 7)[:20]
+def test_run_verdict_refuses_a_config_that_hashes_differently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADDENDUM 1: *"the verdict records the config's sha256, and refuses if
+    the file it is given hashes differently."*"""
+    iteration_id = "it-end-to-end-config-drift"
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    config_path.write_bytes(EVALUATION_CONFIG_DOCUMENT + b"\n")
+    diffs = ([0.65, 0.70, 0.75] * 7)[:20]
     fixture = _plant_cycle(
         tmp_path,
         iteration_id=iteration_id,
@@ -689,6 +885,32 @@ def test_main_exits_3_on_a_fail_verdict(tmp_path: Path, monkeypatch: pytest.Monk
         n_campaigns=20,
         winner_commits_reals=True,
         financial_diffs=diffs,
+        config_path=config_path,
+    )
+    with pytest.raises(m3_verdict.M3VerdictError, match="hashes to"):
+        m3_verdict.run_verdict(
+            iteration_id,
+            database_url=fixture["database_url"],
+            scorer=fixture["scorer"],
+            pool=fixture["pool"],
+            evaluation_config_path=config_path,
+            evaluator=_pass_evaluator(INCUMBENT_SOURCE),
+        )
+
+
+def test_main_exits_3_on_a_fail_verdict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    iteration_id = "it-cli-fail"
+    diffs = ([0.05, 0.10, 0.15] * 7)[:20]
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    fixture = _plant_cycle(
+        tmp_path,
+        iteration_id=iteration_id,
+        per_domain=17,
+        n_campaigns=20,
+        winner_commits_reals=True,
+        financial_diffs=diffs,
+        config_path=config_path,
     )
 
     class _FixedApp:
@@ -702,7 +924,12 @@ def test_main_exits_3_on_a_fail_verdict(tmp_path: Path, monkeypatch: pytest.Monk
 
     emitted: list[str] = []
     exit_code = m3_verdict.main(
-        ["--iteration-id", iteration_id],
+        [
+            "--iteration-id",
+            iteration_id,
+            "--evaluation-config",
+            str(config_path),
+        ],
         env={
             "DATABASE_URL": fixture["database_url"],
             "NULL_SIDECAR_PATH": str(tmp_path / "sidecar.json"),

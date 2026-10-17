@@ -38,10 +38,12 @@ Beside it, every widened candidate is replayed over every admitted
 financial world through :func:`orchestrator._financial_eval.
 score_on_financial_world` (feature 245's stored-tree transition, feature
 249's committed pick -- no node is generated), each committed pick scored
-by its out-of-sample IR and persisted with ``policy_version
-f"{candidate.module_id}#financial"``, and the cycle's own winner -- and,
-beside it, the incumbent itself -- is compared against the ``"m2-fixed"``
-baseline (:data:`orchestrator.closeout.M2_FIXED_POLICY_VERSION`) with
+by its out-of-sample IR and persisted with a ``policy_version`` naming both
+the candidate and the sha256 of the configuration it was scored under
+(:func:`financial_policy_version` --
+docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's *"Rows carry their
+config"*), and the cycle's own winner -- and, beside it, the incumbent itself
+-- is compared against the **re-scored** M2 baseline with
 :func:`dreaming.paired_pool_difference` under docs/preregistration/2026-10-17-
 m3-dreaming.md's flat abstention rule (``non_committing="flat"``: a world
 where an arm committed nothing reads as ``0.0`` in the statistic, never
@@ -57,6 +59,21 @@ refusal's own message>"}`` instead -- a thin pool and an unscoreable
 comparison are different facts, and conflating them under one string would
 hide which one actually happened. The bootstrap arm runs exactly as before
 either way.
+
+**The baseline arm is re-scored here, not read from the store.**
+``additions_spec_m2_baseline_financial_worlds.xml``'s own reading paired the
+candidate's fresh rows against the stored ``"m2-fixed"`` rows, and that is the
+defect.ADDENDUM.md fixes: each stored row was written by a campaign's close-out
+under *that* campaign's own evaluation setup -- by the nodes' own recorded
+provenance, the 84 campaigns span three different snapshot/cost-model
+pairings -- and all of them predate the sandbox's row-order fix
+(``c431753``), so pairing a fresh score against one measures the two configs'
+difference rather than dreaming. :data:`M2_INCUMBENT_PATH`'s fixed rule is
+therefore swept over the same admitted campaigns, through the same evaluator
+and the same :class:`~orchestrator._financial_eval.FinancialEvalContext`, and
+filed under :data:`M2_INCUMBENT_POLICY_VERSION` with the same config digest --
+while the stored ``"m2-fixed"`` rows are left exactly as recorded history,
+never read here and never rewritten.
 
 **Selection is a two-phase sweep, not one.** ``dreaming.commit_selection``
 reads every one of a candidate's ``replay_score`` rows at the episode's
@@ -125,6 +142,7 @@ own, where the library's message carries none); 2 for a missing
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -143,9 +161,13 @@ from canary import CanaryDeterminismBrokenError, require_dreaming_allowed
 from ops import MetaOverfitGaps
 
 from ._bootstrap_eval import score_on_world
-from ._context import EvaluationConfigError, EvaluationContext, load_evaluation_context
+from ._context import (
+    EVALUATION_CONFIG_ENV,
+    EvaluationConfigError,
+    EvaluationContext,
+    load_evaluation_context,
+)
 from ._financial_eval import FinancialEvalContext, score_on_financial_world
-from .closeout import M2_FIXED_POLICY_VERSION
 
 __all__ = [
     "DREAMING_MIN_FINANCIAL_WORLDS",
@@ -156,6 +178,8 @@ __all__ = [
     "FINANCIAL_SUFFIX",
     "POLICY_ISOLATION_CODE",
     "POLICY_SCREENING_CODE",
+    "evaluation_config_sha256",
+    "financial_policy_version",
     "main",
     "run_cycle",
 ]
@@ -200,10 +224,85 @@ DREAMING_MIN_FINANCIAL_WORLDS = 2
 #: candidate's bootstrap-pool row and its financial-world row never share
 #: one version -- their quantities differ (a bootstrap world's ``r2_holdout``
 #: against a financial world's out-of-sample IR), and the paired statistic
-#: compares ``f"{module_id}{FINANCIAL_SUFFIX}"`` against
-#: :data:`orchestrator.closeout.M2_FIXED_POLICY_VERSION` on this suffix's own
-#: rows alone.
+#: compares two financial arms on this suffix's own rows alone.
 FINANCIAL_SUFFIX = "#financial"
+
+#: The separator between :data:`FINANCIAL_SUFFIX` and the digest of the
+#: evaluation configuration a financial row was scored under --
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's *"Rows carry
+#: their config"*: *"Financial-world rows written for M3 are filed under a
+#: policy version that names the config's sha256"*.  A row's version is
+#: therefore ``f"{module_id}{FINANCIAL_SUFFIX}{FINANCIAL_CONFIG_SEPARATOR}
+#: {config_sha256}"`` -- see :func:`financial_policy_version`.
+FINANCIAL_CONFIG_SEPARATOR = "@"
+
+#: The M2 fixed baseline's own source file -- the policy
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md names as *"the
+#: baseline"*: *"The baseline is ``deploy/dreaming/incumbent.m2.py``, replayed
+#: under the pinned config and the current runtime."*  The cycle scores this
+#: file as its own financial arm beside every widened candidate, whether or
+#: not it is also the ``--incumbent`` this cycle was pointed at, because the
+#: M3 gate's baseline arm is that fixed rule and not whatever policy happens
+#: to be in force.
+M2_INCUMBENT_PATH = Path("deploy/dreaming/incumbent.m2.py")
+
+#: The identity the re-scored baseline's financial rows are filed under --
+#: deliberately *not* :data:`orchestrator.closeout.M2_FIXED_POLICY_VERSION`
+#: (``"m2-fixed"``).  That version names the rows close-out wrote, each under
+#: its own campaign's evaluation setup; this one names the rows this cycle
+#: scores *now*, under the one config the process holds, and the two must never
+#: be confusable in the store -- the whole of the addendum's fix is that the
+#: gate pairs the second kind and never the first.
+M2_INCUMBENT_POLICY_VERSION = "m2-incumbent"
+
+
+def financial_policy_version(module_id: str, config_sha256: str) -> str:
+    """The ``policy_version`` a financial-world row for M3 is filed under.
+
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"Financial-world
+    rows written for M3 are filed under a policy version that names the
+    config's sha256.  The verdict pairs only rows filed under the pinned
+    config's sha256, and refuses a pair scored under any other."*
+
+    The digest rides on the version rather than in a column of its own because
+    ``replay_score`` is a migration-owned table this member may not widen, and
+    because a version *is* the identity of an arm: two rows scored under two
+    configs are two different measurements, and filing them under one name is
+    exactly the confusion the addendum exists to end.  It is spelled here, once,
+    so the writer (:func:`_financial_arm`) and the reader
+    (:func:`orchestrator.m3_verdict._criterion1`) cannot drift apart on it.
+    """
+    return f"{module_id}{FINANCIAL_SUFFIX}{FINANCIAL_CONFIG_SEPARATOR}{config_sha256}"
+
+
+def evaluation_config_sha256(env: Mapping[str, str] | None = None) -> str | None:
+    """The digest of the evaluation config ``NULLIUS_EVALUATION_CONFIG`` names.
+
+    Answers ``None`` when the variable is unset or blank -- composition's
+    unconfigured state, exactly as :func:`orchestrator._context.
+    load_evaluation_context` reads it -- and the sha256 hex digest of the
+    file's bytes otherwise.  Raises :class:`orchestrator._context.
+    EvaluationConfigError` when the variable names a file that cannot be read,
+    in that module's own vocabulary rather than a second one minted here: the
+    variable and the refusal both belong to
+    :func:`~orchestrator._context.load_evaluation_context`, and the digest is
+    simply that same file, hashed.
+    """
+    source = os.environ if env is None else env
+    named = source.get(EVALUATION_CONFIG_ENV)
+    if named is None or not named.strip():
+        return None
+    try:
+        content = Path(named).read_bytes()
+    except OSError as exc:
+        raise EvaluationConfigError(
+            f"evaluation_config: {EVALUATION_CONFIG_ENV} names {named!r}, "
+            f"which cannot be read: {exc}; a financial-world row for M3 is "
+            "filed under the sha256 of the configuration it was scored "
+            "under, so a configuration that cannot be read names no version "
+            "to file it under"
+        ) from exc
+    return hashlib.sha256(content).hexdigest()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -352,8 +451,10 @@ def _admitted_financial_campaigns(database_url: str) -> tuple[str, ...]:
 _NON_COMMITTING_FLAT = "flat"
 
 
-def _financial_comparison(candidate: Any, *, database_url: str) -> object:
-    """One candidate's financial arm against the ``"m2-fixed"`` baseline.
+def _financial_comparison(
+    candidate: Any, *, database_url: str, config_sha256: str, m2_version: str
+) -> object:
+    """One candidate's financial arm against the **re-scored** M2 baseline.
 
     Answers a dict of the paired statistic's figures -- ``paired_worlds``,
     ``candidate_mean``, ``baseline_mean``, ``mean_difference``, ``p_value``,
@@ -366,11 +467,21 @@ def _financial_comparison(candidate: Any, *, database_url: str) -> object:
     paired worlds once the admitted campaigns are read back, say), not about
     whether the financial arm is funded at all, so it is named rather than
     folded into the caller's ``"thin"``.
+
+    Both arms are named by **the configuration they were scored under**
+    (:func:`financial_policy_version`), which is the whole of
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's *"Rows carry
+    their config"*.  Neither arm is the stored ``"m2-fixed"`` version: the
+    baseline named here is the re-scored :data:`M2_INCUMBENT_POLICY_VERSION`
+    arm (:func:`_baseline_candidate`), so a pair drawn from two different
+    evaluation setups cannot be formed even by accident -- two rows scored
+    under two configs are filed under two versions, and the pairing simply
+    finds no partner rather than silently measuring a config difference.
     """
     try:
         comparison = dreaming.paired_pool_difference(
-            f"{candidate.module_id}{FINANCIAL_SUFFIX}",
-            M2_FIXED_POLICY_VERSION,
+            financial_policy_version(candidate.module_id, config_sha256),
+            m2_version,
             database_url=database_url,
             non_committing=_NON_COMMITTING_FLAT,
         )
@@ -396,28 +507,49 @@ def _financial_arm(
     beta: float,
     evaluation_context: EvaluationContext | None,
     replay_component: Any,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, object]:
-    """Score every widened candidate on every admitted financial world.
+    """Score every widened candidate, and the M2 baseline, on every financial world.
 
     Answers ``(n_financial, financial_arm)``: the admitted campaign count,
     always honestly reported, and either the string ``"thin"`` (fewer than
     :data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or no out-of-sample grid
     configured for this process) or :func:`_financial_comparison`'s dict for
-    the cycle's own winner against :data:`orchestrator.closeout.
-    M2_FIXED_POLICY_VERSION` on the admitted worlds (every one of them treated
-    as held out -- there is no train/holdout split for financial worlds,
-    every candidate already contended for the win on the bootstrap pool's own
-    split). When the winner's own comparison is scoreable, its dict carries an
-    ``"incumbent"`` key beside it: the identical comparison taken for the
-    incumbent (:func:`_financial_comparison` again, on the policy already in
-    force), so a cycle's summary states not only *whether the winner clears
-    the baseline* but *whether the incumbent already did* -- the two facts
-    §12's deployment decision reads together.
+    the cycle's own winner against the **re-scored** baseline on the admitted
+    worlds (every one of them treated as held out -- there is no train/holdout
+    split for financial worlds, every candidate already contended for the win
+    on the bootstrap pool's own split). When the winner's own comparison is
+    scoreable, its dict carries an ``"incumbent"`` key beside it: the identical
+    comparison taken for the incumbent (:func:`_financial_comparison` again, on
+    the policy already in force), so a cycle's summary states not only *whether
+    the winner clears the baseline* but *whether the incumbent already did* --
+    the two facts §12's deployment decision reads together.
+
+    **The baseline is re-scored, not read.**
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"The baseline is*
+    ``deploy/dreaming/incumbent.m2.py``, *replayed under the pinned config and
+    the current runtime. ... The stored* ``m2-fixed`` *rows stay as recorded
+    history, and are used only for that pick-equivalence check."*  So
+    :data:`M2_INCUMBENT_PATH`'s fixed M2 rule is swept over the same admitted
+    campaigns, through the same :class:`orchestrator._financial_eval.
+    FinancialEvalContext` and the same evaluator as every widened candidate --
+    and filed under :func:`financial_policy_version` of its own
+    ``m2-incumbent`` identity, never under the stored ``"m2-fixed"`` version,
+    which this module no longer reads at all.  Pairing against the stored rows
+    is the defect this exists to fix: each was written by a campaign's close-out
+    under *that* campaign's own evaluation setup, so a paired statistic against
+    them measures configuration differences rather than dreaming.
 
     Every widened candidate -- not only the winner -- is swept, through one
     shared :class:`orchestrator._financial_eval.FinancialEvalContext`, so two
     candidates committing the same node of one campaign's tree share one
-    out-of-sample read (the feature's own per-run cache).
+    out-of-sample read (the feature's own per-run cache).  The M2 rule is swept
+    through that same context for the same reason.
+
+    ``env`` is where :data:`orchestrator._context.EVALUATION_CONFIG_ENV` is read
+    for the config's sha256 every row's version carries; ``None`` reads the
+    process environment, the same default :func:`orchestrator._context.
+    load_evaluation_context` takes.
     """
     campaigns = _admitted_financial_campaigns(database_url)
     n_financial = len(campaigns)
@@ -428,9 +560,30 @@ def _financial_arm(
     ):
         return n_financial, "thin"
 
+    config_sha256 = evaluation_config_sha256(env)
+    if config_sha256 is None:
+        # An out-of-sample grid with no named configuration is a half-redirect:
+        # the rows this sweep is about to write would carry no config's
+        # identity, which is exactly what the addendum forbids.  Reported the
+        # way any other refusal of this *arm* is -- as an ``unscoreable`` fact
+        # about it, never folded into the thin-pool gate -- and the bootstrap
+        # arm is unaffected either way.
+        return n_financial, {
+            "unscoreable": (
+                f"{DREAM_CODE}: an evaluation context with an out-of-sample "
+                f"grid was loaded, but {EVALUATION_CONFIG_ENV} names no "
+                "configuration to file this cycle's financial-world rows "
+                "under; docs/preregistration/2026-10-17-m3-dreaming."
+                "ADDENDUM.md requires every financial-world row written for M3 "
+                "to be filed under a policy version naming the configuration's "
+                "sha256"
+            )
+        }
+
     financial_context = FinancialEvalContext(evaluation=evaluation_context)
-    for candidate in widened:
-        version = f"{candidate.module_id}{FINANCIAL_SUFFIX}"
+    sweep = tuple(widened) + (_baseline_candidate(),)
+    for candidate in sweep:
+        version = financial_policy_version(candidate.module_id, config_sha256)
         for campaign_id in campaigns:
             pick = score_on_financial_world(
                 candidate.source, campaign_id, context=financial_context
@@ -444,12 +597,46 @@ def _financial_arm(
                 database_url=database_url,
             )
 
-    financial_arm = _financial_comparison(winner, database_url=database_url)
+    m2_version = financial_policy_version(M2_INCUMBENT_POLICY_VERSION, config_sha256)
+    financial_arm = _financial_comparison(
+        winner,
+        database_url=database_url,
+        config_sha256=config_sha256,
+        m2_version=m2_version,
+    )
     if "unscoreable" not in financial_arm:
         financial_arm["incumbent"] = _financial_comparison(
-            incumbent, database_url=database_url
+            incumbent,
+            database_url=database_url,
+            config_sha256=config_sha256,
+            m2_version=m2_version,
         )
     return n_financial, financial_arm
+
+
+def _baseline_candidate() -> Any:
+    """The M2 fixed rule as one more candidate of this cycle's own sweep.
+
+    Read from :data:`M2_INCUMBENT_PATH` and given the fixed
+    :data:`M2_INCUMBENT_POLICY_VERSION` identity, so the financial rows it
+    writes are the arm :func:`_financial_comparison` pairs every candidate
+    against.  Built through :func:`dreaming.include_incumbent` -- the same
+    helper the cycle folds its own incumbent in with -- rather than by a second
+    construction of a candidate, so the record carries exactly the fields every
+    other candidate carries (``module_id``, ``code_hash``, ``source``).
+    """
+    try:
+        source = M2_INCUMBENT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EvaluationConfigError(
+            f"{DREAM_CODE}: the fixed M2 incumbent {str(M2_INCUMBENT_PATH)!r} "
+            f"could not be read: {exc}; docs/preregistration/2026-10-17-m3-"
+            "dreaming.ADDENDUM.md re-scores that rule as the baseline arm, so "
+            "a cycle cannot report a financial arm without it"
+        ) from exc
+    return dreaming.include_incumbent(
+        (), source, version=M2_INCUMBENT_POLICY_VERSION
+    )[0]
 
 
 def run_cycle(
@@ -464,6 +651,7 @@ def run_cycle(
     census: Any,
     pool: Any,
     evaluation_context: EvaluationContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one dreaming cycle and answer the summary payload -- the join.
 
@@ -484,6 +672,15 @@ def run_cycle(
     gets from :func:`main`) reports the financial arm ``"thin"`` regardless
     of how many campaigns are admitted, because there is no out-of-sample
     grid to score a committed pick over.
+
+    ``env`` is the environment :func:`_financial_arm` reads
+    :data:`orchestrator._context.EVALUATION_CONFIG_ENV` from, to stamp every
+    financial-world row it writes with the digest of the configuration it was
+    scored under (docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's
+    *"Rows carry their config"*).  It defaults to the process environment, the
+    same default :func:`orchestrator._context.load_evaluation_context` takes,
+    and a caller that handed ``evaluation_context`` an explicitly loaded
+    context should hand that same mapping here so the two agree.
     """
     cap_record = dreaming.record_cycle_cap(
         iteration_id, census.total, database_url=database_url
@@ -642,6 +839,7 @@ def run_cycle(
         beta=beta,
         evaluation_context=evaluation_context,
         replay_component=replay_component,
+        env=env,
     )
 
     return {
@@ -786,6 +984,7 @@ def main(
             census=census,
             pool=pool,
             evaluation_context=evaluation_context,
+            env=source,
         )
     except dreaming.DreamingError as exc:
         print(str(exc), file=sys.stderr)

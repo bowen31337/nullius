@@ -22,11 +22,14 @@ One test per claim the feature sentence and the spec's test list make:
 
 * **a cycle scores both arms** -- the bootstrap figures are unchanged and a
   ``financial_arm`` paired-statistic figure is reported beside them.
-* **rows carry the ``#financial`` suffix** -- every widened candidate's
-  financial-world rows are filed under ``f"{module_id}#financial"``, never
-  under the bootstrap row's bare ``module_id``.
+* **rows carry the ``#financial`` suffix and their config** -- every widened
+  candidate's *and* the re-scored baseline's financial-world rows are filed
+  under ``f"{module_id}#financial@{sha256}"``
+  (docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's *"Rows carry
+  their config"*), never under the bootstrap row's bare ``module_id``.
 * **a VOID campaign is excluded** -- admitted as neither a financial world
-  nor a ``#financial`` row's world, while the two ``ok`` campaigns still are.
+  nor a ``#financial@<sha256>`` row's world, while the two ``ok`` campaigns
+  still are.
 * **the per-node cache is hit for a second policy** -- two distinct
   candidate sources that commit the same node of one campaign's tree share
   one ``evaluate_on_dates`` call.
@@ -38,10 +41,14 @@ One test per claim the feature sentence and the spec's test list make:
   ``"thin"`` regardless of how many campaigns are admitted, and the
   bootstrap figures read exactly as ``test_dream_cli.py``'s own cycle test
   reads them.
-* **a non-committing m2-fixed row still yields a numeric arm** -- the flat
-  abstention rule reads a stored ``-inf`` as ``0.0`` in the statistic, so a
-  world where the baseline committed nothing is scored, not refused as
-  ``"thin"``.
+* **the baseline arm is re-scored, never read** -- the M2 rule is swept over
+  the same financial worlds through the same evaluator, and the stored
+  ``m2-fixed`` rows are never paired against (the defect this suite pins):
+  an abstaining M2 rule still yields a numeric arm under the flat rule,
+  because the ``-inf`` it writes is its *own* fresh row, not a stored one.
+* **a config-less process reports the arm unscoreable** -- an
+  out-of-sample grid with nothing named in ``NULLIUS_EVALUATION_CONFIG``
+  refuses by name rather than filing rows with no config's identity.
 * **a forced non-thin refusal surfaces as unscoreable** -- any
   :class:`dreaming.PairedComparisonError` other than the thin-pool gate is
   reported ``{"unscoreable": "<message>"}``, never conflated with ``"thin"``.
@@ -54,6 +61,7 @@ pytest-xdist.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib.util
 import sqlite3
 import uuid
@@ -70,9 +78,15 @@ import pytest
 import replay as replay_member
 from artifacts import ArtifactStore
 from orchestrator import _financial_eval
+from orchestrator._context import EVALUATION_CONFIG_ENV
 from orchestrator._financial_eval import FinancialEvalContext, score_on_financial_world
 from orchestrator.closeout import M2_FIXED_POLICY_VERSION
-from orchestrator.dream import DREAMING_MIN_FINANCIAL_WORLDS, run_cycle
+from orchestrator.dream import (
+    DREAMING_MIN_FINANCIAL_WORLDS,
+    M2_INCUMBENT_POLICY_VERSION,
+    financial_policy_version,
+    run_cycle,
+)
 from policy_runtime import CommittedPick
 from replay import TerminalPick
 
@@ -102,6 +116,31 @@ POOL_WORLD_COUNT = 40
 #: and not others).
 POOL_SEED = 20261006
 ROUND_CAP = 5
+
+#: The fixture evaluation configuration every financial row in this suite is
+#: filed under -- named in the environment rather than by a path the cycle
+#: loads, because ``run_cycle`` only ever *hashes* the file (the loaded context
+#: is this suite's own duck-typed stub): the digest that rides on each row's
+#: ``policy_version`` (docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's
+#: *"Rows carry their config"*) is the sha256 of exactly these bytes.
+EVALUATION_CONFIG_BYTES = b'{"pinned": "fixture-evaluation-config"}\n'
+
+
+def _pinned_env(tmp_path: Path) -> dict[str, str]:
+    """An env whose ``NULLIUS_EVALUATION_CONFIG`` names a fixture config file."""
+    config_path = tmp_path / "evaluation-config-archive-perp-bn.json"
+    config_path.write_bytes(EVALUATION_CONFIG_BYTES)
+    return {EVALUATION_CONFIG_ENV: str(config_path)}
+
+
+def _config_sha256() -> str:
+    """The digest that rides on every row this suite's cycle files."""
+    return hashlib.sha256(EVALUATION_CONFIG_BYTES).hexdigest()
+
+
+def _financial_version(module_id: str) -> str:
+    """The version a candidate's (or the baseline's) financial rows carry."""
+    return financial_policy_version(module_id, _config_sha256())
 
 #: A commit-reachable, screening-admissible incumbent -- the same shape
 #: ``test_dream_cli.INCUMBENT_SOURCE`` takes (one jitterable numeric
@@ -224,7 +263,7 @@ def _plant_node(
 
 
 def _build_completed_campaign(
-    database_url: str, *, ic_mean: float = 0.4
+    database_url: str, *, ic_mean: float = 0.4, ic_tstat: float = 1.0
 ) -> tuple[str, str]:
     """A minimal completed campaign: one root node, finished and admitted.
 
@@ -233,13 +272,18 @@ def _build_completed_campaign(
     and ``node`` tables, and this feature's own admission
     (:func:`discovery.admit_completed_campaigns`) reads only the manifest
     those two tables produce.
+
+    ``ic_tstat`` is what :func:`orchestrator._live_tree.live_question` folds
+    into the one field a policy reads (``ic_insample``); the default sits
+    *below* the M2 rule's own discovery bar, so a campaign built with it is
+    one the re-scored baseline abstains on.
     """
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
         discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url
     )
     node_id = str(uuid.uuid4())
-    _plant_node(database_url, campaign_id, node_id=node_id, ic_mean=ic_mean)
+    _plant_node(database_url, campaign_id, node_id=node_id, ic_mean=ic_mean, ic_tstat=ic_tstat)
     discovery.finish_campaign(campaign_id, database_url=database_url)
     return campaign_id, node_id
 
@@ -374,6 +418,7 @@ def _run_cycle(
     *,
     iteration_id: str,
     evaluation_context: Any,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     pool = bootstrap.BootstrapPool(database_url)
     census = bootstrap.world_census(pool)
@@ -388,6 +433,7 @@ def _run_cycle(
         census=census,
         pool=pool,
         evaluation_context=evaluation_context,
+        env=env,
     )
 
 
@@ -395,8 +441,47 @@ def _financial_rows(database_url: str) -> list[tuple[str, str, int]]:
     with closing(sqlite3.connect(_sqlite_path(database_url))) as connection:
         return connection.execute(
             "SELECT policy_version, world_id, is_holdout FROM replay_score "
-            "WHERE policy_version LIKE '%#financial' ORDER BY policy_version, world_id"
+            "WHERE policy_version LIKE '%#financial%' ORDER BY policy_version, world_id"
         ).fetchall()
+
+
+def test_a_config_less_process_reports_the_financial_arm_unscoreable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADDENDUM 1's *"Rows carry their config"* has a second edge: an
+    out-of-sample grid with **no** named configuration at all.  The rows a
+    sweep would write could carry no config's identity, so the arm refuses
+    with the env var's own name rather than filing un-named rows -- reported
+    the way every other refusal of this arm is, as ``unscoreable``, and never
+    folded into the thin-pool gate.  Nothing is swept, so no row is written.
+    """
+    database_url = _migrated_database(tmp_path)
+    campaign_a, node_a = _build_completed_campaign(database_url, ic_mean=0.3)
+    campaign_b, node_b = _build_completed_campaign(database_url, ic_mean=0.6)
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_a, node_a)
+    _write_code_artifact(artifact_dir, campaign_b, node_b)
+    _counting_stub(monkeypatch)
+
+    evaluation_context = _fake_evaluation_context(
+        database_url=database_url,
+        artifact_dir=artifact_dir,
+        oos_dates=(dt.date(2026, 6, 1),),
+    )
+
+    summary = _run_cycle(
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env={},
+    )
+
+    assert summary["n_financial"] == 2
+    financial_arm = summary["financial_arm"]
+    assert isinstance(financial_arm, dict)
+    assert set(financial_arm) == {"unscoreable"}
+    assert EVALUATION_CONFIG_ENV in financial_arm["unscoreable"]
+    assert _financial_rows(database_url) == []
 
 
 def test_cycle_scores_both_arms_with_financial_suffixed_rows(
@@ -419,7 +504,10 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
     )
 
     summary = _run_cycle(
-        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env=_pinned_env(tmp_path),
     )
 
     # The bootstrap arm reads exactly as test_dream_cli.py's own cycle test
@@ -437,19 +525,24 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
     assert isinstance(financial_arm["mean_difference"], float)
     assert isinstance(financial_arm["p_value"], float)
 
-    # Every widened candidate's financial rows carry the #financial suffix,
-    # one row per (candidate, admitted campaign) pair -- never the bootstrap
-    # row's bare module_id.
+    # Every financial row -- the widened candidates' and the re-scored M2
+    # baseline's alike -- is filed under f"{module_id}#financial@{sha256}",
+    # one row per (version, admitted campaign) pair, never under the
+    # bootstrap row's bare module_id (ADDENDUM 1: *"Rows carry their
+    # config"*).
+    sha256 = _config_sha256()
     rows = _financial_rows(database_url)
     versions = {version for version, _world, _holdout in rows}
     worlds = {campaign_a, campaign_b}
-    assert all(version.endswith("#financial") for version in versions)
+    assert all(version.endswith(f"#financial@{sha256}") for version in versions)
     assert {world for _v, world, _h in rows} == worlds
     assert all(holdout == 1 for _v, _w, holdout in rows)
+    # The revision sweep's own candidates, plus the re-scored baseline.
     revision_count = summary["revision_cap"] + 1
-    assert len(versions) == revision_count
-    assert len(rows) == revision_count * 2
-    assert f"{summary['module_id']}#financial" in versions
+    assert len(versions) == revision_count + 1
+    assert len(rows) == (revision_count + 1) * 2
+    assert _financial_version(summary["module_id"]) in versions
+    assert _financial_version(M2_INCUMBENT_POLICY_VERSION) in versions
 
     # The bootstrap row for the winner is filed under its bare module_id,
     # never the financial suffix -- a financial row and a bootstrap row
@@ -483,7 +576,10 @@ def test_void_campaign_is_excluded_from_admission_and_sweep(
     )
 
     summary = _run_cycle(
-        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env=_pinned_env(tmp_path),
     )
 
     # The VOID campaign never clears admission, so it is neither counted...
@@ -516,7 +612,10 @@ def test_thin_financial_pool_reports_thin_and_bootstrap_arm_still_runs(
     )
 
     summary = _run_cycle(
-        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env=_pinned_env(tmp_path),
     )
 
     assert summary["n_financial"] == 1
@@ -579,15 +678,21 @@ def test_no_evaluation_context_reports_thin_and_bootstrap_behaviour_is_unchanged
 # -- The flat abstention rule, and a non-thin refusal -------------------------
 
 
-def test_m2_fixed_non_committing_row_yields_numeric_arm_not_thin(
+def test_an_abstaining_baseline_still_yields_a_numeric_arm_not_thin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """docs/preregistration/2026-10-17-m3-dreaming.md's flat abstention rule:
-    a stored ``-inf`` (a world where the baseline committed nothing) reads
-    as ``0.0`` in the statistic rather than being refused -- so a pool whose
-    m2-fixed rows include one still yields a numeric ``financial_arm``, not
-    ``"thin"``, and is fully funded by the one non-missing world plus this
-    one.
+    """docs/preregistration/2026-10-17-m3-dreaming.md's flat abstention rule,
+    over the *re-scored* baseline: a world where the M2 rule committed
+    nothing reads as ``0.0`` in the statistic rather than being refused -- so
+    a pool on which it abstains still yields a numeric ``financial_arm``, not
+    ``"thin"``, and is fully funded by both worlds.
+
+    ADDENDUM 1 moved where that ``-inf`` comes from.  It used to be a *stored*
+    ``m2-fixed`` row read back; now it is the fresh row the cycle's own
+    re-scored baseline writes when the M2 rule abstains, and the stored rows
+    are not read at all.  Both campaigns here sit below the M2 bar, so the
+    baseline abstains on **both** worlds -- a fact no stored row in this
+    database states, and the pair still forms.
     """
     database_url = _migrated_database(tmp_path)
     campaign_a, node_a = _build_completed_campaign(database_url, ic_mean=0.3)
@@ -595,16 +700,11 @@ def test_m2_fixed_non_committing_row_yields_numeric_arm_not_thin(
     artifact_dir = tmp_path / "artifacts"
     _write_code_artifact(artifact_dir, campaign_a, node_a)
     _write_code_artifact(artifact_dir, campaign_b, node_b)
+    # Stored history: two *committing* m2-fixed rows, which the addendum keeps
+    # as recorded history and pairs against nothing.  A cycle that still read
+    # them would report a 100% baseline commit rate below.
     _write_m2_fixed_row(database_url, campaign_id=campaign_a, node_id=node_a, score=0.05)
-    # The m2-fixed baseline committed nothing on this world.
-    replay_member.persist_replay_score(
-        TerminalPick(pick=None, score=float("-inf")),
-        M2_FIXED_POLICY_VERSION,
-        campaign_b,
-        0.5,
-        is_holdout=True,
-        database_url=database_url,
-    )
+    _write_m2_fixed_row(database_url, campaign_id=campaign_b, node_id=node_b, score=-0.02)
     _counting_stub(monkeypatch)
 
     evaluation_context = _fake_evaluation_context(
@@ -614,7 +714,10 @@ def test_m2_fixed_non_committing_row_yields_numeric_arm_not_thin(
     )
 
     summary = _run_cycle(
-        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env=_pinned_env(tmp_path),
     )
 
     financial_arm = summary["financial_arm"]
@@ -623,9 +726,22 @@ def test_m2_fixed_non_committing_row_yields_numeric_arm_not_thin(
     assert financial_arm["paired_worlds"] == 2
     assert isinstance(financial_arm["mean_difference"], float)
     assert isinstance(financial_arm["p_value"], float)
-    # The baseline committed on exactly one of the two paired worlds.
-    assert financial_arm["baseline_commit_rate"] == pytest.approx(0.5)
+    # The baseline arm is the re-scored M2 rule, never the stored rows seeded
+    # above: both planted trees read ``ic_tstat = 1.0``, under the M2
+    # discovery bar, so it abstains on both -- and the flat rule reads each of
+    # its own ``-inf`` rows as 0.0.
+    assert financial_arm["baseline_commit_rate"] == pytest.approx(0.0)
+    assert financial_arm["baseline_mean"] == pytest.approx(0.0)
     assert isinstance(financial_arm["candidate_commit_rate"], float)
+    # Each abstention is written as a fresh row of the baseline's own
+    # config-named version -- and it is still ``-inf`` on disk, because the
+    # substitution is the *statistic's* and never the stored row's.
+    with closing(sqlite3.connect(_sqlite_path(database_url))) as connection:
+        stored = connection.execute(
+            "SELECT DISTINCT score FROM replay_score WHERE policy_version = ?",
+            (_financial_version(M2_INCUMBENT_POLICY_VERSION),),
+        ).fetchall()
+    assert [row[0] for row in stored] == [float("-inf")]
     # The winner's own financial comparison against the incumbent's.
     incumbent_arm = financial_arm["incumbent"]
     assert isinstance(incumbent_arm, dict)
@@ -667,7 +783,10 @@ def test_forced_non_thin_paired_comparison_error_surfaces_as_unscoreable(
     )
 
     summary = _run_cycle(
-        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+        database_url,
+        iteration_id="cycle-5",
+        evaluation_context=evaluation_context,
+        env=_pinned_env(tmp_path),
     )
 
     assert summary["financial_arm"] == {"unscoreable": refusal_message}

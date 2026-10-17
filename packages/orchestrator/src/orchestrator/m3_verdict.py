@@ -16,32 +16,56 @@ for one pre-registered attempt (the document's own sha256).
 
 **Refusals are checked before any criterion is computed**, in the
 pre-registration's own order: the document's sha256 against its sidecar
-``.sha256`` file; the bootstrap pool's size (>= 50 worlds, >= 10 per domain
-of ``hpo``/``featsel``/``symreg``); the admitted financial-world count
-(>= 20); and a prior verdict already filed under this same document.  Each
-opens with its own greppable code word and exits 1.
+``.sha256`` file; the pinned evaluation config's sha256 against
+:data:`M3_EVALUATION_CONFIG_SHA256`; the bootstrap pool's size (>= 50 worlds,
+>= 10 per domain of ``hpo``/``featsel``/``symreg``); the admitted
+financial-world count (>= 20); and a prior verdict already filed under this
+same document.  Each opens with its own greppable code word and exits 1.
 
-**Criterion 1 (paired ΔIR)** reads the winner's and ``m2-fixed``'s financial
-world rows straight from the pool (:func:`dreaming.paired_pool_difference`
-under the document's own flat abstention rule, ``non_committing="flat"``)
-and judges the one-sided version of the document's test: ``mean_difference
-> 0.3``, a one-sided ``p < 0.05`` (computed from the comparison's own
-``t_statistic`` -- :func:`dreaming.paired.paired_ir_difference` only carries
-the two-sided figure), and the comparison clears
-:func:`dreaming.bar.selection_bar` at the cycle's own recorded ``M``
-(:func:`dreaming.cycle_caps`, the newest record naming this iteration).
+**Addendum 1, and what it changes here.**
+``docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md`` fixes the
+evaluation config criterion 1 is computed under and where the baseline arm's
+scores come from, and it wins wherever it and this module's original reading
+of the document differ.  Three consequences, all of them the whole of this
+module's own change: (a) the config is pinned by sha256 and the verdict
+refuses a file that hashes differently
+(:func:`_verify_evaluation_config`); (b) the baseline arm is the
+**re-scored** ``deploy/dreaming/incumbent.m2.py`` -- swept by the dreaming
+cycle under the pinned config and filed under
+:data:`orchestrator.dream.M2_INCUMBENT_POLICY_VERSION`, never the stored
+``"m2-fixed"`` rows, which were written by each campaign's own close-out
+under that campaign's own setup and are used only for the incumbent's
+pick-equivalence check (``test_m2_incumbent_equivalence.py``); and (c) every
+financial row a cycle writes for M3 names the config's sha256 in its
+``policy_version`` (:func:`orchestrator.dream.financial_policy_version`), so
+both criteria pair only rows filed under the pinned digest -- a pair drawn
+from two configurations cannot be formed even by accident.
+
+**Criterion 1 (paired ΔIR)** reads the winner's and the re-scored M2
+baseline's financial world rows straight from the pool
+(:func:`dreaming.paired_pool_difference` under the document's own flat
+abstention rule, ``non_committing="flat"``) and judges the one-sided version
+of the document's test: ``mean_difference > 0.3``, a one-sided ``p < 0.05``
+(computed from the comparison's own ``t_statistic`` --
+:func:`dreaming.paired.paired_ir_difference` only carries the two-sided
+figure), and the comparison clears :func:`dreaming.bar.selection_bar` at the
+cycle's own recorded ``M`` (:func:`dreaming.cycle_caps`, the newest record
+naming this iteration).  Both arms are named *by the pinned evaluation
+config's sha256* (:func:`orchestrator.dream.financial_policy_version`), per
+the pre-registration's first addendum -- see the module's own "Addendum 1"
+note below.
 
 **Criterion 2 (FDR_deploy)** reads, for every admitted financial-world
-campaign, each arm's ``replay_score.committed_pick`` (the winner's own
-``f"{module_id}#financial"`` row and ``m2-fixed``'s, both already written
-by the dreaming cycle and by close-out), maps each committed node to its
-planted root (:class:`orchestrator._oracle.SubtreeOracle`, the same walk
-close-out takes), and asks :class:`scoring.NullPickScorer` for each arm's
+campaign, each arm's ``replay_score.committed_pick`` (the winner's and the
+re-scored M2 baseline's own ``#financial@{sha256}`` rows, both written by the
+dreaming cycle), maps each committed node to its planted root
+(:class:`orchestrator._oracle.SubtreeOracle`, the same walk close-out takes),
+and asks :class:`scoring.NullPickScorer` for each arm's
 sensitivity/specificity over the pooled population of every admitted
 campaign's planted roots -- the one process allowed to join a pick to its
 null label (prd §4.2).  :func:`scoring.fdr_deploy` reweights each pair at
-its own fixed ``π₀ = 0.9``; the winner must read strictly lower than
-``m2-fixed``'s.
+its own fixed ``π₀ = 0.9``; the winner must read strictly lower than the
+baseline's.
 
 **Criterion 3 (leave-one-family-out transfer)** regenerates the cycle's own
 widened candidate set deterministically (:func:`dreaming.revise_policy` at
@@ -86,13 +110,17 @@ from ._bootstrap_eval import score_on_world
 from ._oracle import SubtreeOracle
 from .closeout import (
     DATABASE_URL_ENV,
-    M2_FIXED_POLICY_VERSION,
     _NoPostEndpoint,
     _sqlite_path,
 )
 from .closeout import _read_campaign_root_ids as _campaign_root_ids
 from .closeout import _resolve_root as _root_of
-from .dream import FINANCIAL_SUFFIX, _admitted_financial_campaigns, _existing_winner
+from .dream import (
+    M2_INCUMBENT_POLICY_VERSION,
+    _admitted_financial_campaigns,
+    _existing_winner,
+    financial_policy_version,
+)
 
 __all__ = [
     "BOOTSTRAP_DOMAINS",
@@ -105,6 +133,7 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "M3_CODE",
+    "M3_EVALUATION_CONFIG_SHA256",
     "MIN_BOOTSTRAP_PER_DOMAIN",
     "MIN_BOOTSTRAP_WORLDS",
     "MIN_FINANCIAL_WORLDS",
@@ -133,8 +162,28 @@ DEFAULT_PREREG_PATH = Path("docs/preregistration/2026-10-17-m3-dreaming.md")
 
 #: The fixed M2 incumbent's source file -- additions_spec_dreaming_m3.xml
 #: feature 2's own fixed path, the document's *"first incumbent is the M2
-#: fixed baseline"*.
+#: fixed baseline"*, and the file
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md re-scores as
+#: criterion 1's baseline arm.
 DEFAULT_INCUMBENT_PATH = Path("deploy/dreaming/incumbent.m2.py")
+
+#: The evaluation configuration criterion 1 -- and every financial-world score
+#: a dreaming cycle writes for M3 -- is computed under, as
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md pins it.  The
+#: verdict records this digest and *"refuses if the file it is given hashes
+#: differently"*.
+DEFAULT_EVALUATION_CONFIG_PATH = Path(
+    "~/.config/nullius/campaign/evaluation-config-archive-perp-bn.json"
+)
+
+#: The pinned configuration's own sha256 -- the digest
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md records for
+#: ``evaluation-config-archive-perp-bn.json``.  A file handed to the verdict
+#: that hashes to anything else is refused: the pin is the rule, not the path,
+#: so a config edited in place is refused exactly as a different file would be.
+M3_EVALUATION_CONFIG_SHA256 = (
+    "6adc9a93dd4b2b52ac82c4bab91bb8e3bc33af09b010b826dd7de73d12736425"
+)
 
 #: The three generated bootstrap domains criterion 3 is taken over --
 #: the document's own "hpo, featsel and symreg", and the floor's own three
@@ -192,6 +241,7 @@ class VerdictResult:
 
     iteration_id: str
     prereg_sha256: str
+    evaluation_config_sha256: str
     verdict: str
     criterion1_pass: bool
     criterion1_mean_difference: float
@@ -221,6 +271,7 @@ class VerdictResult:
         return {
             "iteration_id": self.iteration_id,
             "prereg_sha256": self.prereg_sha256,
+            "evaluation_config_sha256": self.evaluation_config_sha256,
             "verdict": self.verdict,
             "criterion1_pass": self.criterion1_pass,
             "criterion1_mean_difference": self.criterion1_mean_difference,
@@ -273,6 +324,43 @@ def _verify_prereg_hash(prereg_path: Path) -> str:
             "must not have drifted since it was filed -- docs/preregistration/"
             "2026-10-17-m3-dreaming.md: \"the verdict row carries this "
             "document's sha256\""
+        )
+    return digest
+
+
+def _verify_evaluation_config(config_path: Path) -> str:
+    """The pinned evaluation config's sha256, refused if it differs.
+
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"The verdict
+    records the config's sha256, and refuses if the file it is given hashes
+    differently."*  The pin is :data:`M3_EVALUATION_CONFIG_SHA256` -- the
+    digest the addendum states -- rather than whatever file happens to sit at
+    a path, so a configuration edited in place after the addendum was filed is
+    refused exactly as a different file would be.  A path that cannot be read
+    is refused too, and *before* the comparison: a missing file and a drifted
+    one are different facts, and the message names which happened.
+    """
+    try:
+        content = config_path.expanduser().read_bytes()
+    except OSError as exc:
+        raise M3VerdictError(
+            f"{M3_CODE}: the pinned evaluation configuration "
+            f"{str(config_path)!r} could not be read: {exc}; criterion 1 and "
+            "every financial-world score a dreaming cycle writes for M3 is "
+            "computed under that one configuration "
+            "(docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md)"
+        ) from exc
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != M3_EVALUATION_CONFIG_SHA256:
+        raise M3VerdictError(
+            f"{M3_CODE}: the evaluation configuration at {str(config_path)!r} "
+            f"hashes to {digest!r}, but the pre-registration's first addendum "
+            f"pins {M3_EVALUATION_CONFIG_SHA256!r}; criterion 1 is computed "
+            "under that pinned configuration and under no other, so a file "
+            "that hashes differently names no config this verdict may compare "
+            "over -- docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: "
+            "\"The verdict records the config's sha256, and refuses if the "
+            "file it is given hashes differently\""
         )
     return digest
 
@@ -365,12 +453,37 @@ def _winner_candidate(database_url: str, widened: Sequence[Any]) -> Any:
 
 
 def _criterion1(
-    *, database_url: str, winner_version: str, revision_cap: int
+    *,
+    database_url: str,
+    winner_version: str,
+    revision_cap: int,
+    evaluation_config_path: Path = DEFAULT_EVALUATION_CONFIG_PATH,
 ) -> tuple[Any, float, float, bool]:
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
+    """The paired ΔIR over the financial holdout, under the pinned config.
+
+    docs/preregistration/2026-10-17-m3-dreaming.md's criterion 1, computed as
+    its first addendum fixes it: the pinned configuration is verified by
+    digest first, and *both* arms are then named by versions carrying that
+    digest -- the winner's own fresh ``#financial`` sweep
+    (:func:`orchestrator.dream.financial_policy_version`) against the
+    **re-scored** M2 baseline arm's
+    (:data:`orchestrator.dream.M2_INCUMBENT_POLICY_VERSION`, written by the
+    same cycle under the same config).  The stored ``"m2-fixed"`` rows are not
+    read at all: each was written by a campaign's close-out under that
+    campaign's own evaluation setup, so pairing against one would measure the
+    two configs' difference rather than dreaming -- the defect the addendum
+    fixes.  Because both versions carry the digest, a pair drawn from two
+    configurations cannot be formed even by accident: the versions simply do
+    not match.
+    """
+    config_sha256 = _verify_evaluation_config(evaluation_config_path)
+    financial_version = financial_policy_version(winner_version, config_sha256)
+    baseline_version = financial_policy_version(
+        M2_INCUMBENT_POLICY_VERSION, config_sha256
+    )
     difference = dreaming.paired_pool_difference(
         financial_version,
-        M2_FIXED_POLICY_VERSION,
+        baseline_version,
         database_url=database_url,
         non_committing=_NON_COMMITTING_FLAT,
     )
@@ -405,8 +518,12 @@ def _criterion2(
     winner_version: str,
     campaigns: tuple[str, ...],
     scorer: Any,
+    config_sha256: str,
 ) -> tuple[float, float, bool]:
-    financial_version = f"{winner_version}{FINANCIAL_SUFFIX}"
+    financial_version = financial_policy_version(winner_version, config_sha256)
+    baseline_version = financial_policy_version(
+        M2_INCUMBENT_POLICY_VERSION, config_sha256
+    )
     oracle = SubtreeOracle(_NoPostEndpoint(), database_url=database_url)
     population: list[str] = []
     winner_picks: list[str] = []
@@ -419,7 +536,7 @@ def _criterion2(
             winner_picks.append(
                 _root_of(oracle, winner_node, campaign=campaign_id, roots=roots)
             )
-        baseline_node = _committed_pick(database_url, M2_FIXED_POLICY_VERSION, campaign_id)
+        baseline_node = _committed_pick(database_url, baseline_version, campaign_id)
         if baseline_node is not None:
             baseline_picks.append(
                 _root_of(oracle, baseline_node, campaign=campaign_id, roots=roots)
@@ -518,6 +635,7 @@ _VERDICT_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
     iteration_id                    TEXT NOT NULL UNIQUE,
     prereg_sha256                   TEXT NOT NULL,
+    evaluation_config_sha256        TEXT NOT NULL,
     verdict                         TEXT NOT NULL,
     criterion1_pass                 BOOLEAN NOT NULL,
     criterion1_mean_difference      REAL NOT NULL,
@@ -545,7 +663,7 @@ CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
 def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
     connection.execute(
         f"INSERT INTO {VERDICT_TABLE} ("
-        "iteration_id, prereg_sha256, verdict, "
+        "iteration_id, prereg_sha256, evaluation_config_sha256, verdict, "
         "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
         "criterion1_bar, criterion1_paired_worlds, "
         "criterion2_pass, criterion2_winner_fdr_deploy, criterion2_baseline_fdr_deploy, "
@@ -553,10 +671,11 @@ def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
         "winner_commit_rate, baseline_commit_rate, "
         "n_bootstrap, n_bootstrap_by_domain, n_financial, campaign_ids, "
         "winner_module_id, created_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.iteration_id,
             result.prereg_sha256,
+            result.evaluation_config_sha256,
             result.verdict,
             result.criterion1_pass,
             result.criterion1_mean_difference,
@@ -592,6 +711,7 @@ def run_verdict(
     pool: Any,
     prereg_path: Path = DEFAULT_PREREG_PATH,
     incumbent_path: Path = DEFAULT_INCUMBENT_PATH,
+    evaluation_config_path: Path = DEFAULT_EVALUATION_CONFIG_PATH,
     evaluator: Callable[..., Any] | None = None,
     round_cap: int = 30,
 ) -> VerdictResult:
@@ -618,6 +738,7 @@ def run_verdict(
     prereg_sha256 = _verify_prereg_hash(prereg_path)
     census = _verify_bootstrap_pool(pool)
     campaigns = _verify_financial_pool(database_url)
+    config_sha256 = _verify_evaluation_config(evaluation_config_path)
 
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -644,12 +765,14 @@ def run_verdict(
             database_url=database_url,
             winner_version=winner.module_id,
             revision_cap=revision_cap,
+            evaluation_config_path=evaluation_config_path,
         )
         winner_fdr, baseline_fdr, criterion2_pass = _criterion2(
             database_url=database_url,
             winner_version=winner.module_id,
             campaigns=campaigns,
             scorer=scorer,
+            config_sha256=config_sha256,
         )
         mean_transfer, domain_transfers, criterion3_pass = _criterion3(
             iteration_id,
@@ -670,6 +793,7 @@ def run_verdict(
         result = VerdictResult(
             iteration_id=iteration_id,
             prereg_sha256=prereg_sha256,
+            evaluation_config_sha256=config_sha256,
             verdict=verdict,
             criterion1_pass=criterion1_pass,
             criterion1_mean_difference=difference.mean_difference,
@@ -719,6 +843,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_PREREG_PATH),
         metavar="PATH",
         help=f"the pre-registration to compute (default {DEFAULT_PREREG_PATH})",
+    )
+    parser.add_argument(
+        "--evaluation-config",
+        dest="evaluation_config_path",
+        default=str(DEFAULT_EVALUATION_CONFIG_PATH),
+        metavar="PATH",
+        help=(
+            "the evaluation configuration criterion 1 is computed under "
+            f"(default {DEFAULT_EVALUATION_CONFIG_PATH}); its sha256 must be "
+            "the one docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md "
+            "pins, or the verdict refuses"
+        ),
     )
     return parser
 
@@ -775,6 +911,7 @@ def main(
             scorer=scorer,
             pool=pool,
             prereg_path=Path(arguments.prereg_path),
+            evaluation_config_path=Path(arguments.evaluation_config_path),
         )
     except Exception as exc:  # noqa: BLE001 - every collaborator's own
         # refusal (dreaming, scoring, closeout, bootstrap) already opens its
