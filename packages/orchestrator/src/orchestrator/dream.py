@@ -39,16 +39,24 @@ financial world through :func:`orchestrator._financial_eval.
 score_on_financial_world` (feature 245's stored-tree transition, feature
 249's committed pick -- no node is generated), each committed pick scored
 by its out-of-sample IR and persisted with ``policy_version
-f"{candidate.module_id}#financial"``, and the cycle's own winner is
-compared against the ``"m2-fixed"`` baseline (:data:`orchestrator.closeout.
-M2_FIXED_POLICY_VERSION`) with :func:`dreaming.paired_pool_difference` --
-reported as its own ``financial_arm`` figure, separate from the bootstrap
-``train_mean``/``holdout_mean``/``gap``. With fewer than
-:data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or with no out-of-sample
-grid configured for this process (``NULLIUS_EVALUATION_CONFIG`` unset, or
-set with no ``oos_dates``), the financial arm is reported ``"thin"``
-rather than computed -- the bootstrap arm runs exactly as before either
-way.
+f"{candidate.module_id}#financial"``, and the cycle's own winner -- and,
+beside it, the incumbent itself -- is compared against the ``"m2-fixed"``
+baseline (:data:`orchestrator.closeout.M2_FIXED_POLICY_VERSION`) with
+:func:`dreaming.paired_pool_difference` under docs/preregistration/2026-10-17-
+m3-dreaming.md's flat abstention rule (``non_committing="flat"``: a world
+where an arm committed nothing reads as ``0.0`` in the statistic, never
+refused for carrying the sentinel) -- reported as its own ``financial_arm``
+figure, carrying both arms' commit rates and the incumbent's own comparison
+beside it, separate from the bootstrap ``train_mean``/``holdout_mean``/
+``gap``. With fewer than :data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or
+with no out-of-sample grid configured for this process
+(``NULLIUS_EVALUATION_CONFIG`` unset, or set with no ``oos_dates``), the
+financial arm is reported ``"thin"`` rather than computed; any other
+refusal the comparison raises is reported ``{"unscoreable": "<the
+refusal's own message>"}`` instead -- a thin pool and an unscoreable
+comparison are different facts, and conflating them under one string would
+hide which one actually happened. The bootstrap arm runs exactly as before
+either way.
 
 **Selection is a two-phase sweep, not one.** ``dreaming.commit_selection``
 reads every one of a candidate's ``replay_score`` rows at the episode's
@@ -58,12 +66,32 @@ taken over"). A ``strata={"train": train_worlds}`` call can therefore only
 ever see a candidate's *train* rows -- so this module sweeps the full
 widened candidate set (the incumbent plus the ``M`` revisions) over the
 train worlds only, selects the argmax over that stratum, and *then*
-sweeps the one winner over the holdout worlds. That is exactly feature
-278's own discipline, applied to what the evaluator can be asked for:
-every candidate contends on train, and only the winner's generalisation
-is measured on holdout -- "select on train, report on holdout"
-(docs §10.3.1) is a statement about which worlds decide, not a claim that
-every losing candidate must be replayed on both halves.
+sweeps the one winner -- and the incumbent beside it, deduplicated into one
+sweep entry when the incumbent is itself the winner -- over the holdout
+worlds. That is exactly feature 278's own discipline, applied to what the
+evaluator can be asked for: every candidate contends on train, and only the
+winner's (and the incumbent's own) generalisation is measured on holdout --
+"select on train, report on holdout" (docs §10.3.1) is a statement about
+which worlds decide, not a claim that every losing candidate must be
+replayed on both halves. The summary carries the incumbent's own holdout
+figure as ``incumbent_holdout_mean``, beside the winner's ``holdout_mean``,
+so an operator can read the winner's generalisation against the policy
+already in force without a second query.
+
+Every one of ``train_mean``, ``holdout_mean`` and ``incumbent_holdout_mean``
+is read from the scores this very call measured -- each ``evaluator`` call's
+own answer, kept in a dict keyed by ``(module_id, world_id)`` as the sweeps
+run -- rather than re-queried from ``replay_score`` by ``policy_version``
+after the fact. A jittered revision's ``module_id`` is content-addressed
+(``cand-`` plus a digest of its source), so it is identical across two
+cycles run at the same ``--seed`` over the same incumbent, however far
+apart their ``--iteration-id``\\ s are; a store read keyed only by
+``policy_version`` would then average in whichever earlier cycle's rows
+happened to share that version, over worlds that cycle's own rotation
+split differently. Reading back this call's own in-memory measurements
+instead means a second cycle at the same seed reports over exactly its own
+rows, never a prior cycle's leftovers, with no dependency on the relational
+store's own SQL dialect for the figure a caller reads off the summary line.
 
 **A rerun at the same iteration id and seed is a no-op, not a crash.**
 ``revise_policy``'s candidates are deterministic in ``(incumbent, count,
@@ -71,11 +99,19 @@ seed)``, so a second run at the same inputs produces the identical widened
 set and the identical winner -- and ``policy_revision.policy_version`` is
 ``UNIQUE``, so ``commit_selection``'s own insert refuses the second write.
 This module treats that one failure specially: when the store already
-holds a ``selected`` row whose ``code_hash`` is one of this run's
-candidates, that row *is* the rerun's answer, read back rather than
-re-written -- the same "a re-run is a refresh, not a re-draw" stance
-``bootstrap.BootstrapPool.persist_worlds`` takes for its own upsert. Any
-other store refusal propagates and exits 1.
+holds a ``selected`` row whose ``policy_version`` is one of this run's
+candidates' own ``module_id``\\ s, that row *is* the rerun's answer, read
+back rather than re-written -- the same "a re-run is a refresh, not a
+re-draw" stance ``bootstrap.BootstrapPool.persist_worlds`` takes for its
+own upsert. Matched on ``policy_version`` rather than ``code_hash``
+deliberately: ``policy_revision.policy_version`` is the column the store's
+own ``UNIQUE`` constraint is on, so it is the exact fact a second insert
+collided over, and the incumbent's own candidate carries a cycle-scoped
+``module_id`` (``f"incumbent-{iteration_id}"``) but an iteration-independent
+``code_hash`` (a hash of its unchanged source) -- a ``code_hash`` match
+would read a *different* cycle's incumbent row back as this run's own
+answer the moment the incumbent's source has not changed between them,
+which is the ordinary case. Any other store refusal propagates and exits 1.
 
 **Exit codes**, the workspace's own convention (CLAUDE.md's five operator
 verbs): 0 once the cycle's summary line is printed; 1 when a collaborator
@@ -247,19 +283,31 @@ def _existing_winner(database_url: str, widened: Sequence[Any]) -> Any | None:
     widened candidate set -- ``revise_policy``'s own determinism -- and
     ``commit_selection``'s insert then refuses the second write because
     ``policy_revision.policy_version`` is ``UNIQUE``. Reads the table
-    directly for a ``selected`` row whose ``code_hash`` is one of this
-    run's own candidates and answers the matching candidate, so a rerun's
-    "winner" is read back rather than re-decided. ``None`` when no such row
-    exists -- the caller's failure was a real refusal, not a rerun.
+    directly for a ``selected`` row whose ``policy_version`` is one of this
+    run's own candidates' ``module_id``\\ s and answers the matching
+    candidate, so a rerun's "winner" is read back rather than re-decided.
+    ``None`` when no such row exists -- the caller's failure was a real
+    refusal, not a rerun.
+
+    Matched on ``policy_version``, never ``code_hash``: ``policy_version``
+    is the column the store's own ``UNIQUE`` constraint collided over, so it
+    is the one fact that tells a genuine rerun of *this* iteration apart
+    from a different cycle's row. The incumbent's own candidate carries a
+    cycle-scoped ``module_id`` (``f"incumbent-{iteration_id}"``) beside an
+    iteration-independent ``code_hash`` (a hash of its source, unchanged
+    between cycles) -- a ``code_hash`` match would read a *different*
+    cycle's incumbent row back as though it were this run's own answer the
+    moment the incumbent's source has not changed between them, mixing one
+    iteration's selected row into another's.
     """
-    by_hash = {candidate.code_hash: candidate for candidate in widened}
+    by_version = {candidate.module_id: candidate for candidate in widened}
     path = dreaming.sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
         rows = connection.execute(
-            "SELECT code_hash FROM policy_revision WHERE selected = 1"
+            "SELECT policy_version FROM policy_revision WHERE selected = 1"
         ).fetchall()
-    for (code_hash,) in rows:
-        candidate = by_hash.get(code_hash)
+    for (policy_version,) in rows:
+        candidate = by_version.get(policy_version)
         if candidate is not None:
             return candidate
     return None
@@ -291,9 +339,58 @@ def _admitted_financial_campaigns(database_url: str) -> tuple[str, ...]:
     return tuple(admitted)
 
 
+#: The non-committing mode every financial comparison is taken under --
+#: docs/preregistration/2026-10-17-m3-dreaming.md's flat abstention rule: a
+#: world where an arm's committed pick never landed (the sentinel
+#: :data:`dreaming.paired.NON_COMMITTING_SCORE`, ``-inf``) reads as ``0.0`` in
+#: the statistic rather than being refused for carrying it. Named here as a
+#: literal, matching :func:`dreaming.paired_pool_difference`'s own
+#: ``non_committing="flat"`` spelling, rather than imported from
+#: :mod:`dreaming.paired` -- that submodule's constant is not re-exported from
+#: :mod:`dreaming`'s own namespace, and a private submodule import would be a
+#: second place this module's dependency on ``dreaming`` could drift.
+_NON_COMMITTING_FLAT = "flat"
+
+
+def _financial_comparison(candidate: Any, *, database_url: str) -> object:
+    """One candidate's financial arm against the ``"m2-fixed"`` baseline.
+
+    Answers a dict of the paired statistic's figures -- ``paired_worlds``,
+    ``candidate_mean``, ``baseline_mean``, ``mean_difference``, ``p_value``,
+    and both arms' commit rates (docs/preregistration/2026-10-17-m3-dreaming.md:
+    *"the commit rate of each arm is reported beside every criterion"*) -- or
+    ``{"unscoreable": "<the refusal's own message>"}`` when
+    :func:`dreaming.paired_pool_difference` refuses the comparison for any
+    reason other than a thin pool (the caller's own gate, checked before this
+    is ever called). A refusal here is a fact about *this* comparison (too few
+    paired worlds once the admitted campaigns are read back, say), not about
+    whether the financial arm is funded at all, so it is named rather than
+    folded into the caller's ``"thin"``.
+    """
+    try:
+        comparison = dreaming.paired_pool_difference(
+            f"{candidate.module_id}{FINANCIAL_SUFFIX}",
+            M2_FIXED_POLICY_VERSION,
+            database_url=database_url,
+            non_committing=_NON_COMMITTING_FLAT,
+        )
+    except dreaming.PairedComparisonError as refusal:
+        return {"unscoreable": str(refusal)}
+    return {
+        "paired_worlds": comparison.paired_worlds,
+        "candidate_mean": comparison.candidate_mean,
+        "baseline_mean": comparison.baseline_mean,
+        "mean_difference": comparison.mean_difference,
+        "p_value": comparison.p_value,
+        "candidate_commit_rate": comparison.candidate_commit_rate,
+        "baseline_commit_rate": comparison.baseline_commit_rate,
+    }
+
+
 def _financial_arm(
     widened: Any,
     winner: Any,
+    incumbent: Any,
     *,
     database_url: str,
     beta: float,
@@ -305,12 +402,17 @@ def _financial_arm(
     Answers ``(n_financial, financial_arm)``: the admitted campaign count,
     always honestly reported, and either the string ``"thin"`` (fewer than
     :data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or no out-of-sample grid
-    configured for this process) or the paired statistic comparing the
-    cycle's own winner against :data:`orchestrator.closeout.
-    M2_FIXED_POLICY_VERSION` on the admitted worlds (every one of them
-    treated as held out -- there is no train/holdout split for financial
-    worlds, every candidate already contended for the win on the bootstrap
-    pool's own split).
+    configured for this process) or :func:`_financial_comparison`'s dict for
+    the cycle's own winner against :data:`orchestrator.closeout.
+    M2_FIXED_POLICY_VERSION` on the admitted worlds (every one of them treated
+    as held out -- there is no train/holdout split for financial worlds,
+    every candidate already contended for the win on the bootstrap pool's own
+    split). When the winner's own comparison is scoreable, its dict carries an
+    ``"incumbent"`` key beside it: the identical comparison taken for the
+    incumbent (:func:`_financial_comparison` again, on the policy already in
+    force), so a cycle's summary states not only *whether the winner clears
+    the baseline* but *whether the incumbent already did* -- the two facts
+    §12's deployment decision reads together.
 
     Every widened candidate -- not only the winner -- is swept, through one
     shared :class:`orchestrator._financial_eval.FinancialEvalContext`, so two
@@ -342,21 +444,12 @@ def _financial_arm(
                 database_url=database_url,
             )
 
-    try:
-        comparison = dreaming.paired_pool_difference(
-            f"{winner.module_id}{FINANCIAL_SUFFIX}",
-            M2_FIXED_POLICY_VERSION,
-            database_url=database_url,
+    financial_arm = _financial_comparison(winner, database_url=database_url)
+    if "unscoreable" not in financial_arm:
+        financial_arm["incumbent"] = _financial_comparison(
+            incumbent, database_url=database_url
         )
-    except dreaming.PairedComparisonError:
-        return n_financial, "thin"
-    return n_financial, {
-        "paired_worlds": comparison.paired_worlds,
-        "candidate_mean": comparison.candidate_mean,
-        "baseline_mean": comparison.baseline_mean,
-        "mean_difference": comparison.mean_difference,
-        "p_value": comparison.p_value,
-    }
+    return n_financial, financial_arm
 
 
 def run_cycle(
@@ -414,11 +507,22 @@ def run_cycle(
         # whole selection as "uncovered". Every produced revision already
         # gets a fresh, cycle-derived identity through the seed; this gives
         # the one candidate the reviser does not jitter the same property.
+        incumbent_version = f"incumbent-{iteration_id}"
         widened = dreaming.include_incumbent(
-            candidates, incumbent_source, version=f"incumbent-{iteration_id}"
+            candidates, incumbent_source, version=incumbent_version
         )
     finally:
         freeze.release(hold)
+
+    # include_incumbent's own contract puts the incumbent first in the
+    # widened tuple, but this reads it back by the version just handed in
+    # rather than leaning on that position -- a caller of this function's own
+    # code two lines down should not have to know an ordering guarantee
+    # belongs to a sibling member to find the one candidate that is the
+    # policy already in force.
+    incumbent_entry = next(
+        candidate for candidate in widened if candidate.module_id == incumbent_version
+    )
 
     world_by_id = {record.world_id: pool.world(record.world_id) for record in pool.worlds()}
 
@@ -442,8 +546,25 @@ def run_cycle(
     split = dreaming.split_pool(tuple(world_by_id), rotation=iteration_id)
     dreaming.record_cycle_holdout(iteration_id, database_url=database_url)
 
+    # Every evaluator answer is kept here, keyed by the exact (module_id,
+    # world_id) pair it was measured for, as the two sweeps below run --
+    # this call's own record of what it measured, never re-queried from
+    # replay_score afterwards. A jittered revision's module_id is
+    # content-addressed, so it is identical across two cycles run at the
+    # same --seed over the same incumbent however far apart their
+    # --iteration-id's are; reading replay_score back by policy_version
+    # after the fact would average in whichever earlier cycle's rows
+    # happen to share that version, over a train/holdout split that
+    # cycle's own rotation drew differently. Reading this dict instead
+    # means the figures below are always over exactly this call's own
+    # rows, with no dependency on what else the store holds under the
+    # same name.
+    measured: dict[tuple[str, str], float] = {}
+
     def evaluator(candidate: Any, world_id: str) -> Any:
-        return score_on_world(candidate.source, world_by_id[world_id], round_cap=round_cap)
+        pick = score_on_world(candidate.source, world_by_id[world_id], round_cap=round_cap)
+        measured[(candidate.module_id, world_id)] = pick.score
+        return pick
 
     train_worlds = list(split.train)
     holdout_worlds = list(split.holdout)
@@ -473,8 +594,20 @@ def run_cycle(
             raise
         winner = rerun_winner
 
+    # The incumbent is swept over holdout beside the winner, so the summary
+    # can report the policy already in force's own generalisation next to
+    # the challenger's -- deduplicated into one sweep entry when the
+    # incumbent is itself the winner, because dreaming.sweep_candidates
+    # (through plan_sweep) refuses two candidates filed under one
+    # module_id, and sweeping the same policy twice under its one identity
+    # would ask for exactly that.
+    holdout_candidates = (
+        [winner]
+        if winner.module_id == incumbent_entry.module_id
+        else [winner, incumbent_entry]
+    )
     holdout_report = dreaming.sweep_candidates(
-        [winner],
+        holdout_candidates,
         evaluator=evaluator,
         beta=beta,
         worlds=holdout_worlds,
@@ -483,17 +616,15 @@ def run_cycle(
         replay=replay_component,
     )
 
-    path = dreaming.sqlite_path(database_url)
-    with closing(sqlite3.connect(path)) as connection:
-        rows = connection.execute(
-            "SELECT score, is_holdout FROM replay_score "
-            "WHERE policy_version = ? AND beta = ?",
-            (winner.module_id, beta),
-        ).fetchall()
-    train_scores = [score for score, is_holdout in rows if not is_holdout]
-    holdout_scores = [score for score, is_holdout in rows if is_holdout]
-    train_mean = sum(train_scores) / len(train_scores)
-    holdout_mean = sum(holdout_scores) / len(holdout_scores)
+    train_mean = sum(
+        measured[(winner.module_id, world_id)] for world_id in train_worlds
+    ) / len(train_worlds)
+    holdout_mean = sum(
+        measured[(winner.module_id, world_id)] for world_id in holdout_worlds
+    ) / len(holdout_worlds)
+    incumbent_holdout_mean = sum(
+        measured[(incumbent_entry.module_id, world_id)] for world_id in holdout_worlds
+    ) / len(holdout_worlds)
 
     gap_record = MetaOverfitGaps(database_url).record(
         iteration_id,
@@ -506,6 +637,7 @@ def run_cycle(
     n_financial, financial_arm = _financial_arm(
         widened,
         winner,
+        incumbent_entry,
         database_url=database_url,
         beta=beta,
         evaluation_context=evaluation_context,
@@ -521,6 +653,7 @@ def run_cycle(
         "code_hash": winner.code_hash,
         "train_mean": gap_record.train_mean,
         "holdout_mean": gap_record.holdout_mean,
+        "incumbent_holdout_mean": incumbent_holdout_mean,
         "gap": gap_record.gap,
         "financial_arm": financial_arm,
         "replay_score_rows": train_report.pair_count + holdout_report.pair_count,

@@ -13,15 +13,28 @@ policy-runtime libraries.
 One test per claim the feature sentence and the spec's test list make:
 
 * **one cycle exits 0**, writes one ``replay_score`` row per (candidate,
-  train world) and one per holdout world for the winner, one ``selected``
-  ``policy_revision`` row and one meta-overfit row.
+  train world) and one per holdout world for the winner and the incumbent
+  (deduplicated into one row when the incumbent is itself the winner), one
+  ``selected`` ``policy_revision`` row and one meta-overfit row, and carries
+  ``incumbent_holdout_mean`` beside ``holdout_mean``.
 * **a rerun at the same iteration id and seed selects the same code_hash**,
   and still exits 0 -- ``revise_policy``'s own determinism, read back
   through the store's ``UNIQUE policy_version`` rather than crashing on it.
+* **two cycles at the same seed and different iteration ids report means
+  over their own rows only** -- a second cycle's ``train_mean`` and
+  ``holdout_mean`` are unaffected by an earlier cycle run at the same seed,
+  even when a jittered revision's content-addressed ``module_id`` is shared
+  between the two.
 * **an empty pool exits 1 with pool_too_thin and writes nothing.**
 * **a recorded canary halt exits 1 with determinism_broken.**
 * **--reviser llm exits 1 with policy_isolation_required.**
 * **an incumbent that fails screening exits 1.**
+
+Every ``main()`` call that is meant to reach the cycle itself first seeds a
+recent, passing, evaluation-covering ``canary_run`` row
+(:func:`_seed_passing_canary`) -- feature 143's own extension requires one
+on record before ``require_dreaming_allowed`` lets a cycle through, the
+same real path :func:`_seed_canary_halt` below drives for the halted case.
 
 No test opens a network connection or reads a real credential, and no
 state is kept at module scope across tests, so the suite passes under
@@ -32,7 +45,9 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import sqlite3
+import uuid
 from contextlib import closing, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +58,14 @@ from urllib.parse import unquote, urlparse
 import bootstrap
 import pytest
 import replay as replay_member
-from canary import CanaryReferencePair, CanaryTree, halt_dreaming, replay_pair
+from canary import (
+    DEFAULT_TOLERANCE,
+    CanaryReferencePair,
+    CanaryRunStore,
+    CanaryTree,
+    halt_dreaming,
+    replay_pair,
+)
 from canary._reference import CanaryPolicy
 from orchestrator.dream import (
     EXIT_CONFIG,
@@ -231,11 +253,35 @@ def _seed_canary_halt(database_url: str) -> None:
         halt_dreaming(broken_pair, result, database_url=database_url)
 
 
+def _seed_passing_canary(database_url: str) -> None:
+    """Record a recent, passing, evaluation-covering ``canary_run`` row.
+
+    ``require_dreaming_allowed`` refuses a cycle with no halt on record
+    unless the *newest* canary run also passed, ran recently and covered
+    the evaluation canary -- this helper is the minimal row that clears all
+    three, recorded directly through :class:`canary.CanaryRunStore` (the
+    store the guard itself reads) rather than through a full
+    ``python -m canary.run``, the same "drive the real store, not the CLI"
+    stance :func:`_seed_canary_halt` takes for the halted case above.
+    """
+    CanaryRunStore(database_url).record(
+        str(uuid.uuid4()),
+        score=0.0,
+        recorded_score=0.0,
+        deviation=0.0,
+        tolerance=DEFAULT_TOLERANCE,
+        within_tolerance=True,
+        evaluation_canary=True,
+        ran_at=datetime.now(timezone.utc),
+    )
+
+
 # -- One cycle ------------------------------------------------------------------
 
 
 def test_one_cycle_exits_0_and_writes_expected_rows(tmp_path: Path) -> None:
     database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
     incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
     env = {"DATABASE_URL": database_url}
     lines: list[str] = []
@@ -249,7 +295,6 @@ def test_one_cycle_exits_0_and_writes_expected_rows(tmp_path: Path) -> None:
 
     assert exit_code == EXIT_OK
     assert len(lines) == 1
-    import json
 
     payload = json.loads(lines[0])
     assert payload["iteration_id"] == "cycle-5"
@@ -260,6 +305,7 @@ def test_one_cycle_exits_0_and_writes_expected_rows(tmp_path: Path) -> None:
     assert isinstance(payload["code_hash"], str) and len(payload["code_hash"]) == 64
     assert isinstance(payload["train_mean"], float)
     assert isinstance(payload["holdout_mean"], float)
+    assert isinstance(payload["incumbent_holdout_mean"], float)
     assert payload["gap"] == pytest.approx(payload["train_mean"] - payload["holdout_mean"])
 
     path = _sqlite_path(database_url)
@@ -275,13 +321,17 @@ def test_one_cycle_exits_0_and_writes_expected_rows(tmp_path: Path) -> None:
         ).fetchall()
 
     # M = 10 revisions + the incumbent = 11 candidates, each scored once per
-    # train world; the holdout half is scored for the winner only (the
-    # module docstring's two-phase sweep).
+    # train world; the holdout half is scored for the winner and the
+    # incumbent (the module docstring's two-phase sweep), deduplicated into
+    # one sweep entry on the holdout half when the incumbent is itself the
+    # winner -- the only case :mod:`orchestrator.dream` itself can tell
+    # apart from this test's own read of the stored rows.
     revision_count = payload["revision_cap"] + 1
     train_world_count = round(POOL_WORLD_COUNT * 0.7)
     holdout_world_count = POOL_WORLD_COUNT - train_world_count
+    holdout_candidate_count = 1 if payload["module_id"].startswith("incumbent-") else 2
     assert train_rows == revision_count * train_world_count
-    assert holdout_rows == holdout_world_count
+    assert holdout_rows == holdout_candidate_count * holdout_world_count
     assert payload["replay_score_rows"] == train_rows + holdout_rows
 
     assert len(selected) == 1
@@ -292,6 +342,7 @@ def test_one_cycle_exits_0_and_writes_expected_rows(tmp_path: Path) -> None:
 
 def test_rerun_same_iteration_id_and_seed_selects_same_code_hash(tmp_path: Path) -> None:
     database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
     incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
     env = {"DATABASE_URL": database_url}
     argv = [
@@ -308,8 +359,6 @@ def test_rerun_same_iteration_id_and_seed_selects_same_code_hash(tmp_path: Path)
     assert first_exit == EXIT_OK
     assert second_exit == EXIT_OK
 
-    import json
-
     first_payload = json.loads(first[0])
     second_payload = json.loads(second[0])
     assert first_payload["code_hash"] == second_payload["code_hash"]
@@ -320,11 +369,138 @@ def test_rerun_same_iteration_id_and_seed_selects_same_code_hash(tmp_path: Path)
     assert _table_row_count(database_url, "policy_revision") == 1
 
 
+def test_two_cycles_same_seed_different_iteration_report_own_rows_only(
+    tmp_path: Path,
+) -> None:
+    """A second cycle at the same ``--seed`` reports over its own rows only.
+
+    ``revise_policy``'s candidates are deterministic in ``(incumbent, count,
+    seed)`` -- independent of ``--iteration-id`` -- so a jittered revision's
+    ``module_id`` is identical whether it is produced by "cycle-5" or
+    "cycle-5b" at ``--seed cycle-5``.  "cycle-5" then "cycle-5b" is this
+    exact (``INCUMBENT_SOURCE``, ``POOL_SEED``, ``POOL_WORLD_COUNT``,
+    ``round_cap=5``) combination's own confirmed-deterministic pair: the
+    same candidate, ``cand-77f12e77be3865d308ed57b21999e4c9``, wins both
+    cycles, so the second cycle's own ``replay_score`` rows for its winner
+    sit beside the first cycle's leftover rows for the identical
+    ``policy_version`` -- the exact collision :func:`orchestrator.dream.
+    run_cycle`'s own comment names. A query scoped only by ``policy_version``
+    (the pre-fix shape) would then average in the first cycle's rows too,
+    over a train/holdout split the first cycle's own rotation drew
+    differently; this test proves the second cycle's reported
+    ``train_mean``/``holdout_mean`` disagree with exactly that naive query,
+    which is only possible when they are read from the second cycle's own
+    measurements instead.
+    """
+    database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
+    incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
+    env = {"DATABASE_URL": database_url}
+
+    first: list[str] = []
+    second: list[str] = []
+    first_exit = main(
+        ["--incumbent", incumbent_path, "--iteration-id", "cycle-5", "--round-cap", "5"],
+        env=env,
+        emit=first.append,
+        app=_APP,
+    )
+    second_exit = main(
+        [
+            "--incumbent", incumbent_path,
+            "--iteration-id", "cycle-5b",
+            "--seed", "cycle-5",
+            "--round-cap", "5",
+        ],
+        env=env,
+        emit=second.append,
+        app=_APP,
+    )
+
+    assert first_exit == EXIT_OK
+    assert second_exit == EXIT_OK
+
+    first_payload = json.loads(first[0])
+    second_payload = json.loads(second[0])
+
+    # The scenario's own precondition: the two cycles' rows really do
+    # collide under one policy_version, which is what makes the rest of
+    # this test meaningful rather than vacuous.
+    assert first_payload["module_id"] == second_payload["module_id"]
+
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        rows = connection.execute(
+            "SELECT score, is_holdout FROM replay_score "
+            "WHERE policy_version = ? AND beta = 0.5",
+            (second_payload["module_id"],),
+        ).fetchall()
+    naive_train = [score for score, is_holdout in rows if not is_holdout]
+    naive_holdout = [score for score, is_holdout in rows if is_holdout]
+
+    # Both cycles' own rows are really there, under the one shared
+    # policy_version -- twice the row count either cycle alone would write.
+    assert len(naive_train) == 2 * round(POOL_WORLD_COUNT * 0.7)
+    assert len(naive_holdout) == 2 * (POOL_WORLD_COUNT - round(POOL_WORLD_COUNT * 0.7))
+
+    naive_train_mean = sum(naive_train) / len(naive_train)
+    naive_holdout_mean = sum(naive_holdout) / len(naive_holdout)
+
+    # The second cycle's own reported means disagree with the naive,
+    # unscoped query over the very same policy_version -- the only way
+    # that can happen is that they were never read from it.
+    assert second_payload["train_mean"] != pytest.approx(naive_train_mean)
+    assert second_payload["holdout_mean"] != pytest.approx(naive_holdout_mean)
+
+
+def test_incumbent_is_swept_on_holdout_beside_the_winner(tmp_path: Path) -> None:
+    """The incumbent is swept over holdout beside the winner, as its own entry.
+
+    "cycle-5" is this exact (``INCUMBENT_SOURCE``, ``POOL_SEED``,
+    ``POOL_WORLD_COUNT``, ``round_cap=5``) combination's own confirmed case
+    where the winner is a jittered revision rather than the incumbent (see
+    :func:`test_two_cycles_same_seed_different_iteration_report_own_rows_only`),
+    so the incumbent's holdout sweep here is a genuinely separate sweep
+    entry, never the deduplicated case where the incumbent is itself the
+    winner.
+    """
+    database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
+    incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
+    env = {"DATABASE_URL": database_url}
+    lines: list[str] = []
+
+    exit_code = main(
+        ["--incumbent", incumbent_path, "--iteration-id", "cycle-5", "--round-cap", "5"],
+        env=env,
+        emit=lines.append,
+        app=_APP,
+    )
+
+    assert exit_code == EXIT_OK
+    payload = json.loads(lines[0])
+    incumbent_version = f"incumbent-{payload['iteration_id']}"
+    assert payload["module_id"] != incumbent_version
+
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        incumbent_holdout_rows = connection.execute(
+            "SELECT score FROM replay_score WHERE policy_version = ? AND is_holdout = 1",
+            (incumbent_version,),
+        ).fetchall()
+
+    holdout_world_count = POOL_WORLD_COUNT - round(POOL_WORLD_COUNT * 0.7)
+    assert len(incumbent_holdout_rows) == holdout_world_count
+    expected_mean = sum(score for (score,) in incumbent_holdout_rows) / holdout_world_count
+    assert payload["incumbent_holdout_mean"] == pytest.approx(expected_mean)
+
+
 # -- Refusals ---------------------------------------------------------------
 
 
 def test_empty_pool_exits_1_pool_too_thin_and_writes_nothing(tmp_path: Path) -> None:
     database_url = _migrated_pool(tmp_path, world_count=None)
+    _seed_passing_canary(database_url)
     incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
     env = {"DATABASE_URL": database_url}
 
@@ -391,6 +567,7 @@ def test_reviser_llm_exits_1_policy_isolation_required(tmp_path: Path) -> None:
 
 def test_incumbent_that_fails_screening_exits_1(tmp_path: Path) -> None:
     database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
     incumbent_path = _write_incumbent(tmp_path, FAILS_SCREENING_SOURCE)
     env = {"DATABASE_URL": database_url}
 
@@ -427,6 +604,7 @@ def test_write_selected_writes_the_winner_source_and_refuses_to_overwrite(
     tmp_path: Path,
 ) -> None:
     database_url = _migrated_pool(tmp_path)
+    _seed_passing_canary(database_url)
     incumbent_path = _write_incumbent(tmp_path, INCUMBENT_SOURCE)
     env = {"DATABASE_URL": database_url}
     destination = tmp_path / "next-policy.py"

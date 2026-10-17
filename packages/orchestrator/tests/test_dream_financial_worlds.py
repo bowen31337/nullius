@@ -38,6 +38,13 @@ One test per claim the feature sentence and the spec's test list make:
   ``"thin"`` regardless of how many campaigns are admitted, and the
   bootstrap figures read exactly as ``test_dream_cli.py``'s own cycle test
   reads them.
+* **a non-committing m2-fixed row still yields a numeric arm** -- the flat
+  abstention rule reads a stored ``-inf`` as ``0.0`` in the statistic, so a
+  world where the baseline committed nothing is scored, not refused as
+  ``"thin"``.
+* **a forced non-thin refusal surfaces as unscoreable** -- any
+  :class:`dreaming.PairedComparisonError` other than the thin-pool gate is
+  reported ``{"unscoreable": "<message>"}``, never conflated with ``"thin"``.
 
 No test opens a network connection or reads a real credential, and no state
 is kept at module scope across tests, so the suite passes under
@@ -58,6 +65,7 @@ from urllib.parse import unquote, urlparse
 
 import bootstrap
 import discovery
+import dreaming
 import pytest
 import replay as replay_member
 from artifacts import ArtifactStore
@@ -566,3 +574,100 @@ def test_no_evaluation_context_reports_thin_and_bootstrap_behaviour_is_unchanged
     revision_count = summary["revision_cap"] + 1
     train_world_count = round(POOL_WORLD_COUNT * 0.7)
     assert train_rows == revision_count * train_world_count
+
+
+# -- The flat abstention rule, and a non-thin refusal -------------------------
+
+
+def test_m2_fixed_non_committing_row_yields_numeric_arm_not_thin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """docs/preregistration/2026-10-17-m3-dreaming.md's flat abstention rule:
+    a stored ``-inf`` (a world where the baseline committed nothing) reads
+    as ``0.0`` in the statistic rather than being refused -- so a pool whose
+    m2-fixed rows include one still yields a numeric ``financial_arm``, not
+    ``"thin"``, and is fully funded by the one non-missing world plus this
+    one.
+    """
+    database_url = _migrated_database(tmp_path)
+    campaign_a, node_a = _build_completed_campaign(database_url, ic_mean=0.3)
+    campaign_b, node_b = _build_completed_campaign(database_url, ic_mean=0.6)
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_a, node_a)
+    _write_code_artifact(artifact_dir, campaign_b, node_b)
+    _write_m2_fixed_row(database_url, campaign_id=campaign_a, node_id=node_a, score=0.05)
+    # The m2-fixed baseline committed nothing on this world.
+    replay_member.persist_replay_score(
+        TerminalPick(pick=None, score=float("-inf")),
+        M2_FIXED_POLICY_VERSION,
+        campaign_b,
+        0.5,
+        is_holdout=True,
+        database_url=database_url,
+    )
+    _counting_stub(monkeypatch)
+
+    evaluation_context = _fake_evaluation_context(
+        database_url=database_url,
+        artifact_dir=artifact_dir,
+        oos_dates=(dt.date(2026, 6, 1),),
+    )
+
+    summary = _run_cycle(
+        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+    )
+
+    financial_arm = summary["financial_arm"]
+    assert isinstance(financial_arm, dict)
+    assert "unscoreable" not in financial_arm
+    assert financial_arm["paired_worlds"] == 2
+    assert isinstance(financial_arm["mean_difference"], float)
+    assert isinstance(financial_arm["p_value"], float)
+    # The baseline committed on exactly one of the two paired worlds.
+    assert financial_arm["baseline_commit_rate"] == pytest.approx(0.5)
+    assert isinstance(financial_arm["candidate_commit_rate"], float)
+    # The winner's own financial comparison against the incumbent's.
+    incumbent_arm = financial_arm["incumbent"]
+    assert isinstance(incumbent_arm, dict)
+    assert "unscoreable" not in incumbent_arm
+    assert incumbent_arm["paired_worlds"] == 2
+
+
+def test_forced_non_thin_paired_comparison_error_surfaces_as_unscoreable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any :class:`dreaming.PairedComparisonError` other than the thin-pool
+    gate is reported ``{"unscoreable": "<message>"}``, never folded into
+    ``"thin"`` -- forced here by monkeypatching ``dreaming.paired_pool_
+    difference`` itself, since a pool funded enough to clear the thin gate
+    does not, in the ordinary run of this suite's own fixtures, produce any
+    other refusal to observe the branch with.
+    """
+    database_url = _migrated_database(tmp_path)
+    campaign_a, node_a = _build_completed_campaign(database_url, ic_mean=0.3)
+    campaign_b, node_b = _build_completed_campaign(database_url, ic_mean=0.6)
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_a, node_a)
+    _write_code_artifact(artifact_dir, campaign_b, node_b)
+    _write_m2_fixed_row(database_url, campaign_id=campaign_a, node_id=node_a, score=0.05)
+    _write_m2_fixed_row(database_url, campaign_id=campaign_b, node_id=node_b, score=-0.02)
+    _counting_stub(monkeypatch)
+
+    refusal_message = "paired_comparison: a forced refusal naming its own cause"
+
+    def _refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise dreaming.PairedComparisonError(refusal_message)
+
+    monkeypatch.setattr(dreaming, "paired_pool_difference", _refuse)
+
+    evaluation_context = _fake_evaluation_context(
+        database_url=database_url,
+        artifact_dir=artifact_dir,
+        oos_dates=(dt.date(2026, 6, 1),),
+    )
+
+    summary = _run_cycle(
+        database_url, iteration_id="cycle-5", evaluation_context=evaluation_context
+    )
+
+    assert summary["financial_arm"] == {"unscoreable": refusal_message}
