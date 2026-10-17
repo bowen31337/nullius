@@ -111,7 +111,7 @@ import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
@@ -121,11 +121,15 @@ from ._reference import CanaryReferencePair, _validated_hash
 from ._replay import DEFAULT_TOLERANCE, CanaryReplayResult
 
 __all__ = [
+    "CANARY_EVIDENCE_MISSING",
+    "CANARY_EVIDENCE_STALE",
     "DETERMINISM_BROKEN",
     "HALT_MESSAGE",
     "HALT_STORE_COMPONENT_NAME",
     "HALT_TABLE",
+    "MAX_CANARY_AGE_HOURS",
     "CanaryDeterminismBrokenError",
+    "CanaryEvidenceStaleError",
     "CanaryHaltStore",
     "DreamHalt",
     "build_halt_store",
@@ -171,6 +175,35 @@ HALT_STORE_COMPONENT_NAME = "canary-dream-halt"
 #: store's, the repository-level conftest's), restated here so each store
 #: states its own contract and none imports another's.
 DATABASE_URL_ENV = "DATABASE_URL"
+
+#: The code word :meth:`CanaryHaltStore.require_dreaming_allowed` refuses
+#: with when no canary has ever run against this deployment — there is no
+#: ``canary_run`` row to read a freshness or a coverage verdict from, so
+#: there is nothing on record that dreaming could be trusted against.
+CANARY_EVIDENCE_MISSING = "canary_evidence_missing"
+
+#: The code word the guard refuses with when a canary *has* run, but the
+#: newest run is no longer good evidence that dreaming is safe: either it
+#: finished more than :data:`MAX_CANARY_AGE_HOURS` ago, or it never
+#: exercised the evaluation canary (a toy-only pass over the frozen policy
+#: and tree, which never touches the real sandbox or evaluation path a
+#: dreaming cycle replays through).  Distinct from :data:`DETERMINISM_BROKEN`
+#: on purpose: this is a refusal about the *evidence's* age and coverage, not
+#: about a comparison that failed.
+CANARY_EVIDENCE_STALE = "canary_evidence_stale"
+
+#: Dreaming's own freshness floor.  The nightly timer fires once a day
+#: (``deploy/systemd/nullius-canary.timer``, 03:15 UTC); 26 hours gives a
+#: two-hour margin over that cadence so an on-time canary is never refused
+#: for being "stale" by the clock skew of its own schedule, while a canary
+#: that silently stopped firing is caught within a day of stopping — the
+#: whole point of the feature this guard enforces (a determinism break in
+#: the sandbox or the replay halts dreaming within a day instead of going
+#: unnoticed).
+MAX_CANARY_AGE_HOURS = 26
+
+#: :data:`MAX_CANARY_AGE_HOURS`, as the timedelta the guard compares against.
+MAX_CANARY_AGE = timedelta(hours=MAX_CANARY_AGE_HOURS)
 
 #: ``canary_dream_halt``'s DDL, created idempotently beside the code that reads
 #: it — the same member-owned-table stance :mod:`tripwires.poison` takes for
@@ -495,6 +528,29 @@ def determinism_broken_error(halt: DreamHalt) -> CanaryDeterminismBrokenError:
         "is to bisect the image diff before dreaming resumes",
         halt,
     )
+
+
+class CanaryEvidenceStaleError(CanaryDeterminismBrokenError):
+    """Dreaming refused: the canary's evidence is missing, stale, or incomplete.
+
+    This feature's own extension of the guard: a recorded determinism break
+    is not the only reason dreaming must stop.  Evidence that is absent
+    (:data:`CANARY_EVIDENCE_MISSING`), more than :data:`MAX_CANARY_AGE_HOURS`
+    old, or missing the evaluation canary's coverage of the real sandbox and
+    replay path (both :data:`CANARY_EVIDENCE_STALE`) is exactly the
+    condition under which a determinism break could already have happened
+    without anything on record to show it — so dreaming is refused on the
+    evidence's own terms, before a break is ever compared.
+
+    Deliberately a *subclass* of :class:`CanaryDeterminismBrokenError`
+    rather than a sibling of it: every caller that already catches
+    dreaming's one alert — ``orchestrator.dream``'s entrypoint among them —
+    catches this refusal too, with no second ``except`` clause to add,
+    because from the caller's side both are "dreaming is not allowed to run
+    right now".  ``halt`` is always ``None`` here: this refusal carries no
+    :class:`DreamHalt` row, because nothing broke — there is simply nothing
+    recent and complete enough to say nothing has.
+    """
 
 
 # -- The store ------------------------------------------------------------------
@@ -847,6 +903,17 @@ class CanaryHaltStore:
         pair broke, *when*, and by how much — the three questions §15's
         recovery asks first.  A caller that dreams without asking has not been
         un-halted; it has skipped the one door §12 leaves open.
+
+        A clean halt table is not, by itself, permission: this feature's own
+        addition is that dreaming also needs a *recent* canary pass that
+        *exercised the real evaluation path* — a break that a stale or
+        toy-only canary would never have caught is a break the halt table
+        could not yet hold, and an empty table would read as "the canary
+        held" when it may simply never have looked.  So, once no halt is on
+        record, :meth:`_require_recent_full_canary` is asked the second
+        question, and refuses with :class:`CanaryEvidenceStaleError` when the
+        newest canary run is missing, too old, or never ran the evaluation
+        canary.
         """
         halt = self.current_halt()
         if halt is not None:
@@ -856,6 +923,63 @@ class CanaryHaltStore:
                 "halted until §15's recovery (bisect the image diff) is "
                 "recorded as a fresh reference pair",
                 halt,
+            )
+        self._require_recent_full_canary()
+
+    def _require_recent_full_canary(self) -> None:
+        """The second question: is there recent, complete evidence to allow it?
+
+        Reads :class:`~canary.run.CanaryRunStore` — :mod:`canary.run`'s own
+        append-only history of every night the canary ran — through a
+        deferred, function-local import rather than one at module scope.
+        :mod:`canary.run` imports this module at the top (``from ._halt
+        import ...``), so a module-level import back here would cycle; it
+        would also reintroduce the eager ``canary.run`` import
+        ``canary/__init__.py``'s own lazy ``__getattr__`` exists to avoid
+        (an eager import would leave ``canary.run`` in ``sys.modules`` by the
+        time ``runpy`` executes it as ``__main__``, which is exactly the
+        condition that prints runpy's own "found in sys.modules" warning).
+        By the time anything calls this method, both modules have already
+        finished importing, so the deferred import never actually waits on
+        anything — it only avoids being a cycle on paper.
+        """
+        from .run import CanaryRunStore
+
+        # The newest *passing* run, not merely the newest row: a run that
+        # broke already means halt_dreaming wrote a permanent halt the first
+        # question above would have caught — but this read does not lean on
+        # that invariant holding elsewhere, so a run recorded broken is
+        # excluded by its own within_tolerance rather than trusted because
+        # nothing else happened to notice it broke.
+        newest = CanaryRunStore(self._database_url).newest_passing()
+        if newest is None:
+            raise CanaryEvidenceStaleError(
+                f"{CANARY_EVIDENCE_MISSING}: no passing canary run is on "
+                "record for this deployment — there is no `canary_run` row "
+                "to say the real evaluation path has ever been exercised "
+                "and held, so dreaming cannot be trusted against a "
+                "determinism break that nothing has looked for yet. Freeze "
+                "a reference and run `python -m canary.run` before dreaming"
+            )
+        age = _utc_now() - newest.ran_at
+        if age > MAX_CANARY_AGE:
+            raise CanaryEvidenceStaleError(
+                f"{CANARY_EVIDENCE_STALE}: the newest canary run finished "
+                f"{newest.ran_at.isoformat()}, {age} ago — past the "
+                f"{MAX_CANARY_AGE_HOURS}-hour limit. A canary this old could "
+                "have missed a determinism break with nothing on record to "
+                "show it; run `python -m canary.run` again before dreaming"
+            )
+        if not newest.evaluation_canary:
+            raise CanaryEvidenceStaleError(
+                f"{CANARY_EVIDENCE_STALE}: the newest canary run (at "
+                f"{newest.ran_at.isoformat()}) did not include the "
+                "evaluation canary — a toy-only pass over the frozen policy "
+                "and tree never exercises the real sandbox or evaluation "
+                "path a dreaming cycle replays through, so a determinism "
+                "break there would go unnoticed. Freeze the evaluation "
+                "canary's reference and rerun `python -m canary.run` before "
+                "dreaming"
             )
 
     # -- The row plumbing ----------------------------------------------------

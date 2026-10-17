@@ -31,6 +31,7 @@ frozen pair whose recorded constant the replayed score does not reach.
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -52,7 +53,14 @@ from canary import (
     replay_pair,
     require_dreaming_allowed,
 )
+from canary._halt import (
+    CANARY_EVIDENCE_MISSING,
+    CANARY_EVIDENCE_STALE,
+    MAX_CANARY_AGE_HOURS,
+    CanaryEvidenceStaleError,
+)
 from canary._reference import CanaryPolicy
+from canary.run import CanaryRunStore
 
 POLICY_VERSION = "canary-v1"
 DETECTED_AT = datetime(2025, 6, 1, 3, 0, 0, tzinfo=timezone.utc)
@@ -127,6 +135,26 @@ def _halt(**overrides: object) -> DreamHalt:
 def store(test_database_url: str) -> CanaryHaltStore:
     """A halt store pointed at the per-test database."""
     return CanaryHaltStore(test_database_url)
+
+
+def _record_run(
+    store: CanaryHaltStore, *, ran_at: datetime, evaluation_canary: bool
+) -> None:
+    # A canary_run row, recorded directly through CanaryRunStore -- the
+    # store require_dreaming_allowed's freshness check reads -- rather than
+    # through python -m canary.run's CLI, which this suite leaves to
+    # test_canary_run.py. Score and constant agree (within tolerance) since
+    # this helper is about the run's age and coverage, never about a break.
+    CanaryRunStore(store.database_url).record(
+        str(uuid.uuid4()),
+        score=EXPECTED_SCORE,
+        recorded_score=EXPECTED_SCORE,
+        deviation=0.0,
+        tolerance=DEFAULT_TOLERANCE,
+        within_tolerance=True,
+        evaluation_canary=evaluation_canary,
+        ran_at=ran_at,
+    )
 
 
 # -- The decision: §12's two statements under the if ---------------------------
@@ -556,9 +584,85 @@ class TestTheStoreResolvesLazily:
 
 
 class TestTheGuard:
-    def test_an_empty_store_allows_dreaming(self, store: CanaryHaltStore) -> None:
-        store.require_dreaming_allowed()  # passes: nothing to refuse on
+    def test_no_canary_ever_run_refuses_as_missing(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # An empty store is no longer a pass: there is no `canary_run` row
+        # to say the real evaluation path has ever been exercised, so this
+        # is "nothing has looked", not "the canary held".
+        with pytest.raises(
+            CanaryEvidenceStaleError, match=CANARY_EVIDENCE_MISSING
+        ) as caught:
+            store.require_dreaming_allowed()
+        assert isinstance(caught.value, CanaryDeterminismBrokenError)
+        assert caught.value.halt is None
         assert store.halted() is False
+
+    def test_a_fresh_full_pass_allows_dreaming(self, store: CanaryHaltStore) -> None:
+        # A recent run that included the evaluation canary, and no halt on
+        # record: both of the guard's questions answer "fine".
+        _record_run(store, ran_at=datetime.now(timezone.utc), evaluation_canary=True)
+        store.require_dreaming_allowed()  # passes
+        assert store.halted() is False
+
+    def test_a_pass_at_exactly_the_limit_still_allows(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # The floor is MAX_CANARY_AGE_HOURS itself ("older than" is strict),
+        # not some stricter margin under it.
+        _record_run(
+            store,
+            ran_at=datetime.now(timezone.utc) - timedelta(hours=MAX_CANARY_AGE_HOURS),
+            evaluation_canary=True,
+        )
+        store.require_dreaming_allowed()
+
+    def test_a_pass_27_hours_old_refuses_as_stale(
+        self, store: CanaryHaltStore
+    ) -> None:
+        _record_run(
+            store,
+            ran_at=datetime.now(timezone.utc) - timedelta(hours=27),
+            evaluation_canary=True,
+        )
+        with pytest.raises(
+            CanaryEvidenceStaleError, match=CANARY_EVIDENCE_STALE
+        ) as caught:
+            store.require_dreaming_allowed()
+        assert isinstance(caught.value, CanaryDeterminismBrokenError)
+        assert caught.value.halt is None
+
+    def test_a_toy_only_pass_refuses_as_stale(self, store: CanaryHaltStore) -> None:
+        # Fresh, but never exercised the evaluation canary: a toy-only pass
+        # over the frozen policy and tree never touches the real sandbox or
+        # evaluation path, so it is no better evidence than an old one.
+        _record_run(
+            store, ran_at=datetime.now(timezone.utc), evaluation_canary=False
+        )
+        with pytest.raises(CanaryEvidenceStaleError, match=CANARY_EVIDENCE_STALE):
+            store.require_dreaming_allowed()
+
+    def test_a_broken_newest_row_with_no_halt_on_record_still_refuses(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # Belt and suspenders: the guard's freshness question reads the
+        # newest *passing* run, not merely the newest row, so a run recorded
+        # broken (a contrived direct write here; python -m canary.run always
+        # pairs a break with a halt) is never read as fresh, complete
+        # evidence just because this store happens to carry no halt.
+        CanaryRunStore(store.database_url).record(
+            str(uuid.uuid4()),
+            score=0.9,
+            recorded_score=0.1,
+            deviation=0.8,
+            tolerance=DEFAULT_TOLERANCE,
+            within_tolerance=False,
+            evaluation_canary=True,
+            ran_at=datetime.now(timezone.utc),
+        )
+        assert store.halted() is False
+        with pytest.raises(CanaryEvidenceStaleError, match=CANARY_EVIDENCE_MISSING):
+            store.require_dreaming_allowed()
 
     def test_a_halted_store_refuses_and_carries_the_record(
         self, store: CanaryHaltStore
@@ -571,6 +675,19 @@ class TestTheGuard:
         assert isinstance(halt, DreamHalt)
         assert halt.code_hash == pair.policy.code_hash
         assert halt.detected_at == DETECTED_AT
+
+    def test_a_recorded_break_still_refuses_despite_a_fresh_full_pass(
+        self, store: CanaryHaltStore
+    ) -> None:
+        # The halt takes priority over freshness: a break on record stops
+        # dreaming no matter how recent or complete the run history is.
+        _record_run(store, ran_at=datetime.now(timezone.utc), evaluation_canary=True)
+        pair = _broken_pair()
+        store.halt(pair, replay_pair(pair), detected_at=DETECTED_AT, halted_at=HALTED_AT)
+        with pytest.raises(CanaryDeterminismBrokenError) as caught:
+            store.require_dreaming_allowed()
+        assert not isinstance(caught.value, CanaryEvidenceStaleError)
+        assert caught.value.halt is not None
 
     def test_the_module_level_guard_opens_its_own_store(
         self, store: CanaryHaltStore

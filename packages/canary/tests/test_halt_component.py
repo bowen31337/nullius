@@ -217,4 +217,19 @@ class TestTheHaltThroughTheAssembledSystem:
         assert not result.broken
         assert store_module.halt_dreaming(held, result) is None
         assert not composed_store.halted()
+
+        # The guard also asks whether there is a recent canary run that
+        # exercised the real evaluation path — recorded here, through the
+        # composed copy's own CanaryRunStore, so the "nightly green path"
+        # this test is about is not confounded with that second question.
+        run_module = import_module(f"{store_module.__name__}.run")
+        run_module.CanaryRunStore(composed_store.database_url).record(
+            "11111111-1111-1111-1111-111111111111",
+            score=EXPECTED_SCORE,
+            recorded_score=EXPECTED_SCORE,
+            deviation=0.0,
+            tolerance=store_module.DEFAULT_TOLERANCE,
+            within_tolerance=True,
+            evaluation_canary=True,
+        )
         composed_store.require_dreaming_allowed()

@@ -43,6 +43,7 @@ import sqlite3
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 from contextlib import closing, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,9 @@ from canary.run import (
     CANARY_REFERENCE_AMBIGUOUS,
     CANARY_REFERENCE_EXISTS,
     DATABASE_URL_ENV,
+    EVALUATION_CAMPAIGN_ID_ENV,
+    EVALUATION_NODE_ID_ENV,
+    EVALUATION_REFERENCE_TABLE,
     EXIT_BROKEN,
     EXIT_CONFIG,
     EXIT_OK,
@@ -119,8 +123,10 @@ def test_freeze_then_run_gives_exit_0_one_row_and_within_tolerance_true(
         "recorded_score",
         "deviation",
         "within_tolerance",
+        "evaluation_canary",
         "ran_at",
     }
+    assert payload["evaluation_canary"] is False  # no evaluation canary frozen
 
     assert _table_count(url, RUN_TABLE) == 1
 
@@ -129,6 +135,7 @@ def test_freeze_then_run_gives_exit_0_one_row_and_within_tolerance_true(
     assert newest.reference_id == reference_id
     assert newest.within_tolerance is True
     assert newest.score == payload["score"]
+    assert newest.evaluation_canary is False
 
 
 # -- A second freeze is refused, changing nothing ------------------------------
@@ -303,6 +310,68 @@ def test_newest_is_none_for_a_store_that_has_never_run(tmp_path: Path) -> None:
     assert store.newest() is None
 
 
+# -- newest_passing() skips a broken row, even the newest one ------------------
+
+
+def test_newest_passing_skips_a_broken_newest_row(tmp_path: Path) -> None:
+    # require_dreaming_allowed's own question is "the newest *passing* run",
+    # not merely the newest row -- a run recorded broken must not read as
+    # recent, complete evidence just because nothing else happened to halt
+    # on it.
+    url = _url(tmp_path)
+    store = CanaryRunStore(url)
+    reference_id = str(uuid.uuid4())
+
+    passing = store.record(
+        reference_id,
+        score=0.5,
+        recorded_score=0.5,
+        deviation=0.0,
+        tolerance=1e-12,
+        within_tolerance=True,
+        evaluation_canary=True,
+        ran_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    store.record(
+        reference_id,
+        score=0.9,
+        recorded_score=0.1,
+        deviation=0.8,
+        tolerance=1e-12,
+        within_tolerance=False,
+        evaluation_canary=True,
+        ran_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+    )
+
+    newest = store.newest()
+    assert newest is not None
+    assert newest.within_tolerance is False  # the broken row is the newest
+
+    newest_passing = store.newest_passing()
+    assert newest_passing is not None
+    assert newest_passing.id == passing.id
+    assert newest_passing.within_tolerance is True
+
+
+def test_newest_passing_is_none_when_every_row_is_broken_or_absent(
+    tmp_path: Path,
+) -> None:
+    url = _url(tmp_path)
+    store = CanaryRunStore(url)
+    assert store.newest_passing() is None
+
+    store.record(
+        str(uuid.uuid4()),
+        score=0.9,
+        recorded_score=0.1,
+        deviation=0.8,
+        tolerance=1e-12,
+        within_tolerance=False,
+        evaluation_canary=True,
+    )
+    assert store.newest_passing() is None
+
+
 # -- Registered as the "canary-run-store" component ---------------------------
 
 
@@ -335,6 +404,173 @@ def test_the_store_is_registered_as_canary_run_store_and_none_without_a_url(
     app3 = create_app()
     store2 = app3.get("canary-run-store")
     assert store2.database_url == store.database_url
+
+
+# -- The evaluation canary: a second comparison, through an injected evaluator -
+
+
+def _stub_evaluators(
+    node_score: float = 0.42, replay_score: float = 0.77
+) -> tuple[Callable[[str, str], float], Callable[[str], float]]:
+    """A node evaluator and a tree-replay evaluator, each a constant function.
+
+    Stands in for the real sandbox and evaluation config a campaign uses --
+    this suite never starts one. Each returns whatever score the test is
+    about, so a freeze records it as the constant and a later replay with a
+    different stub reproduces a mismatch on demand.
+    """
+
+    def evaluate_node(campaign_id: str, node_id: str) -> float:
+        return node_score
+
+    def replay_policy(campaign_id: str) -> float:
+        return replay_score
+
+    return evaluate_node, replay_policy
+
+
+def _evaluation_env(url: str) -> dict[str, str]:
+    return {
+        "DATABASE_URL": url,
+        EVALUATION_CAMPAIGN_ID_ENV: "campaign-1",
+        EVALUATION_NODE_ID_ENV: "node-1",
+    }
+
+
+def test_the_evaluation_canary_is_frozen_and_replays_as_a_full_pass(
+    tmp_path: Path,
+) -> None:
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+
+    freeze_lines: list[str] = []
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=freeze_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+    )
+    assert exit_code == EXIT_OK, freeze_lines
+    assert _table_count(url, EVALUATION_REFERENCE_TABLE) == 1
+
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=env,
+        emit=run_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+    )
+
+    assert exit_code == EXIT_OK
+    payload = json.loads(run_lines[0])
+    assert payload["within_tolerance"] is True
+    assert payload["evaluation_canary"] is True
+
+    newest = CanaryRunStore(url).newest()
+    assert newest is not None
+    assert newest.evaluation_canary is True
+
+    from canary import CanaryHaltStore
+
+    assert CanaryHaltStore(url).halted() is False
+
+
+def test_freezing_the_evaluation_canary_without_an_evaluator_is_refused(
+    tmp_path: Path,
+) -> None:
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        exit_code = main(["--freeze-reference"], env=env, emit=lambda _line: None)
+
+    assert exit_code == EXIT_REFUSED
+    message = stderr.getvalue()
+    assert EVALUATION_CAMPAIGN_ID_ENV in message
+    assert "Traceback" not in message
+    # Nothing was changed: neither reference was frozen, so a retry with
+    # both evaluators wired can still freeze the toy pair too.
+    assert _table_count(url, REFERENCE_TABLE) == 0
+    assert _table_count(url, EVALUATION_REFERENCE_TABLE) == 0
+
+
+def test_replaying_a_frozen_evaluation_canary_without_an_evaluator_is_refused(
+    tmp_path: Path,
+) -> None:
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=lambda _line: None,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+    )
+    assert exit_code == EXIT_OK
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        exit_code = main([], env=env, emit=lambda _line: None)
+
+    assert exit_code == EXIT_REFUSED
+    message = stderr.getvalue()
+    assert "no evaluator" in message
+    assert "Traceback" not in message
+    # The run was refused before anything was recorded: a toy-only pass must
+    # never be silently recorded in place of a configured evaluation canary.
+    assert _table_count(url, RUN_TABLE) == 0
+
+
+def test_an_evaluation_canary_mismatch_halts_dreaming(tmp_path: Path) -> None:
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+    freeze_evaluate_node, freeze_replay_policy = _stub_evaluators(
+        node_score=0.42, replay_score=0.77
+    )
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=lambda _line: None,
+        evaluate_node=freeze_evaluate_node,
+        replay_policy=freeze_replay_policy,
+    )
+    assert exit_code == EXIT_OK
+
+    # The world moved: the node now re-evaluates to a different score than
+    # the one frozen as its constant -- well past the 1e-12 band. The
+    # replay side still matches, so only the node sub-check breaks.
+    mismatched_evaluate_node, matching_replay_policy = _stub_evaluators(
+        node_score=0.42 + 0.5, replay_score=0.77
+    )
+
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=env,
+        emit=run_lines.append,
+        evaluate_node=mismatched_evaluate_node,
+        replay_policy=matching_replay_policy,
+    )
+
+    assert exit_code == EXIT_BROKEN
+    payload = json.loads(run_lines[0])
+    assert payload["within_tolerance"] is True  # the toy canary still holds
+    assert payload["evaluation_canary"] is True
+
+    assert _table_count(url, "canary_dream_halt") == 1
+
+    from canary import CanaryHaltStore
+
+    assert CanaryHaltStore(url).halted() is True
+
+    newest = CanaryRunStore(url).newest()
+    assert newest is not None
+    assert newest.evaluation_canary is True
 
 
 # -- No runpy RuntimeWarning: a subprocess, not an in-process call ------------

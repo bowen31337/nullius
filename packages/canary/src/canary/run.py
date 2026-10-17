@@ -81,23 +81,29 @@ from ._errors import CanaryError
 from ._halt import CanaryDeterminismBrokenError, halt_dreaming
 from ._reference import CanaryPolicy, CanaryReferencePair, CanaryTree
 from ._reference_store import REFERENCE_TABLE, CanaryReferenceStore
-from ._replay import replay_pair
+from ._replay import DEFAULT_TOLERANCE, CanaryReplayResult, replay_pair
 from ._void import void_scores_after_break
 
 __all__ = [
+    "CANARY_EVALUATION_REFERENCE_EXISTS",
     "CANARY_REFERENCE_ABSENT",
     "CANARY_REFERENCE_AMBIGUOUS",
     "CANARY_REFERENCE_EXISTS",
     "DATABASE_URL_ENV",
+    "EVALUATION_CAMPAIGN_ID_ENV",
+    "EVALUATION_NODE_ID_ENV",
+    "EVALUATION_REFERENCE_TABLE",
     "EXIT_BROKEN",
     "EXIT_CONFIG",
     "EXIT_OK",
     "EXIT_REFUSED",
+    "NodeEvaluator",
     "REFERENCE_POLICY",
     "REFERENCE_POLICY_VERSION",
     "REFERENCE_TREE",
     "RUN_STORE_COMPONENT_NAME",
     "RUN_TABLE",
+    "TreeReplayEvaluator",
     "CanaryRun",
     "CanaryRunStore",
     "build_run_store",
@@ -108,6 +114,35 @@ __all__ = [
 #: every store in this workspace already uses, restated here so this module
 #: states its own contract rather than depending on another's.
 DATABASE_URL_ENV = "DATABASE_URL"
+
+#: Configures the evaluation canary's two halves (see the module docstring
+#: addendum below): which campaign and which of its stored research nodes to
+#: re-evaluate, through the same sandbox and evaluation config a campaign
+#: uses, and whose stored policy replays over whose stored campaign tree.
+#: Both must be set for the evaluation canary to be frozen or replayed;
+#: either absent leaves this deployment's canary toy-only.
+EVALUATION_CAMPAIGN_ID_ENV = "NULLIUS_CANARY_CAMPAIGN_ID"
+EVALUATION_NODE_ID_ENV = "NULLIUS_CANARY_NODE_ID"
+
+#: A caller re-evaluating one stored research node, given its campaign and
+#: its own id, through whatever the real evaluation path is for that
+#: deployment. Real wiring (the sandbox, the evaluation config a campaign
+#: uses) is injected by the caller that composes this module with one — this
+#: module only freezes and compares what the callable returns, the same
+#: division :func:`replay_pair` draws between computing a score and halting
+#: on it. Tests supply a stub; no test in this package starts a real sandbox.
+NodeEvaluator = Callable[[str, str], float]
+
+#: A caller replaying one stored policy over one stored campaign tree, given
+#: the campaign id both are stored under. Same injection stance as
+#: :data:`NodeEvaluator`.
+TreeReplayEvaluator = Callable[[str], float]
+
+#: ``--freeze-reference`` found an evaluation-canary reference already on
+#: record. Mirrors :data:`CANARY_REFERENCE_EXISTS` for the toy pair: freezing
+#: a second one would leave the nightly canary unable to say which campaign,
+#: node and policy replay to trust, so nothing is changed.
+CANARY_EVALUATION_REFERENCE_EXISTS = "canary_evaluation_reference_exists"
 
 # -- The built-in reference pair ------------------------------------------------
 #
@@ -234,15 +269,20 @@ _RUN_SCHEMA = f"""
 -- pair it replayed. `score`, `recorded_score`, `deviation` and `tolerance`
 -- are the comparison feature 142's replay carried; `within_tolerance` is its
 -- verdict, so a reader can recompute it from the row's own arithmetic.
+-- `evaluation_canary` records whether this run also exercised the
+-- evaluation canary (the real-evaluation-path half, beside the toy
+-- policy-over-tree replay) -- the coverage `require_dreaming_allowed`
+-- refuses dreaming without, on a run recent enough besides.
 CREATE TABLE IF NOT EXISTS {RUN_TABLE} (
-    id               TEXT NOT NULL PRIMARY KEY,
-    reference_id     TEXT NOT NULL,
-    ran_at           TEXT NOT NULL,
-    score            REAL NOT NULL,
-    recorded_score   REAL NOT NULL,
-    deviation        REAL NOT NULL,
-    tolerance        REAL NOT NULL,
-    within_tolerance BOOLEAN NOT NULL
+    id                 TEXT NOT NULL PRIMARY KEY,
+    reference_id       TEXT NOT NULL,
+    ran_at             TEXT NOT NULL,
+    score              REAL NOT NULL,
+    recorded_score     REAL NOT NULL,
+    deviation          REAL NOT NULL,
+    tolerance          REAL NOT NULL,
+    within_tolerance   BOOLEAN NOT NULL,
+    evaluation_canary  BOOLEAN NOT NULL DEFAULT 0
 );
 """
 
@@ -251,8 +291,32 @@ CREATE TABLE IF NOT EXISTS {RUN_TABLE} (
 #: on a column order.
 _COLUMNS = (
     "id, reference_id, ran_at, score, recorded_score, deviation, tolerance, "
-    "within_tolerance"
+    "within_tolerance, evaluation_canary"
 )
+
+#: The evaluation canary's frozen constants: one row, written once at
+#: ``--freeze-reference`` and read on every plain run. A separate,
+#: member-owned table rather than a column on :data:`REFERENCE_TABLE` (which
+#: this module does not own) or a second row shape on :data:`RUN_TABLE`
+#: (which is append-only history, not configuration) — the same "a different
+#: question, a different table" stance the rest of this package's stores
+#: take. ``campaign_id`` and ``node_id`` name what was frozen; ``node_score``
+#: and ``replay_score`` are that freeze's own two measurements (each pair's
+#: constant is its own replay, the same rule :func:`_freeze_reference`
+#: already follows for the toy pair) -- never a number invented outside a
+#: freeze.
+EVALUATION_REFERENCE_TABLE = "canary_evaluation_reference"
+
+_EVALUATION_REFERENCE_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {EVALUATION_REFERENCE_TABLE} (
+    id            TEXT NOT NULL PRIMARY KEY,
+    campaign_id   TEXT NOT NULL,
+    node_id       TEXT NOT NULL,
+    node_score    REAL NOT NULL,
+    replay_score  REAL NOT NULL,
+    created_at    TEXT NOT NULL
+);
+"""
 
 
 @dataclass(frozen=True)
@@ -287,6 +351,13 @@ class CanaryRun:
     tolerance: float
     #: Whether the deviation was within the tolerance.
     within_tolerance: bool
+    #: Whether this run also exercised the evaluation canary -- the
+    #: real-evaluation-path half beside the toy policy-over-tree replay.
+    #: ``False`` for a run made before this field existed (the legacy
+    #: default, honest: a row with no notion of the evaluation canary never
+    #: ran one) and for a toy-only run on a deployment that has never frozen
+    #: one.
+    evaluation_canary: bool
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _validated_uuid("id", self.id))
@@ -341,6 +412,15 @@ class CanaryRun:
                 "that disagrees with its own deviation and tolerance would "
                 "tell the operator the canary passed when it did not"
             )
+        if not isinstance(self.evaluation_canary, bool):
+            raise CanaryError(
+                f"a canary run's evaluation_canary must be a bool, got "
+                f"{self.evaluation_canary!r} "
+                f"({type(self.evaluation_canary).__name__}); whether this run "
+                "exercised the real evaluation path is one bit, and a "
+                "truthy-looking non-bool is the value that would silently "
+                "misreport a toy-only run as a full one"
+            )
 
     def to_payload(self) -> dict[str, Any]:
         """The run as a plain mapping, for a log line or an operator's report."""
@@ -353,6 +433,7 @@ class CanaryRun:
             "deviation": self.deviation,
             "tolerance": self.tolerance,
             "within_tolerance": self.within_tolerance,
+            "evaluation_canary": self.evaluation_canary,
         }
 
 
@@ -450,6 +531,20 @@ class CanaryRunStore:
         connection = sqlite3.connect(path)
         with connection:
             connection.executescript(_RUN_SCHEMA)
+            # `CREATE TABLE IF NOT EXISTS` leaves a table created before this
+            # column existed untouched, so a brought-forward database is
+            # upgraded explicitly -- the same guarded `ALTER TABLE` idiom
+            # `ledger.store` uses for its own columns. Idempotent by
+            # construction: a table that already holds the column takes the
+            # cheap path on every later connect.
+            columns = {
+                row[1] for row in connection.execute(f"PRAGMA table_info({RUN_TABLE})")
+            }
+            if "evaluation_canary" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {RUN_TABLE} "
+                    "ADD COLUMN evaluation_canary BOOLEAN NOT NULL DEFAULT 0"
+                )
         return connection
 
     def ensure_schema(self) -> None:
@@ -465,6 +560,7 @@ class CanaryRunStore:
         deviation: float,
         tolerance: float,
         within_tolerance: bool,
+        evaluation_canary: bool = False,
         ran_at: Optional[datetime] = None,
     ) -> CanaryRun:
         """Persist one run of the nightly canary — append-only.
@@ -474,6 +570,11 @@ class CanaryRunStore:
         not a fact about a break that happens once, it is a fact about one
         night, and the next night's run is a different fact even when the
         reference pair and the verdict are unchanged.
+
+        ``evaluation_canary`` defaults to ``False`` — a toy-only run, the
+        honest default for a caller that does not say otherwise, and the
+        state this package's own module-level ``require_dreaming_allowed``
+        extension refuses dreaming on when it is the newest run's own word.
         """
         candidate = CanaryRun(
             id=str(uuid.uuid4()),
@@ -484,11 +585,12 @@ class CanaryRunStore:
             deviation=deviation,
             tolerance=tolerance,
             within_tolerance=within_tolerance,
+            evaluation_canary=evaluation_canary,
         )
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 f"INSERT INTO {RUN_TABLE} ({_COLUMNS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     candidate.id,
                     candidate.reference_id,
@@ -498,6 +600,7 @@ class CanaryRunStore:
                     candidate.deviation,
                     candidate.tolerance,
                     candidate.within_tolerance,
+                    candidate.evaluation_canary,
                 ),
             )
         return candidate
@@ -525,6 +628,32 @@ class CanaryRunStore:
             return None
         return self._record_from_row(row)
 
+    def newest_passing(self) -> Optional[CanaryRun]:
+        """The most recent run that *passed*, or ``None`` when none has.
+
+        ``require_dreaming_allowed``'s own question, read literally: "the
+        newest *passing* canary run" (app_spec.xml), not merely the newest
+        row. A broken run already means feature 143's own ``halt_dreaming``
+        wrote a permanent halt (checked first, and independently, by the
+        guard) — but this read does not lean on that invariant holding
+        elsewhere: a run recorded broken is excluded here by its own
+        ``within_tolerance``, so a caller asking "is there recent, complete,
+        *passing* evidence" never accidentally reads a row that only looks
+        recent and complete because nothing else happened to notice it broke.
+        """
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                f"SELECT {_COLUMNS} FROM {RUN_TABLE} WHERE within_tolerance = 1 "
+                "ORDER BY ran_at DESC, id DESC LIMIT 1"
+            )
+            try:
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+        if row is None:
+            return None
+        return self._record_from_row(row)
+
     @staticmethod
     def _record_from_row(row: tuple) -> CanaryRun:
         return CanaryRun(
@@ -536,6 +665,7 @@ class CanaryRunStore:
             deviation=row[5],
             tolerance=row[6],
             within_tolerance=bool(row[7]),
+            evaluation_canary=bool(row[8]),
         )
 
 
@@ -583,7 +713,147 @@ def _active_reference_ids(store: CanaryReferenceStore) -> tuple[str, ...]:
     return tuple(row[0] for row in rows)
 
 
-def _freeze_reference(database_url: str) -> str:
+def _evaluation_reference_row(
+    database_url: str,
+) -> Optional[tuple[str, str, float, float]]:
+    """The frozen evaluation-canary constants, or ``None`` when none is frozen.
+
+    Reads :data:`EVALUATION_REFERENCE_TABLE` directly, the same read-before-
+    create stance :func:`_active_reference_ids` takes for the toy pair: a
+    database this module has never touched — no file, or a file with no
+    such table yet — has no evaluation-canary reference, read as ``None``
+    rather than an error, because this function is a read and reading
+    before the first freeze must not create anything or raise.
+    """
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        return None
+    with closing(sqlite3.connect(path)) as connection:
+        try:
+            row = connection.execute(
+                f"SELECT campaign_id, node_id, node_score, replay_score "
+                f"FROM {EVALUATION_REFERENCE_TABLE} LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return row
+
+
+def _freeze_evaluation_reference(
+    database_url: str,
+    *,
+    campaign_id: str,
+    node_id: str,
+    node_score: float,
+    replay_score: float,
+) -> None:
+    """Freeze the evaluation canary's two constants, once.
+
+    Mirrors :func:`_freeze_reference`'s own shape for the toy pair: refuses
+    with :data:`CANARY_EVALUATION_REFERENCE_EXISTS` when a row already
+    exists, naming what it froze, and changes nothing in that case. The two
+    scores are the caller's own evaluators' *current* answers — "the
+    recorded constant is its own replay score" holds here exactly as it
+    does for the toy pair, never a number invented outside a freeze.
+    """
+    path = _sqlite_path(database_url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript(_EVALUATION_REFERENCE_SCHEMA)
+        existing = connection.execute(
+            f"SELECT campaign_id, node_id FROM {EVALUATION_REFERENCE_TABLE} LIMIT 1"
+        ).fetchone()
+        if existing is not None:
+            raise CanaryError(
+                f"{CANARY_EVALUATION_REFERENCE_EXISTS}: an evaluation canary "
+                f"reference is already frozen (campaign_id={existing[0]!r}, "
+                f"node_id={existing[1]!r}); freezing a second one would "
+                "leave the nightly canary unable to say which campaign, "
+                "node and policy replay to trust, so nothing was changed"
+            )
+        connection.execute(
+            f"INSERT INTO {EVALUATION_REFERENCE_TABLE} "
+            "(id, campaign_id, node_id, node_score, replay_score, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                campaign_id,
+                node_id,
+                float(node_score),
+                float(replay_score),
+                _utc_now().isoformat(),
+            ),
+        )
+
+
+def _evaluation_canary_check(
+    label: str,
+    campaign_id: str,
+    node_id: str,
+    *,
+    score: float,
+    recorded_score: float,
+) -> tuple[CanaryReferencePair, CanaryReplayResult]:
+    """One sub-check of the evaluation canary, in the toy canary's own shape.
+
+    Builds a :class:`~canary.CanaryReferencePair` naming *what* was
+    evaluated (``label`` is ``"node"`` or ``"replay"``, so the two halves
+    the feature describes — the stored node re-evaluation and the stored
+    policy's replay over the stored tree — each carry their own identity)
+    and a :class:`~canary.CanaryReplayResult` built directly from the
+    evaluator's score and the frozen constant, under §12's own
+    :data:`~canary.DEFAULT_TOLERANCE`. The pair and the result are not
+    replayed through :func:`replay_pair` — there is no toy tree to sum here,
+    the score already came from the real evaluation path the caller's
+    evaluator ran — but both are the exact types :func:`~canary.halt_dreaming`
+    and :class:`~canary.CanaryHaltStore` already consume, so a mismatch
+    records the break and halts dreaming exactly as the toy canary's does,
+    through the same one door.
+    """
+    policy = CanaryPolicy.freeze(
+        version=f"canary-evaluation-{label}:{campaign_id}:{node_id}",
+        policy={
+            "kind": "canary-evaluation",
+            "part": label,
+            "campaign_id": campaign_id,
+            "node_id": node_id,
+        },
+    )
+    tree = CanaryTree.freeze(
+        {
+            "evaluation": (
+                None,
+                0,
+                {"label": label, "campaign_id": campaign_id, "node_id": node_id},
+            )
+        }
+    )
+    pair = CanaryReferencePair(
+        policy=policy,
+        tree=tree,
+        recorded_score=recorded_score,
+        id=None,
+        is_active=True,
+        created_at=_utc_now(),
+    )
+    deviation = abs(score - recorded_score)
+    result = CanaryReplayResult(
+        score=score,
+        recorded_score=recorded_score,
+        deviation=deviation,
+        within_tolerance=deviation <= DEFAULT_TOLERANCE,
+        tolerance=DEFAULT_TOLERANCE,
+    )
+    return pair, result
+
+
+def _freeze_reference(
+    database_url: str,
+    *,
+    env: Mapping[str, str],
+    evaluate_node: Optional[NodeEvaluator] = None,
+    replay_policy: Optional[TreeReplayEvaluator] = None,
+) -> str:
     """``--freeze-reference``'s whole act: freeze the built-in pair, once.
 
     Refuses with :data:`CANARY_REFERENCE_EXISTS` when an active pair is
@@ -596,6 +866,16 @@ def _freeze_reference(database_url: str) -> str:
     *is* its own replay score, so the first plain run after this one finds a
     pair already within tolerance of itself — and returns the minted
     ``reference_id``.
+
+    When :data:`EVALUATION_CAMPAIGN_ID_ENV` and :data:`EVALUATION_NODE_ID_ENV`
+    are both set in ``env``, this also freezes the evaluation canary's two
+    constants (:func:`_freeze_evaluation_reference`), calling ``evaluate_node``
+    and ``replay_policy`` once each the same way the toy pair's own replay
+    is called once to learn its score. Configured without an evaluator
+    supplied is refused outright rather than silently freezing the toy pair
+    alone: a deployment that named a campaign and a node meant to freeze the
+    evaluation canary, and a quiet partial freeze would leave every later
+    run toy-only with no refusal to say why.
     """
     store = CanaryReferenceStore(database_url)
     existing = _active_reference_ids(store)
@@ -606,6 +886,25 @@ def _freeze_reference(database_url: str) -> str:
             "pair would leave the nightly canary unable to say which one to "
             "replay, so nothing was changed"
         )
+
+    campaign_id = env.get(EVALUATION_CAMPAIGN_ID_ENV, "").strip()
+    node_id = env.get(EVALUATION_NODE_ID_ENV, "").strip()
+    evaluation_configured = bool(campaign_id and node_id)
+    if evaluation_configured and (evaluate_node is None or replay_policy is None):
+        # Checked before anything is written, the same "refuse first, touch
+        # nothing" shape :data:`CANARY_REFERENCE_EXISTS` already takes: a
+        # deployment that named a campaign and a node meant to freeze the
+        # evaluation canary too, and a quiet freeze of the toy pair alone
+        # would leave a reference on record that nobody asked for.
+        raise CanaryError(
+            f"{EVALUATION_CAMPAIGN_ID_ENV} and {EVALUATION_NODE_ID_ENV} "
+            "configure the evaluation canary (campaign_id="
+            f"{campaign_id!r}, node_id={node_id!r}), but no evaluator was "
+            "supplied to freeze it, so nothing was changed; wire "
+            "`evaluate_node` and `replay_policy` into this call before "
+            "freezing"
+        )
+
     policy = CanaryPolicy.freeze(
         version=REFERENCE_POLICY_VERSION, policy=REFERENCE_POLICY
     )
@@ -629,24 +928,53 @@ def _freeze_reference(database_url: str) -> str:
         created_at=instant,
     )
     record = store.freeze(pair)
+
+    if evaluation_configured:
+        assert evaluate_node is not None and replay_policy is not None
+        node_score = float(evaluate_node(campaign_id, node_id))
+        replay_score = float(replay_policy(campaign_id))
+        _freeze_evaluation_reference(
+            database_url,
+            campaign_id=campaign_id,
+            node_id=node_id,
+            node_score=node_score,
+            replay_score=replay_score,
+        )
     return record.reference_id
 
 
-def _replay_active_reference(database_url: str) -> tuple[dict[str, Any], bool]:
+def _replay_active_reference(
+    database_url: str,
+    *,
+    evaluate_node: Optional[NodeEvaluator] = None,
+    replay_policy: Optional[TreeReplayEvaluator] = None,
+) -> tuple[dict[str, Any], bool]:
     """A plain run's whole act: load, replay, record, and halt on a break.
 
     Refuses with :data:`CANARY_REFERENCE_ABSENT` or
     :data:`CANARY_REFERENCE_AMBIGUOUS` when the reference-pair cardinality
     this module enforces (see the module docstring) is not exactly one —
     before anything is replayed or recorded. Otherwise replays the single
-    active pair, records one :class:`CanaryRun` row unconditionally, and —
-    only on a deviation past tolerance — calls
-    :func:`~canary.halt_dreaming` (swallowing the
-    :class:`~canary.CanaryDeterminismBrokenError` it raises after writing
-    the halt row; that raise *is* feature 143's alert, not a refusal this
-    command reports as one) and :func:`~canary.void_scores_after_break`, in
-    that order, before returning. Returns the printed payload and whether
-    the run broke.
+    active pair and, when an evaluation canary is frozen
+    (:func:`_evaluation_reference_row`), also re-evaluates the stored node
+    and re-replays the stored policy over the stored tree through the
+    caller's own ``evaluate_node``/``replay_policy``, each compared against
+    its own frozen constant (:func:`_evaluation_canary_check`) — the same
+    §12 comparison the toy pair's replay makes, over a score the real
+    evaluation path produced rather than one this package's own tree sum
+    computed. Records one :class:`CanaryRun` row unconditionally (naming
+    whether the evaluation canary was included), and — for every comparison
+    that broke, toy or evaluation — calls :func:`~canary.halt_dreaming`
+    (swallowing the :class:`~canary.CanaryDeterminismBrokenError` it raises
+    after writing the halt row; that raise *is* feature 143's alert, not a
+    refusal this command reports as one) and, once, afterwards,
+    :func:`~canary.void_scores_after_break`. Returns the printed payload and
+    whether the run broke.
+
+    An evaluation canary frozen without an evaluator supplied to replay it
+    is refused outright, before the run row is written: the nightly canary
+    must not silently record a toy-only pass as a full one just because its
+    caller forgot to wire the evaluator in.
     """
     reference_store = CanaryReferenceStore(database_url)
     active_ids = _active_reference_ids(reference_store)
@@ -666,6 +994,36 @@ def _replay_active_reference(database_url: str) -> tuple[dict[str, Any], bool]:
     reference_id = active_ids[0]
     pair = reference_store.load(reference_id).pair
     result = replay_pair(pair)
+
+    breaks: list[tuple[CanaryReferencePair, CanaryReplayResult]] = []
+    if not result.within_tolerance:
+        breaks.append((pair, result))
+
+    evaluation_row = _evaluation_reference_row(database_url)
+    evaluation_included = evaluation_row is not None
+    if evaluation_row is not None:
+        campaign_id, node_id, node_recorded, replay_recorded = evaluation_row
+        if evaluate_node is None or replay_policy is None:
+            raise CanaryError(
+                "an evaluation canary reference is frozen (campaign_id="
+                f"{campaign_id!r}, node_id={node_id!r}) but no evaluator was "
+                "supplied to replay it; the nightly canary must not "
+                "silently record a toy-only pass as a full one, so this run "
+                "refuses rather than skipping the evaluation canary"
+            )
+        node_score = float(evaluate_node(campaign_id, node_id))
+        replay_score = float(replay_policy(campaign_id))
+        for label, score, recorded in (
+            ("node", node_score, node_recorded),
+            ("replay", replay_score, replay_recorded),
+        ):
+            eval_pair, eval_result = _evaluation_canary_check(
+                label, campaign_id, node_id, score=score, recorded_score=recorded
+            )
+            if not eval_result.within_tolerance:
+                breaks.append((eval_pair, eval_result))
+
+    broken = bool(breaks)
     run_record = CanaryRunStore(database_url).record(
         reference_id,
         score=result.score,
@@ -673,17 +1031,18 @@ def _replay_active_reference(database_url: str) -> tuple[dict[str, Any], bool]:
         deviation=result.deviation,
         tolerance=result.tolerance,
         within_tolerance=result.within_tolerance,
+        evaluation_canary=evaluation_included,
     )
-    broken = not result.within_tolerance
-    if broken:
+    for break_pair, break_result in breaks:
         try:
-            halt_dreaming(pair, result, database_url=database_url)
+            halt_dreaming(break_pair, break_result, database_url=database_url)
         except CanaryDeterminismBrokenError:
             # The raise *is* feature 143's determinism_broken alert, already
             # persisted by halt_dreaming before it raised — not a refusal
             # this command reports as EXIT_REFUSED. Feature 144's sweep
             # still runs, and the broken JSON line is still printed, below.
             pass
+    if breaks:
         void_scores_after_break(database_url=database_url)
     payload = {
         "reference_id": run_record.reference_id,
@@ -691,6 +1050,7 @@ def _replay_active_reference(database_url: str) -> tuple[dict[str, Any], bool]:
         "recorded_score": run_record.recorded_score,
         "deviation": run_record.deviation,
         "within_tolerance": run_record.within_tolerance,
+        "evaluation_canary": run_record.evaluation_canary,
         "ran_at": run_record.ran_at.isoformat(),
     }
     return payload, broken
@@ -722,6 +1082,8 @@ def main(
     *,
     env: Mapping[str, str] | None = None,
     emit: Callable[[str], object] = print,
+    evaluate_node: Optional[NodeEvaluator] = None,
+    replay_policy: Optional[TreeReplayEvaluator] = None,
 ) -> int:
     """``python -m canary.run [--freeze-reference]``.
 
@@ -734,8 +1096,8 @@ def main(
     not a record of a replay.  With no flag, replays the active pair
     (:func:`_replay_active_reference`), prints one JSON line (``reference_id``,
     ``score``, ``recorded_score``, ``deviation``, ``within_tolerance``,
-    ``ran_at``) and returns :data:`EXIT_BROKEN` when the run broke,
-    :data:`EXIT_OK` otherwise.
+    ``evaluation_canary``, ``ran_at``) and returns :data:`EXIT_BROKEN` when
+    the run broke, :data:`EXIT_OK` otherwise.
 
     Either verb's refusal — a bad reference-pair cardinality, a
     collaborator's own :class:`~canary.CanaryError` — is caught here,
@@ -747,6 +1109,14 @@ def main(
 
     ``env`` and ``emit`` are this command's seams, read and written exactly
     as the other operator CLIs in this workspace take them.
+    ``evaluate_node`` and ``replay_policy`` are the evaluation canary's own
+    seams (:data:`NodeEvaluator`, :data:`TreeReplayEvaluator`): a caller that
+    wires this command into a real deployment supplies the real evaluation
+    path through them; a deployment that has configured
+    :data:`EVALUATION_CAMPAIGN_ID_ENV`/:data:`EVALUATION_NODE_ID_ENV` (to
+    freeze) or already froze an evaluation-canary reference (to replay)
+    without supplying them is refused by name rather than silently running
+    the toy canary alone.
     """
     arguments = _build_parser().parse_args(argv)
     source = os.environ if env is None else env
@@ -762,7 +1132,12 @@ def main(
 
     if arguments.freeze_reference:
         try:
-            reference_id = _freeze_reference(database_url)
+            reference_id = _freeze_reference(
+                database_url,
+                env=source,
+                evaluate_node=evaluate_node,
+                replay_policy=replay_policy,
+            )
         except CanaryError as exc:
             print(str(exc), file=sys.stderr)
             return EXIT_REFUSED
@@ -770,7 +1145,9 @@ def main(
         return EXIT_OK
 
     try:
-        payload, broken = _replay_active_reference(database_url)
+        payload, broken = _replay_active_reference(
+            database_url, evaluate_node=evaluate_node, replay_policy=replay_policy
+        )
     except CanaryError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
