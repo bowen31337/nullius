@@ -15,6 +15,7 @@ that API in full:
     question.probe_batch(cells, on_reveal=...)
     question.budget_remaining()                     # statistical, not compute
     question.commit(node_id)                        # REQUIRED; omitting scores −inf
+    question.abstain()                              # the declared miss: abstained=True, the same −inf
 
 **A world is not a question, and the split is the feature.**  The world
 (:mod:`bootstrap._world`) owns the *answer surface*: it can name its root,
@@ -68,6 +69,29 @@ is the trial's fact (feature 185's ``charges_budget`` is a statement about
 what the trial records), not the world's. The question therefore never
 tracks a budget; it states the world's stance.
 
+**The terminal register holds one value: a pick, or a declared abstention.**
+``commit`` and ``abstain`` are the two writings of one register, and the
+register is the bootstrap front's own spelling of the terminal-act law
+``policy_runtime.EpisodeCommit`` owns on the campaign side (feature 222,
+and its abstention door in additions_spec_policy_abstention.xml feature 1):
+an episode ends having committed to one node, having declared that it
+commits nothing, or having done neither — and no ending is two of those.
+The declaration exists because docs/preregistration/2026-10-17-m3-dreaming.md
+makes abstaining a legitimate outcome (an abstained arm is scored as a flat
+book), while the floor alone cannot tell a policy that *chose* to commit
+nothing from one that fell off its end; :meth:`abstain` is the choice,
+:attr:`abstained` is the read of it, and the score is deliberately the
+same number either way (see :meth:`BootstrapQuestion.abstain`). The door
+is the question's own rather than a composed ``EpisodeCommit`` for two
+reasons: the record fronts a campaign tree's address seam
+(``question.tree.node``), which a bootstrap question deliberately does not
+carry — the reason :mod:`orchestrator._bootstrap_eval` reads the committed
+node straight off the question rather than opening a record — and this
+member owns no dependency on the policy runtime, so the terminal verbs a
+policy reaches are spelled here, over the world, in the one object the
+policy is handed (additions_spec_policy_abstention.xml, "Policy Contract",
+feature 4).
+
 **``theme_root`` is the family, and it is the domain.**  docs §11.1 exposes
 ``theme_root`` in ``meta()`` because the overfit signature is only partly
 family-invariant, and the policy writes family-conditional thresholds. A
@@ -80,9 +104,10 @@ report different roots through the identical interface — which is the whole
 point of §10.6's *"one policy, both pools"*.
 
 Stdlib only, and import-cheap: the question wraps the world's own primitives
-and adds a reveal set. No third-party import at module scope, so the
-factory's scan — which imports this package to fire its ``@register`` — pays
-nothing for the seam.
+and adds a reveal set and a terminal register — no dependency on the policy
+runtime whose terminal-act law it restates. No third-party import at module
+scope, so the factory's scan — which imports this package to fire its
+``@register`` — pays nothing for the seam.
 """
 
 from __future__ import annotations
@@ -259,12 +284,13 @@ class BootstrapQuestion:
     identical ``question.*`` API docs/nullius-tech-architecture.md §11 names
     — :meth:`observed`, :meth:`legal_actions`, :meth:`legal_roots`,
     :meth:`meta`, :meth:`probe_batch`, :meth:`budget_remaining`,
-    :meth:`commit` — so one policy written against a financial campaign runs
-    unmodified against a bootstrap world. The question is bound to the world
-    it wraps: its ``legal_actions`` are the world's neighbours, its labels
-    are the world's honest ``R²``, and its ``meta`` is read off the world's
-    lattice, so the two cannot drift — change the world and the question's
-    answers change with it, to the same cells.
+    :meth:`commit` and :meth:`abstain` — so one policy written against a
+    financial campaign runs unmodified against a bootstrap world. The
+    question is bound to the world it wraps: its ``legal_actions`` are the
+    world's neighbours, its labels are the world's honest ``R²``, and its
+    ``meta`` is read off the world's lattice, so the two cannot drift —
+    change the world and the question's answers change with it, to the same
+    cells.
 
     The only state the question adds to the world is the *reveal set* — the
     cells a policy has committed to look at — and that is the one fact a
@@ -273,7 +299,10 @@ class BootstrapQuestion:
     which is not a ground truth). Every other answer is a pure function of
     ``(world, node_id)``, computed afresh each call, so the same node
     revealed twice answers the identical observation whatever order the
-    reveals came in.
+    reveals came in. The one further piece of state is the *terminal
+    register* — the pick a policy has committed to, or its declaration that
+    it commits nothing — which is episode state of exactly the kind the
+    reveal set is: a fact about what this policy did, not about the world.
 
     Constructed from the world it wraps; the world is validated at
     construction, so a question built over a non-world or an unnamed world is
@@ -281,7 +310,7 @@ class BootstrapQuestion:
     differently from the world it claims to front.
     """
 
-    __slots__ = ("_committed", "_revealed", "_world")
+    __slots__ = ("_abstained", "_committed", "_revealed", "_world")
 
     def __init__(self, world: HyperparameterWorld) -> None:
         # Duck-typed, not ``isinstance``: the module loader imports the member
@@ -319,6 +348,11 @@ class BootstrapQuestion:
             )
         self._world = world
         self._revealed: set[str] = set()
+        # The terminal register starts empty: neither a pick nor a
+        # declaration, the state a policy that has not yet made its terminal
+        # act is honestly read as (and the state a fall-off never leaves).
+        self._committed: str | None = None
+        self._abstained = False
 
     @property
     def world(self) -> HyperparameterWorld:
@@ -484,20 +518,93 @@ class BootstrapQuestion:
         policy's final choice; it is not added to the revealed set, because
         committing is the terminal act, not a reveal, and a policy's score is
         a fact about its commit and its reveals, kept apart.
+
+        One register with :meth:`abstain`, and a *register*, not a one-shot
+        door: the call also clears any abstention a policy declared earlier,
+        and a second commit replaces the first. That is the front's own
+        contract, pinned by the deployment — the round loop a replay drives
+        asks ``select(question)`` once per round and the shipped incumbent
+        (deploy/dreaming/incumbent.example.py) re-states its current best on
+        every round, so the pick the episode is scored on is the *last* one
+        the policy named, whatever it named on the way. A policy that
+        declared it commits nothing and then finds a cell worth committing is
+        read the same way: its last terminal act is the commit, and the
+        register says so.
         """
         self._world.steps(node_id)  # refuses a node outside the lattice
         self._committed = node_id
+        self._abstained = False
         return node_id
+
+    def abstain(self) -> None:
+        """Declare that this episode commits nothing — the register's other value.
+
+        The policy's *deliberate* abstention, recorded as one
+        (additions_spec_policy_abstention.xml, "Policy Contract", feature 4).
+        docs §598 and prd §438 make the commit mandatory and score its
+        absence −inf, and the M3 pre-registration makes abstaining a
+        legitimate outcome of a world where committing badly is worse
+        (docs/preregistration/2026-10-17-m3-dreaming.md: an abstained arm is
+        scored as a flat book) — so a bootstrap world's question carries the
+        verb the financial front's record already carries
+        (:meth:`policy_runtime.EpisodeCommit.abstain`), and one policy runs
+        unmodified over both pools, abstaining the same way on either.
+
+        What the call buys is the *record*, never a different score: an
+        abstained episode has no pick and is scored the miss's floor exactly
+        as a policy that fell off its end is (the dreaming evaluator reads
+        :attr:`committed`, sees ``None``, and answers the miss score it
+        always answered — no stored score changes), while :attr:`abstained`
+        lets a runtime count declarations without mistaking one for a
+        fall-off. Returns ``None``, as the record's own abstain does: there
+        is no pick to hand back, and a value here would be the pick this call
+        exists to say will not be made.
+
+        The same register :meth:`commit` writes, from the other side: the
+        call clears any pick a policy committed earlier, and a later commit
+        clears the declaration in turn — the register holds one value, so no
+        episode is ever read as both committed and abstained, which is the
+        invariant ``policy_runtime.EpisodeCommit`` draws its refusal door
+        around. The bootstrap front keeps the invariant with a slot rather
+        than with refusals because its commit is a per-round register, not a
+        one-shot act (see :meth:`commit`), and the abstaining analogue of the
+        shipped every-round committer — a policy that declares on every round
+        while it keeps exploring — must not be refused for re-declaring what
+        it has already said.
+        """
+        self._abstained = True
+        self._committed = None
 
     @property
     def committed(self) -> str | None:
-        """The committed cell, or ``None`` if none has been committed — read-only."""
-        return getattr(self, "_committed", None)
+        """The committed cell, or ``None`` if none has been committed — read-only.
+
+        ``None`` until a commit lands, and ``None`` again from the moment a
+        policy abstains: an abstention is the declaration that no pick will
+        be made, not a pick of nothing, so the replay reading this attribute
+        answers the miss score for an abstained episode exactly as it does
+        for one that never committed at all.
+        """
+        return self._committed
+
+    @property
+    def abstained(self) -> bool:
+        """Whether the episode's policy declared that it commits nothing — read-only.
+
+        ``False`` until :meth:`abstain` lands and from the moment a
+        :meth:`commit` replaces the declaration, and ``True`` for an episode
+        whose last terminal act was the declaration. The read the runtime
+        counts declarations by — the flag that keeps a *chosen* miss
+        distinguishable from a policy that simply fell off its end, with no
+        score differing between them.
+        """
+        return self._abstained
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return (
             f"BootstrapQuestion(world_id={self._world.world_id!r}, "
-            f"revealed={len(self._revealed)})"
+            f"revealed={len(self._revealed)}, "
+            f"committed={self._committed!r}, abstained={self._abstained})"
         )
 
 

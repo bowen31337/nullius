@@ -41,6 +41,20 @@ tests hold the wrapper to it, and they pin five things:
   terminal cell.  A policy written against a financial campaign reaches each
   of these by name and finds the shape it expects.
 
+* **the terminal register holds one value — a pick, or a declared
+  abstention** (additions_spec_policy_abstention.xml, "Policy Contract",
+  feature 4).  ``abstain`` is the deliberate declaration that the episode
+  commits nothing, ``abstained`` is its read, and the two writings clear
+  each other because the register has one slot — so no termination is ever
+  both committed and abstained, the invariant ``policy_runtime.
+  EpisodeCommit`` draws its refusal door around, held here by construction
+  rather than by refusal.  The score never differs between a declaration
+  and a fall-off: an abstained episode has no pick and answers the miss
+  floor exactly as a policy that never reached the verb does, which the
+  tests below drive as the dreaming evaluator drives a candidate — a round
+  loop over ``select(question)``, then the read off the question — on one
+  world of each domain, because all three fronts are this class.
+
 * **the adapter is a fact about the world, not a promise in a docstring.**
   Two questions over one world answer identical observations and cell meta
   to the last field, and a question over a non-world or an unnamed world is
@@ -57,6 +71,8 @@ file failed every time the arithmetic was legitimately improved.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from typing import Any
 
 import bootstrap as member
 import pytest
@@ -65,9 +81,15 @@ from bootstrap import (
     BootstrapQuestion,
     BootstrapWorldError,
     CellMeta,
+    FeatureQuestion,
+    FeatureSelectionWorld,
     HyperparameterWorld,
     Observation,
+    SymbolicQuestion,
+    SymbolicRegressionWorld,
+    featsel_question_for,
     question_for,
+    symreg_question_for,
 )
 
 # -- The factory ------------------------------------------------------------------
@@ -425,6 +447,189 @@ def test_commit_refuses_a_node_outside_the_lattice(world: HyperparameterWorld) -
     question = question_for(world)
     with pytest.raises(BootstrapWorldError):
         question.commit("d+9.i+0.s+0.a+0")
+
+
+# -- abstain ----------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _Termination:
+    """The episode's ending as the dreaming evaluator reads it off a bootstrap
+    question — the three facts ``policy_runtime.Termination`` carries, spelled
+    here because the bootstrap member owns no dependency on the member that
+    spells them (the pick, the declaration, and the score the pick or its
+    absence earns)."""
+
+    committed: str | None
+    abstained: bool
+    score: float
+
+
+#: The miss floor, the one number every spelling of the non-committing score
+#: answers. ``replay.NON_COMMITTING_SCORE`` and
+#: ``policy_runtime.NON_COMMITTING_SCORE`` are both literally this value; the
+#: bootstrap member imports neither, so the constant is restated here and the
+#: names named in this comment — the *value* is the contract, and it is the
+#: same −inf for a declared abstention as for a fall-off, by the pre-
+#: registration's own law (an abstained arm is scored as a flat book).
+_MISS_SCORE = float("-inf")
+
+
+def _terminated(question: BootstrapQuestion, world: Any) -> _Termination:
+    """Read the episode's termination the way ``orchestrator._bootstrap_eval.
+    score_on_world`` does: the committed node off the question, the world's
+    own honest label of it, and the miss floor when there is no pick — never
+    the candidate's own reading of one.
+    """
+    pick = question.committed
+    if pick is None:
+        return _Termination(None, question.abstained, _MISS_SCORE)
+    return _Termination(pick, question.abstained, world.label(pick).r2_holdout)
+
+
+def _drive(
+    select: Callable[[BootstrapQuestion], object],
+    question: BootstrapQuestion,
+    round_cap: int = 3,
+) -> None:
+    """Run the round loop a replay drives — the same shape ``score_on_world``
+    runs: one ``select(question)`` per round, its batch revealed through the
+    question, until ``select`` answers no batch or the cap is reached."""
+    rounds = 0
+    while rounds < round_cap:
+        batch = select(question)
+        if not batch:
+            break
+        question.probe_batch(batch)
+        rounds += 1
+
+
+def _abstaining_policy(question: BootstrapQuestion) -> list[str]:
+    """A policy that explores one round and then declares it commits nothing.
+
+    The shape the abstention exists for: it looks at the frontier, decides
+    nothing it could reach is worth committing, and *says so* through the
+    contract's verb instead of simply returning — the declaration a runtime
+    can count, where a fall-off is indistinguishable from a crash.
+    """
+    if not question.observed():
+        return question.legal_actions(question.legal_roots()[0])[:1]
+    question.abstain()
+    return []
+
+
+def test_an_abstaining_policy_terminates_abstained_at_the_miss_floor_on_every_domain(
+    world: HyperparameterWorld,
+    featsel_world: FeatureSelectionWorld,
+    symreg_world: SymbolicRegressionWorld,
+) -> None:
+    # The feature's own sentence, as one test: a policy that abstains on one
+    # world of each domain — hpo, featsel, symreg, each fronted by its own
+    # domain's factory — terminates with abstained=True and scores the miss
+    # floor, the same −inf a fall-off scores, with no pick. The score is the
+    # number the dreaming evaluator already answers for an episode with no
+    # committed node, so an abstained arm is priced exactly as the
+    # pre-registration prices it (a flat book) and no stored score moves.
+    fronts = (
+        (question_for(world), world),
+        (featsel_question_for(featsel_world), featsel_world),
+        (symreg_question_for(symreg_world), symreg_world),
+    )
+    for question, domain_world in fronts:
+        _drive(_abstaining_policy, question)
+        termination = _terminated(question, domain_world)
+        assert termination.abstained is True
+        assert termination.committed is None
+        assert termination.score == _MISS_SCORE
+        assert termination.score == float("-inf")
+
+
+def test_abstain_records_the_declaration_and_reveals_nothing(
+    world: HyperparameterWorld,
+) -> None:
+    # ``abstain`` is the declaration, ``abstained`` is its read, and the call
+    # hands nothing back — there is no pick to return, and a value here would
+    # be the pick the call exists to say will not be made. Declaring is not
+    # revealing: the reveal set is untouched, exactly as committing is.
+    question = question_for(world)
+    assert question.abstained is False  # no declaration before the call
+    assert question.abstain() is None
+    assert question.abstained is True
+    assert question.committed is None
+    assert question.observed() == {}
+
+
+def test_abstain_clears_an_earlier_commit(world: HyperparameterWorld) -> None:
+    # One register, one value: an episode that committed and then declared it
+    # commits nothing is read by its *last* terminal act — the declaration —
+    # so the pick is gone and the termination answers the miss floor, not the
+    # score of a node the policy went on to disown.
+    question = question_for(world)
+    node_id = "d+1.i+1.s+0.a+0"
+    assert question.commit(node_id) == node_id
+    question.abstain()
+    assert question.abstained is True
+    assert question.committed is None
+
+
+def test_commit_clears_an_earlier_abstention(world: HyperparameterWorld) -> None:
+    # The register's other direction: a policy that declared early — before
+    # it had seen anything — and then found a cell worth committing ends
+    # committed, because the bootstrap front's commit is a per-round register
+    # (the shipped incumbent re-states its pick on every round), and the last
+    # terminal act is the one the score is earned under.
+    question = question_for(world)
+    question.abstain()
+    node_id = "d+1.i+1.s+0.a+0"
+    assert question.commit(node_id) == node_id
+    assert question.committed == node_id
+    assert question.abstained is False
+
+
+def test_repeated_abstentions_are_the_one_declaration(world: HyperparameterWorld) -> None:
+    # The register, not a refusal door: a policy that declares on every round
+    # while it keeps exploring — the abstaining analogue of the shipped
+    # every-round committer — is re-stating one declaration, not re-deciding
+    # it, and the question reads it the same as a single call.
+    question = question_for(world)
+    question.abstain()
+    question.abstain()
+    assert question.abstained is True
+    assert question.committed is None
+
+
+def test_a_fall_off_termination_is_not_an_abstention(world: HyperparameterWorld) -> None:
+    # The distinction the flag buys: a policy that neither commits nor
+    # abstains — the fall-off the −inf exists to score — reads abstained
+    # False, so a runtime counting declarations never mistakes a policy that
+    # never made the verb for one that chose it. Both score the same floor;
+    # only the record differs, which is the whole design.
+    question = question_for(world)
+    _drive(lambda q: [], question)  # a policy that never reaches either verb
+    termination = _terminated(question, world)
+    assert termination.abstained is False
+    assert termination.committed is None
+    assert termination.score == _MISS_SCORE
+
+
+def test_the_featsel_and_symreg_fronts_inherit_the_terminal_verbs_whole(
+    featsel_world: FeatureSelectionWorld, symreg_world: SymbolicRegressionWorld
+) -> None:
+    # The feature's confirmation step, pinned: the featsel and symreg fronts
+    # share this class — both subclass BootstrapQuestion and inherit the
+    # terminal verbs whole rather than restating them, so the one abstain()
+    # implementation serves all three domains and none can drift from the
+    # others in what its terminal act does.
+    assert issubclass(FeatureQuestion, BootstrapQuestion)
+    assert issubclass(SymbolicQuestion, BootstrapQuestion)
+    assert FeatureQuestion.abstain is BootstrapQuestion.abstain
+    assert SymbolicQuestion.abstain is BootstrapQuestion.abstain
+    assert FeatureQuestion.commit is BootstrapQuestion.commit
+    assert SymbolicQuestion.commit is BootstrapQuestion.commit
+    for front in (featsel_question_for(featsel_world), symreg_question_for(symreg_world)):
+        front.abstain()
+        assert front.abstained is True
+        assert front.committed is None
 
 
 # -- The identical interface across worlds ----------------------------------------
