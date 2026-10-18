@@ -1,0 +1,145 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — recover the edge the evaluator discards: inverse-volatility weights, maker execution, native-horizon OOS scoring, clean-grid admission, portfolio OOS scorer</project_name>
+  <addition_summary>
+    docs/research/2026-10-19-alpha-diagnosis.md (commit f8d562fe) re-evaluated
+    every node that holds an out-of-sample score and found that the engine loses
+    signal it already has, between the node's ranking and the book's P&amp;L:
+
+    1. Weighting. Slow risk constructs (low-volatility, volatility-dispersion,
+       beta-to-btc) show positive out-of-sample rank IC with t about 2 while their
+       books lose money (beta-to-btc: IC +0.12, book -22.5 bp per period). The
+       book is w_i = z_i / sum|z_j| (evaluator._metrics.book_weights), so a few
+       names with extreme z and the highest volatility dominate it. A crypto
+       cross-section has 3-5x volatility dispersion across names.
+    2. Fees. Every pick pays 3-7 bp per 10-day period at the 5 bp taker rate;
+       the equal-weight book of all perp-era picks earns +4.3 bp gross and
+       exactly 0 net. Both venues quote 2 bp maker. The evaluator charges one
+       taker constant (_evaluate._turnover_fee_from_context ->
+       cost_schedule.fee_fraction(TAKER)) and has no maker mode, although the
+       cost-model document already carries fill_model.passive.queue_position_penalty_bps.
+    3. Horizon. Campaigns selected their picks on grids of their own (183 or 235
+       weekly dates at horizon 5; 92 biweekly at horizon 10; 92 daily at horizon
+       1), but every out-of-sample score is computed at the one pinned config's
+       horizon 10. The strongest construct the system ever produced (IC t >= 2
+       in 84% of real nodes vs 2.5% of planted nulls, at horizon 5) has IC
+       exactly 0 at horizon 10 out of sample.
+    4. Admission. 17 of the 103 campaigns M3 scored as "financial holdout
+       worlds" had in-sample grids ending 2026-06-29 or 2026-09-30, inside the
+       OOS window (M3 RESULT erratum). Nothing records a campaign's grid, so
+       nothing could filter on it.
+    5. Unit of evaluation. The only edge-shaped result is a property of the
+       population of picks combined (K=41: gross +4.3 bp, per-date sd 17 bp
+       against 42 bp for one node, t 1.4). No tool scores a set of picks as one
+       book.
+
+    This addition fixes each at its one seam. Every default is unchanged: with
+    weighting "z", execution "taker", and no campaign grid on record, every
+    number the evaluator produces today is reproduced bit for bit, and the
+    nightly evaluation canary (canary.run, which re-evaluates one stored node to
+    1e-12) is the enforcement of that.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest. Polars and pyarrow over sealed parquet snapshots; SQLite or Postgres behind DATABASE_URL; agent code runs under gVisor and is NOT touched here.</stack>
+    <test_baseline>main at f8d562fe: orchestrator member suite 807 passed 5 skipped (-n 2); dreaming 817; canary 808; root tests/ 1668 passed (the acceptance-gate suite).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md (PYTHONPATH assembly, test-fast loop, member suites run separately, lint only touched files).
+
+      Seams, by file:
+      - packages/evaluator/src/evaluator/_metrics.py: book_weights(scores, betas=None) (~:608) is the one spelling of the book; compute_node_metrics(returns, scores, *, cost_per_unit_traded, betas) (~:700) calls it per date (~:915); _beta_neutral_weights (~:554). deploy/shadow and orchestrator.shadow call book_weights(scores, betas) positionally; that call shape must keep working unchanged.
+      - packages/orchestrator/src/orchestrator/_context.py: EvaluationContext (~:516; fields include horizon, evaluation_dates, oos_dates, cost_schedule: FeeSchedule, cost_model, book: BookConfig, instrument, closes, funding); BookConfig (~:466, beta_neutral, beta_window_days, beta_benchmark) parsed from the config document's "book" key (BOOK_KEY ~:413); compute_betas(context, scores) (~:2294) derives point-in-time OLS betas from context.closes; load_evaluation_context(env) is the loader; _cost_inputs reads NULLIUS_COST_MODEL_PATH through cost_model.CostModelService (config, fees(), cost_model_hash()).
+      - packages/orchestrator/src/orchestrator/_evaluate.py: two evaluation chains, evaluate_node (~:1590-1605) and evaluate_on_dates (~:1875-1889), each: betas = compute_betas(...) if context.book.beta_neutral else None; priced = apply_costs(gated, _cost_schedule_from_context(context), ...); compute_node_metrics(priced, scores, cost_per_unit_traded=_turnover_fee_from_context(context), betas=betas). _turnover_fee_from_context (~:873) returns context.cost_schedule.fee_fraction(TAKER).
+      - packages/cost-model/src/cost_model: fees.py FeeSchedule (venue, taker_bps, maker_bps; fee_fraction(side); TAKER constant, and MAKER if present); service.py CostModelService.fees()/config/cost_model_hash(); binance_usdm.yaml carries fees.taker_bps 5.0, fees.maker_bps 2.0 and fill_model.passive.queue_position_penalty_bps 1.5.
+      - packages/orchestrator/src/orchestrator/_financial_eval.py: score_on_financial_world(candidate_source, campaign_id, *, context) and _oos_ir(node_id, campaign_id, context) (~:320) call evaluate_on_dates(node_id, code, context=evaluation, oracle=_dream_oracle(evaluation, oos_dates), dates=evaluation.oos_dates); the cache key is (node_id, oos_dates).
+      - packages/orchestrator/src/orchestrator/dream.py: _admitted_financial_campaigns(database_url) (~:453) admits every completed non-VOID campaign through discovery.admit_completed_campaigns one manifest at a time; the cycle summary is a dict printed as one JSON line.
+      - packages/orchestrator/src/orchestrator/m3_verdict.py: its own admission of financial worlds mirrors dream's.
+      - packages/discovery/src/discovery/campaign.py: CampaignRecords.create (~:737) writes the campaign row (two INSERT spellings ~:1031 and ~:1045); create_campaign (~:1095); the campaign table columns today are id, campaign_type, workspace_count, null_fraction, calibration_status, ks_pvalue, created_at. packages/orchestrator/src/orchestrator/campaign.py is the driver that calls it.
+      - migrations/versions/: chain head 0119_canary_reference_pair.py; each module has REVISION, DOWN_REVISION, statements(dialect) returning CREATE/ALTER SQL, upgrade(connection, dialect) and downgrade(connection). Migrations are applied by `./run.sh migrate` (python -m app.migrate).
+      - Stored node artifacts: ~/.local/share/nullius/artifacts/&lt;campaign&gt;/&lt;node&gt;/{code.py, ic_series.parquet (date, value), turnover_series.parquet, signal_returns.parquet}. The grid a campaign ran on is readable from any of its nodes' ic_series dates.
+      - run.sh verbs that need no secret (canary, bootstrap-fill, dream, triage) share one case arm (~:314-330) and default DATABASE_URL to ~/.local/share/nullius/research.db.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/src/contract/** or src/app/** (baked into the gVisor runtime root; any edit fails every sandboxed evaluation with gvisor_runtime_stale).
+      - Never edit deploy/shadow/**, deploy/systemd/**, packages/router/** or orchestrator/shadow.py and shadow_eval.py (two pre-registered forward shadows are live on them).
+      - Never edit docs/preregistration/** or docs/user-journeys/**.
+      - Defaults reproduce today's numbers exactly: weighting "z" (or no "book.weighting" key), execution "taker" (or no "execution" key), and a campaign with NULL grid columns must give the identical cost_adjusted_ir, ic_series and book_returns to 1e-12 as before. The evaluation canary's frozen node (campaign c6990362-aba1-4786-aeeb-142f17a92d88, node d7bb84d9-e2d9-5e61-98bf-386d07175c98, score 0.0012316714031509238 under evaluation-config-archive-perp-bn.json with binance_usdm.yaml) is the reference; a feature that moves it has broken the default path.
+      - book_weights(scores, betas) must keep working as called today, positionally, with the same result; any new input is keyword-only.
+      - No stored replay_score, node, or m3_verdict row is rewritten or deleted.
+      - The dreaming M3 verdict is final (docs/preregistration/2026-10-17-m3-dreaming.RESULT.md); nothing here recomputes it. The admission and horizon changes apply to future cycles and to the new scorer only.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Research Book">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/evaluator/src/evaluator/_metrics.py"
+               creates="packages/evaluator/tests/test_book_weights_inverse_vol.py">
+        System lets the research book weight each name by its score scaled by the inverse of its own volatility, so that a correct ranking is no longer turned into a losing book by the few most volatile names (book_weights(scores, betas, vols=...) returns gross-1 dollar-neutral weights proportional to z_i / vol_i, then applies the existing beta-neutral rescale).
+        <steps>
+          - book_weights gains a keyword-only vols: Mapping[str, float] | None = None. With vols None the function is byte-for-byte today's behaviour. With vols given: each score is divided by that symbol's vol (a symbol missing from vols, or with a non-finite or non-positive vol, is refused by name with EvaluatorMetricsError, never silently defaulted), the scaled scores are then normalised exactly as today (w_i = s_i / sum|s_j|, gross 1, dollar neutral), and the beta-neutral rescale, when betas is given, is applied after that, unchanged.
+          - compute_node_metrics gains a keyword-only vols: Mapping[date, Mapping[str, float]] | None = None, validated like betas (same shape, same refusals), and passes the day's vols into book_weights for that day's book. With vols None, every number it returns is identical to today.
+          - Tests (new file): vols=None reproduces today's weights exactly on a fixture cross-section; a two-name fixture with equal scores and vols 1 and 4 gets weights 4:1 in magnitude; gross stays 1 and net 0 with vols; beta rescale composes after vol scaling (fixture with betas, compare to applying _beta_neutral_weights to the vol-scaled weights); a missing or non-positive vol is refused by name; compute_node_metrics with a vols panel reproduces the per-date books that book_weights gives for each date, and with vols=None reproduces the existing book_returns on an existing fixture to 1e-12.
+        </steps>
+      </feature>
+      <feature index="2" shape="core" depends_on="1"
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py"
+               creates="packages/orchestrator/tests/test_book_weighting_config.py">
+        System reads a book.weighting setting from the evaluation config ("z", today's default, or "inverse_vol") and, for inverse_vol, derives each date's point-in-time realised volatilities from the sealed closes and hands them to the metrics, so that an evaluation config can switch the whole engine to volatility-scaled books with no other change (the dream cycle summary displays the weighting in force, and a config naming an unknown weighting is refused at load with an error message naming the value).
+        <steps>
+          - BookConfig gains weighting: str = "z" and vol_window_days: int = 60, parsed from the config's "book" object with the same validation style as beta_neutral (closed vocabulary {"z", "inverse_vol"}; a window below 20 days refused). The config's sha256 is what identifies a run, so no new identity field is needed.
+          - A compute_vols(context, scores) beside compute_betas: for each date D in scores and each symbol scored that day, the population standard deviation of the symbol's daily close-to-close returns over the vol_window_days trading days ending at D, point-in-time from context.closes (no return after D), the same date and symbol handling as compute_betas; a symbol with fewer than half the window's returns gets no vol (and so is refused downstream by name rather than given a default).
+          - Both evaluation chains (evaluate_node and evaluate_on_dates) compute vols = compute_vols(context, scores) when context.book.weighting == "inverse_vol" and pass vols= to compute_node_metrics; with "z" they pass nothing and are unchanged.
+          - Tests (new file): the key parses, defaults to "z", refuses a bad value and a short window; compute_vols on a fixture closes panel gives the known standard deviations and never uses a return after D; with weighting "z" the evaluation chain's results on an existing fixture are identical to before (1e-12); with "inverse_vol" the per-date books equal book_weights(scores, betas, vols=compute_vols(...)) for that date.
+        </steps>
+      </feature>
+    </category>
+    <category name="Execution Cost">
+      <feature index="3" shape="core" depends_on="2"
+               touches_files="packages/cost-model/src/cost_model/fees.py,packages/cost-model/src/cost_model/service.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py"
+               creates="packages/cost-model/tests/test_passive_execution.py,packages/orchestrator/tests/test_execution_mode.py">
+        System lets the evaluation config choose execution "taker" (today's default) or "maker", where maker charges the venue's maker fee plus the cost model's passive queue-position penalty on every unit traded, so that a signal is priced at the fee it would pay when executed passively, with its adverse-selection cost stated rather than ignored (the dream cycle summary displays the execution mode and the per-unit fee in force, and a maker config whose cost model has no passive fill model is refused at load with an error message naming the document).
+        <steps>
+          - cost-model: FeeSchedule exposes fee_fraction(MAKER) (if MAKER does not exist yet, add it beside TAKER) and a new passive_penalty_fraction: the document's fill_model.passive.queue_position_penalty_bps as a simple return (1.5 bps -> 0.00015), carried on the schedule by CostModelService.fees(); a document without fill_model.passive makes passive_penalty_fraction None. The cost_model_hash is unchanged (it hashes the document).
+          - orchestrator: the evaluation config gains an optional top-level key "execution" with values "taker" (default when absent) or "maker", parsed into EvaluationContext.execution with a closed-vocabulary refusal. A "maker" config whose cost model has no passive fill model is refused at load, naming the document.
+          - _turnover_fee_from_context and _cost_schedule_from_context quote, for "maker", fee_fraction(MAKER) + passive_penalty_fraction per unit traded (the same number to both seams, as today for taker); for "taker" they are unchanged.
+          - Tests: cost-model (new file): binance_usdm.yaml yields taker 0.0005, maker 0.0002, passive penalty 0.00015; the spot document yields its own maker and a None penalty; fee_fraction(MAKER) matches maker_bps. orchestrator (new file): the key defaults to taker and refuses other values; a maker config with no passive fill model is refused at load; under "taker" an existing fixture evaluation is identical to before (1e-12); under "maker" with the usdm document both seams quote 0.00035 and the fixture's book_returns move by exactly the fee difference times traded notional on each date.
+        </steps>
+      </feature>
+    </category>
+    <category name="Campaign Grid">
+      <feature index="4" shape="core" depends_on=""
+               touches_files="packages/discovery/src/discovery/campaign.py,packages/orchestrator/src/orchestrator/campaign.py"
+               creates="migrations/versions/0120_campaign_evaluation_grid.py,packages/orchestrator/src/orchestrator/backfill_campaign_grid.py,packages/discovery/tests/test_campaign_grid_columns.py,packages/orchestrator/tests/test_backfill_campaign_grid.py">
+        System records on every campaign the evaluation grid it ran on (evaluation_config_sha256, horizon, grid_first_date, grid_last_date, oos_first_date), and backfills the existing campaigns from their stored artifacts, so that any later reader can tell whether a campaign's in-sample period precedes a given out-of-sample grid and at which horizon its picks were selected (the driver saves the five columns to the campaign row, and the backfill displays one JSON line per campaign it fills or leaves NULL).
+        <steps>
+          - Migration 0120_campaign_evaluation_grid.py, in 0119's shape (REVISION, DOWN_REVISION = "0119_canary_reference_pair", statements(dialect), upgrade, downgrade): ALTER TABLE campaign ADD COLUMN for evaluation_config_sha256 TEXT NULL, horizon INTEGER NULL, grid_first_date TEXT NULL, grid_last_date TEXT NULL, oos_first_date TEXT NULL (ISO dates as text; both dialects). Existing rows read NULL.
+          - CampaignRecords.create accepts the five values (all optional, default None) and writes them in both INSERT spellings; the driver (orchestrator/campaign.py) passes them from its EvaluationContext: the sha256 of the file NULLIUS_EVALUATION_CONFIG names (reuse orchestrator.dream.evaluation_config_sha256), context.horizon, min and max of evaluation_dates, min of oos_dates (None when there is none).
+          - python -m orchestrator.backfill_campaign_grid [--dry-run]: for every campaign row whose horizon is NULL, read one of its nodes' ic_series.parquet dates from the artifact dir; grid_first/last are their min and max; horizon follows the grid: 183 or 235 weekly dates -> 5, 92 biweekly dates -> 10, 92 daily dates -> 1 (the three grids the configs in use define; a campaign matching none is reported and left NULL); evaluation_config_sha256 and oos_first_date stay NULL for backfilled rows. Prints one JSON line per campaign and a summary; --dry-run writes nothing. It is idempotent.
+          - Tests: discovery (new file): the migration's statements add the five columns on SQLite; create writes and reads them back; create without them leaves NULLs and every existing test still passes. orchestrator (new file): the backfill maps each of the three fixture grids to the right horizon and dates, leaves an unknown grid NULL with a report, is a no-op on a second run, and --dry-run changes nothing.
+        </steps>
+      </feature>
+      <feature index="5" shape="core" depends_on="4"
+               touches_files="packages/orchestrator/src/orchestrator/_financial_eval.py,packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/src/orchestrator/m3_verdict.py,packages/orchestrator/tests/test_dream_financial_worlds.py"
+               creates="packages/orchestrator/tests/test_financial_world_admission.py">
+        System scores a stored node out of sample at its own campaign's horizon and admits as a financial world only a campaign whose in-sample grid ended before the first out-of-sample date, so that a pick is judged on the horizon it was selected for and never on data it already saw (the dream summary displays the counts admitted, excluded for overlap and excluded as unknown, and an excluded campaign is reported with an error message naming its grid_last_date).
+        <steps>
+          - _oos_ir / score_on_financial_world: when the campaign row carries a horizon, evaluate with dataclasses.replace(context.evaluation, horizon=that) (the oracle already serves the requested horizon); the cache key gains the horizon. A campaign with NULL horizon scores at the context's horizon, exactly as today.
+          - A shared admission helper in _financial_eval (used by dream._admitted_financial_campaigns and m3_verdict's admission): after the existing VOID filter, exclude a campaign whose grid_last_date is on or after the context's first oos date, and a campaign with NULL grid_last_date when the context has an oos grid (unknown is not admitted); report the counts admitted / excluded-overlap / excluded-unknown in the dream summary and in the verdict's refusal or row. With no oos grid on the context (unconfigured), admission is unchanged.
+          - Tests: a fixture campaign with horizon 5 is scored with horizon 5 (the oracle request's horizon observed by a stub) and one with NULL at the context's horizon; a campaign whose grid_last_date is after oos_first is excluded and counted; NULL grid with an oos grid is excluded as unknown; the existing test_dream_financial_worlds tests pass with their fixtures given a grid_last_date before the oos grid.
+        </steps>
+      </feature>
+    </category>
+    <category name="Portfolio Scoring">
+      <feature index="6" shape="core" depends_on="2,3,5"
+               touches_files="run.sh"
+               creates="packages/orchestrator/src/orchestrator/portfolio_oos.py,packages/orchestrator/tests/test_portfolio_oos.py">
+        System scores a set of committed picks as one equal-weight book out of sample and reports its mean, volatility, t-statistic and effective number of independent bets beside each pick's own, so that the thing the diagnosis found carries edge, the population combined, is what gets measured (the verb displays one JSON line with K, mean, sd, t and N_eff, saves the per-date series to --out when asked, and refuses a set with fewer than two admitted picks with an error message carrying its own code word).
+        <steps>
+          - python -m orchestrator.portfolio_oos (run.sh verb portfolio-oos, in the no-secret case arm with the others) takes --picks PATH (JSON list of {"campaign_id","node_id"}) or --policy-version V (every committed pick that replay_score version holds, one per world), scores each pick with score_on_financial_world's own out-of-sample path (its campaign's horizon, the context's weighting and execution), and keeps each pick's per-date book_returns and ic_series.
+          - It prints one JSON line: K, the equal-weight book's per-date mean, standard deviation and t over the common oos dates, N_eff = mean per-pick variance / portfolio variance, the mean pairwise correlation, per-pick (campaign, node, horizon, mean, sd, t, oos_ic_t), and a per-theme breakdown; optional --out PATH writes the per-date portfolio and per-pick series as JSON. It writes nothing to the store.
+          - Picks whose campaign is not admitted by the shared admission helper are reported and excluded; a set that admits fewer than 2 picks is refused with its own code word.
+          - Tests: with stubbed scoring (no sandbox), two uncorrelated fixture picks give N_eff 2 and the known portfolio t; two identical picks give N_eff 1; an excluded pick is reported; --policy-version reads the fixture rows; the JSON line's fields are present; nothing is written to the fixture store.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
