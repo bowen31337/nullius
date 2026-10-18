@@ -158,6 +158,38 @@ unchanged, since turnover is a fraction of the book, not a cost. The
 default, ``cost_per_unit_traded=0.0``, charges nothing and reproduces every
 figure this module computed before the parameter existed.
 
+**Volatility scaling is an optional rescale of the scores, before the book.**
+A correct ranking of a crypto cross-section is not a tradable book: three to
+five times of volatility dispersion between names means the ``z_i / Σ|z_j|``
+book quietly hands most of its gross to the few most volatile names, so a
+signal whose ordering is right can still lose money on the names whose noise
+dominates.  :func:`book_weights` and :func:`compute_node_metrics` therefore
+accept an optional, keyword-only ``vols`` — ``{symbol: vol}`` in
+:func:`book_weights`, ``{date: {symbol: vol}}`` in
+:func:`compute_node_metrics`, the same shape and the same refusals its
+``betas`` take.  When given, each score is divided by its own symbol's
+volatility *before* the book is normalized (``w_i = (z_i / vol_i) / Σ_j |z_j /
+vol_j|``), so the weights are proportional to ``z_i / vol_i`` — an inverse-
+volatility book with gross exposure 1, and net 0 exactly when the vol-scaled
+cross-section stays centered (which holds whenever both sides of an offsetting
+pair of scores carry the same volatility — in particular for any all-equal
+``vols`` panel, where the scaling is an identity on the book).  Dividing each
+symbol by its own positive scale is not a no-op on the *sum*, so an
+inverse-vol book is dollar-neutral by construction of the scores rather than
+by construction of the scaling.  The volatility is a positive scale,
+not a direction, so a symbol missing from ``vols``, or carrying a non-finite
+or non-positive one, is refused **by name** rather than silently defaulted:
+defaulting it would either drop the name from the book or hand it a weight the
+signal did not ask for, and both are a different book than the one the caller
+named.  The beta-neutral leg rescale, when ``betas`` is also given, applies
+*after* the vol scaling, to the vol-scaled weights — the two transforms
+compose in the order the sentence names ("proportional to z_i / vol_i, then
+applies the existing beta-neutral rescale"), so a book can be both
+volatility-scaled and beta-neutral and the beta split is computed on the
+weights that will actually be traded.  The default, ``vols=None``, scales
+nothing and reproduces every figure this module computed before the parameter
+existed.
+
 **Beta-neutral legs are an optional rescale of the same weights.**  The
 dollar-neutral book (``w_i = z_i / Σ|z_j|``) is net-zero but not benchmark
 beta-neutral: a book tilted toward low-beta names on the long side and
@@ -605,9 +637,144 @@ def _beta_neutral_weights(
     return rescaled
 
 
+def _validate_weights_panel(
+    panel: object, *, label: str, singular: str
+) -> dict[dt.date, Mapping[str, float]]:
+    """Validate a ``{date: {symbol: number}}`` panel — ``betas`` or ``vols``.
+
+    :func:`compute_node_metrics` takes two per-date panels of per-symbol
+    numbers, ``betas`` and ``vols``, with the same shape and the same
+    refusals (the spec's own words: "validated like betas (same shape, same
+    refusals)"), so the shape rules live here once rather than twice:
+    a mapping keyed by calendar dates, each value a mapping of non-empty
+    symbol names to finite numbers.  ``label`` and ``singular`` are the
+    caller's own spellings of the panel and of one entry of it, so a refusal
+    names the parameter the caller passed rather than a generic one.  The
+    caller applies whatever value constraints go beyond finiteness — ``vols``
+    also requires a positive scale; ``betas`` are signed and take any finite
+    number.
+    """
+    if not isinstance(panel, Mapping):
+        raise EvaluatorMetricsError(
+            f"{label} must map rebalance date to {{symbol: {singular}}}, got "
+            f"{type(panel).__name__}"
+        )
+    validated: dict[dt.date, Mapping[str, float]] = {}
+    for day, row in panel.items():
+        if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+            raise EvaluatorMetricsError(
+                f"{label} must be keyed by calendar dates, got {day!r}"
+            )
+        if not isinstance(row, Mapping):
+            raise EvaluatorMetricsError(
+                f"{label} for {day.isoformat()} must map symbol to a "
+                f"{singular}, got {type(row).__name__}"
+            )
+        inner: dict[str, float] = {}
+        for symbol, value in row.items():
+            if not isinstance(symbol, str) or not symbol:
+                raise EvaluatorMetricsError(
+                    f"{label} for {day.isoformat()} must be keyed by "
+                    f"non-empty symbol names, got {symbol!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EvaluatorMetricsError(
+                    f"the {singular} for {symbol!r} on {day.isoformat()} must "
+                    f"be a number, got {value!r}"
+                )
+            number = float(value)
+            if not math.isfinite(number):
+                raise EvaluatorMetricsError(
+                    f"the {singular} for {symbol!r} on {day.isoformat()} is "
+                    f"not finite ({value!r}); a NaN or ±inf would reach the "
+                    "book's weights dressed as a measurement"
+                )
+            inner[symbol] = number
+        validated[day] = MappingProxyType(inner)
+    return validated
+
+
+def _inverse_vol_scores(
+    scores: Mapping[str, float], vols: Mapping[str, float]
+) -> dict[str, float]:
+    """Divide each score by its own symbol's volatility — ``z_i / vol_i``.
+
+    ``scores`` is one date's already-validated cross-section; ``vols`` is
+    whatever that date's ``{symbol: volatility}`` mapping the caller supplied.
+    Every scored symbol must be named in ``vols`` with a finite, strictly
+    positive number, and one that is not is refused **by name**: a volatility
+    is a positive scale, so a missing or non-positive one would silently drop
+    the name from the book or hand it a weight the signal never asked for, and
+    either is a different book than the caller named. The returned mapping is
+    the scaled scores, to be normalized by the caller exactly as the unscaled
+    ones were — which keeps the book's gross exposure at 1 unconditionally,
+    while its net weight is zero exactly when the *scaled* cross-section stays
+    centered (see the module docstring: a per-symbol positive scale does not
+    preserve the sum of a centered row).
+    """
+    if not isinstance(vols, Mapping):
+        raise EvaluatorMetricsError(
+            "book_weights' vols must map symbol to a volatility, got "
+            f"{type(vols).__name__}"
+        )
+    validated_vols: dict[str, float] = {}
+    for symbol, value in vols.items():
+        if not isinstance(symbol, str) or not symbol:
+            raise EvaluatorMetricsError(
+                "book_weights' vols must be keyed by non-empty symbol names, "
+                f"got {symbol!r}"
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EvaluatorMetricsError(
+                f"the volatility for {symbol!r} must be a number, got {value!r}"
+            )
+        number = float(value)
+        if not math.isfinite(number):
+            raise EvaluatorMetricsError(
+                f"the volatility for {symbol!r} is not finite ({value!r}); a "
+                "NaN or ±inf would reach the book's weights dressed as a "
+                "measurement"
+            )
+        if number <= 0.0:
+            raise EvaluatorMetricsError(
+                f"the volatility for {symbol!r} is not positive ({value!r}); a "
+                "volatility is a positive scale, and a score divided by it "
+                "would flip or drop the name rather than weight it"
+            )
+        validated_vols[symbol] = number
+    scaled: dict[str, float] = {}
+    for symbol, value in scores.items():
+        symbol_vol = validated_vols.get(symbol)
+        if symbol_vol is None:
+            raise EvaluatorMetricsError(
+                f"the scored symbol {symbol!r} is missing from book_weights' "
+                "vols; the inverse-volatility book needs a volatility for "
+                "every name it weights, and defaulting one would trade a book "
+                "other than the one named — supply it or leave vols out"
+            )
+        quotient = value / symbol_vol
+        if not math.isfinite(quotient):
+            # Both inputs are finite, but a score near the double maximum over
+            # a near-denormal volatility overflows the quotient — and a NaN
+            # would then propagate through the gross normalization into every
+            # weight.  Refused here for the same reason the raw score and the
+            # vol are: a non-finite number must not reach the book dressed as
+            # a measurement.
+            raise EvaluatorMetricsError(
+                f"the score for {symbol!r} divided by its volatility "
+                f"({value!r} / {symbol_vol!r}) is not finite ({quotient!r}); "
+                "the vol scaling overflowed, and a NaN or ±inf would reach "
+                "the book's weights dressed as a measurement"
+            )
+        scaled[symbol] = quotient
+    return scaled
+
+
 def book_weights(
     scores: Mapping[str, float],
     betas: Mapping[str, float] | None = None,
+    *,
+    vols: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
     """The research book's weights for one date — the public spelling of step 8's book.
 
@@ -619,15 +786,26 @@ def book_weights(
     leg rule :func:`compute_node_metrics` applies — see
     :func:`_beta_neutral_weights` for the ``β_L``, ``β_S`` and ``gl``
     derivation and the fallback to the plain weights on a degenerate split.
-    This is the one place that rule is spelled out; :func:`compute_node_metrics`
-    calls this function for its own per-date weights, so the two cannot drift,
-    and a forward shadow that calls this function with the same scores and
-    betas an evaluation scored trades exactly the book the evaluation did.
+    ``vols`` (keyword-only, default ``None``), when given, is that date's
+    ``{symbol: volatility}``; each score is divided by its own symbol's
+    volatility before the book is normalized, so the weights are proportional
+    to ``z_i / vol_i`` — the inverse-volatility book the module docstring
+    describes, gross 1 and dollar-neutral whenever the scaled row stays
+    centered.  When both are given the beta-neutral
+    rescale is applied *after* the vol scaling, to the vol-scaled weights.
+    This is the one place those rules are spelled out;
+    :func:`compute_node_metrics` calls this function for its own per-date
+    weights, so the two cannot drift, and a forward shadow that calls this
+    function with the same scores, betas and vols an evaluation scored trades
+    exactly the book the evaluation did.
 
     Raises :class:`~evaluator.EvaluatorMetricsError` when ``scores`` is empty,
-    carries a non-finite value, or sums to zero gross exposure (``Σ|z| = 0``,
-    the weights would be a division by zero); and when ``betas`` is supplied
-    but is malformed or carries a non-finite value.
+    carries a non-finite value, or sums to zero gross exposure (``Σ|s| = 0``,
+    the weights would be a division by zero); when ``betas`` is supplied but is
+    malformed or carries a non-finite value; and when ``vols`` is supplied but
+    is malformed, carries a non-finite value, or is missing a scored symbol or
+    gives it a non-positive volatility — each refused by name, never silently
+    defaulted, because a vol is a positive scale rather than a direction.
     """
     if not isinstance(scores, Mapping):
         raise EvaluatorMetricsError(
@@ -658,6 +836,8 @@ def book_weights(
             "book_weights needs at least one scored symbol; an empty date "
             "has no dollar-neutral book to weight"
         )
+    if vols is not None:
+        validated_scores = _inverse_vol_scores(validated_scores, vols)
     gross = math.fsum(abs(value) for value in validated_scores.values())
     if gross == 0.0:
         raise EvaluatorMetricsError(
@@ -703,6 +883,7 @@ def compute_node_metrics(
     *,
     cost_per_unit_traded: float = 0.0,
     betas: Mapping[dt.date, Mapping[str, float]] | None = None,
+    vols: Mapping[dt.date, Mapping[str, float]] | None = None,
 ) -> NodeMetrics:
     """Compute the four node scalars — ic_mean, ic_tstat, ir_standalone, turnover.
 
@@ -744,11 +925,29 @@ def compute_node_metrics(
     attempts a rescale and reproduces every figure this module computed
     before the parameter existed.
 
+    ``vols`` (keyword-only, default ``None``) is ``{date: {symbol: vol}}``,
+    validated exactly like ``betas`` (the same shape, the same refusals) and
+    with one constraint of its own: a volatility is a positive scale, so a
+    symbol missing from the day's row, or carrying a non-finite or
+    non-positive vol, is refused by name rather than silently defaulted. When
+    given, each date's cross-section is handed to :func:`book_weights` with
+    its own day's vols, so the day's book is proportional to ``z_i / vol_i`` —
+    gross 1 and dollar-neutral whenever the scaled row stays centered — and,
+    when ``betas`` is also given, the
+    beta-neutral rescale composes after the vol scaling. The rescaled weights
+    feed the book return, the turnover and the turnover cost charge exactly as
+    the unscaled ones did; ``ic_mean`` and ``ic_tstat`` are unaffected, since
+    the coefficient is rank-based on the scores themselves. The default,
+    ``None``, scales nothing and every number this function returns is
+    identical to the one it returned before the parameter existed.
+
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
     mapping that is malformed, empty, or carries a non-finite value; a
     ``cost_per_unit_traded`` that is negative or not finite; a ``betas``
-    mapping that is malformed or carries a non-finite value; a panel that
+    mapping that is malformed or carries a non-finite value; a ``vols``
+    mapping that is malformed, carries a non-finite value, or omits a scored
+    symbol or gives it a non-positive volatility; a panel that
     covers no horizon at all (nothing measured); a horizon with fewer than
     two dates (a t-statistic over one date names a zero standard error and a
     fabricated infinity); and — via the record — a hand-built metrics whose
@@ -847,42 +1046,24 @@ def compute_node_metrics(
 
     validated_betas: dict[dt.date, Mapping[str, float]] = {}
     if betas is not None:
-        if not isinstance(betas, Mapping):
-            raise EvaluatorMetricsError(
-                "betas must map rebalance date to {symbol: beta}, got "
-                f"{type(betas).__name__}"
-            )
-        for day, beta_row in betas.items():
-            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
-                raise EvaluatorMetricsError(
-                    f"betas must be keyed by calendar dates, got {day!r}"
-                )
-            if not isinstance(beta_row, Mapping):
-                raise EvaluatorMetricsError(
-                    f"betas for {day.isoformat()} must map symbol to a beta, "
-                    f"got {type(beta_row).__name__}"
-                )
-            inner_betas: dict[str, float] = {}
-            for symbol, value in beta_row.items():
-                if not isinstance(symbol, str) or not symbol:
+        validated_betas = _validate_weights_panel(betas, label="betas", singular="beta")
+
+    validated_vols: dict[dt.date, Mapping[str, float]] = {}
+    if vols is not None:
+        validated_vols = _validate_weights_panel(vols, label="vols", singular="vol")
+        # A volatility is a positive scale, not a direction: a non-positive
+        # one would flip or drop the name it weights, so the day's row is
+        # checked here rather than left for the division to produce a
+        # reflected or infinite weight.
+        for day, vol_row in validated_vols.items():
+            for symbol, vol in vol_row.items():
+                if vol <= 0.0:
                     raise EvaluatorMetricsError(
-                        f"betas for {day.isoformat()} must be keyed by "
-                        f"non-empty symbol names, got {symbol!r}"
+                        f"the vol for {symbol!r} on {day.isoformat()} is not "
+                        f"positive ({vol!r}); a volatility is a positive "
+                        "scale, and a score divided by it would flip or drop "
+                        "the name rather than weight it"
                     )
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise EvaluatorMetricsError(
-                        f"the beta for {symbol!r} on {day.isoformat()} must "
-                        f"be a number, got {value!r}"
-                    )
-                number = float(value)
-                if not math.isfinite(number):
-                    raise EvaluatorMetricsError(
-                        f"the beta for {symbol!r} on {day.isoformat()} is not "
-                        f"finite ({value!r}); a NaN or ±inf would reach the "
-                        "book's weights dressed as a measurement"
-                    )
-                inner_betas[symbol] = number
-            validated_betas[day] = MappingProxyType(inner_betas)
 
     horizon = _metrics_horizon(returns)
     series = returns.series[horizon]
@@ -911,8 +1092,40 @@ def compute_node_metrics(
         book_symbols = sorted(set(score_row) & set(returns_row))
         row_scores = {symbol: score_row[symbol] for symbol in book_symbols}
         row_betas = validated_betas.get(day) if betas is not None else None
+        row_vols: Mapping[str, float] | None = None
+        if vols is not None:
+            row_vols = validated_vols.get(day)
+            if row_vols is None:
+                # Scaling some dates and not others would be a book half
+                # inverse-vol and half z-weighted — an inconsistency the
+                # caller never asked for, and one that would read as a
+                # measurement.  A date the scores carry must be scaled or
+                # refused by name, the same stance a missing symbol takes.
+                raise EvaluatorMetricsError(
+                    f"vols carries no row for {day.isoformat()}, a rebalance "
+                    "date the normalized scores and the priced panel share; "
+                    "the inverse-volatility book needs a volatility for every "
+                    "name it weights, on every date it weights them — supply "
+                    "the date's vols or leave vols out"
+                )
+            # Every symbol in the joined cross-section must carry a vol, and
+            # the row is checked here rather than left to :func:`book_weights`
+            # so the refusal names the symbol AND the date — the panel is
+            # already known finite and positive, so this is the only vol
+            # refusal left, and letting it fall to the wrap below would relabel
+            # it as the all-zero-score case.
+            for symbol in book_symbols:
+                if symbol not in row_vols:
+                    raise EvaluatorMetricsError(
+                        f"vols carries no volatility for {symbol!r} on "
+                        f"{day.isoformat()}, a symbol the normalized scores "
+                        "and the priced panel share; the inverse-volatility "
+                        "book needs a volatility for every name it weights, "
+                        "on every date it weights them — supply it or leave "
+                        "vols out"
+                    )
         try:
-            weights = book_weights(row_scores, row_betas)
+            weights = book_weights(row_scores, row_betas, vols=row_vols)
         except EvaluatorMetricsError as exc:
             # _rank_correlation above already required these same symbols'
             # scores to have nonzero rank spread, so they cannot all be
