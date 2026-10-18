@@ -858,7 +858,7 @@ def run_verdict(
             incumbent_source = incumbent_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise M3VerdictError(
-                f"{M3_CODE}: the fixed M2 incumbent {str(incumbent_path)!r} "
+                f"{M3_CODE}: the incumbent {str(incumbent_path)!r} "
                 f"could not be read: {exc}"
             ) from exc
         widened = _widened_candidates(iteration_id, incumbent_source, revision_cap)
@@ -954,6 +954,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"the pre-registration to compute (default {DEFAULT_PREREG_PATH})",
     )
     parser.add_argument(
+        "--incumbent",
+        dest="incumbent_path",
+        default=str(DEFAULT_INCUMBENT_PATH),
+        metavar="PATH",
+        help=(
+            "the incumbent the judged cycle revised, from which its candidates "
+            f"are rebuilt (default {DEFAULT_INCUMBENT_PATH}; Addendum 3 names "
+            "deploy/dreaming/incumbent.m3.py)"
+        ),
+    )
+    parser.add_argument(
         "--evaluation-config",
         dest="evaluation_config_path",
         default=str(DEFAULT_EVALUATION_CONFIG_PATH),
@@ -1020,6 +1031,7 @@ def main(
             scorer=scorer,
             pool=pool,
             prereg_path=Path(arguments.prereg_path),
+            incumbent_path=Path(arguments.incumbent_path),
             evaluation_config_path=Path(arguments.evaluation_config_path),
         )
     except Exception as exc:  # noqa: BLE001 - every collaborator's own

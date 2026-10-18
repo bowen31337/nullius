@@ -1252,3 +1252,36 @@ def test_main_refuses_missing_sidecar_config() -> None:
         ["--iteration-id", "it-x"], env={"DATABASE_URL": "sqlite:///x.db"}
     )
     assert exit_code == m3_verdict.EXIT_CONFIG
+
+
+def test_main_passes_the_incumbent_flag_through_to_run_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Addendum 4: the verdict rebuilds a cycle's candidates from the incumbent
+    # that cycle revised, so the CLI must hand run_verdict the path it is given
+    # rather than the pre-Addendum-3 default.
+    seen: dict[str, Any] = {}
+
+    def _capture(iteration_id: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        raise m3_verdict.M3VerdictError("m3_verdict: captured")
+
+    monkeypatch.setattr(m3_verdict, "run_verdict", _capture)
+    monkeypatch.setattr(m3_verdict.scoring.NullPickScorer, "resolve", staticmethod(lambda env: object()))
+    monkeypatch.setattr(m3_verdict.nulloracle.NullSidecar, "resolve", staticmethod(lambda env: object()))
+    incumbent = tmp_path / "incumbent.m3.py"
+    exit_code = m3_verdict.main(
+        ["--iteration-id", "it-x", "--incumbent", str(incumbent)],
+        env={
+            "DATABASE_URL": f"sqlite:///{tmp_path / 'r.db'}",
+            "NULL_SIDECAR_PATH": str(tmp_path / "sidecar.json"),
+            "NULL_SIDECAR_KEY_REF": "op://vault/item/key",
+        },
+    )
+    assert exit_code == m3_verdict.EXIT_REFUSED
+    assert seen["incumbent_path"] == incumbent
+
+
+def test_main_defaults_the_incumbent_to_the_module_default() -> None:
+    arguments = m3_verdict._build_parser().parse_args(["--iteration-id", "it-x"])
+    assert Path(arguments.incumbent_path) == m3_verdict.DEFAULT_INCUMBENT_PATH
