@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import statistics
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -123,23 +124,51 @@ def _pinned_config(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _pin(monkeypatch: pytest.MonkeyPatch, digest: str) -> None:
-    """Point the module's pin at a fixture file's own digest.
+    """Point both of the module's pins at fixture values.
 
-    The real pin is a fixed 64-hex constant -- no fixture can be made to hash to
-    it -- so the happy path moves the pin rather than the file, exactly as a
-    deployment moves the file to the pin.
+    The real config pin is a fixed 64-hex constant -- no fixture can be made
+    to hash to it -- so the happy path moves the pin rather than the file,
+    exactly as a deployment moves the file to the pin.  Addendum 2's
+    cost-model pin is moved with it and for the same reason: a criterion test
+    seeds its rows through :func:`_winner_version`/:func:`_baseline_version`,
+    which file their rows under this fixture hash, so pointing the pin
+    anywhere else would have the verdict look for rows nobody wrote.
     """
     monkeypatch.setattr(m3_verdict, "M3_EVALUATION_CONFIG_SHA256", digest)
+    _pin_cost_model(monkeypatch)
 
 
-def _baseline_version(config_sha256: str) -> str:
+#: A fixture cost-model hash -- deliberately not the real one, and not the
+#: pinned :data:`m3_verdict.M3_COST_MODEL_HASH` either: a criterion test's
+#: rows must be filed under the pin, so the pin itself is monkeypatched onto
+#: this value the same way ``M3_EVALUATION_CONFIG_SHA256`` is pointed at a
+#: fixture file's digest.  Nothing in the version helper validates a hash's
+#: shape, and no test here reads a real cost-model file or ``~/.config``.
+FIXTURE_COST_MODEL_HASH = "fixture-cost-model-hash"
+
+
+def _pin_cost_model(monkeypatch: pytest.MonkeyPatch, value: str = FIXTURE_COST_MODEL_HASH) -> str:
+    """Point the module's cost-model pin at a fixture value."""
+    monkeypatch.setattr(m3_verdict, "M3_COST_MODEL_HASH", value)
+    return value
+
+
+def _baseline_version(
+    config_sha256: str, cost_model_hash: str = FIXTURE_COST_MODEL_HASH
+) -> str:
     return dream_module.financial_policy_version(
-        m3_verdict.M2_INCUMBENT_POLICY_VERSION, config_sha256
+        m3_verdict.M2_INCUMBENT_POLICY_VERSION, config_sha256, cost_model_hash
     )
 
 
-def _winner_version(module_id: str, config_sha256: str) -> str:
-    return dream_module.financial_policy_version(module_id, config_sha256)
+def _winner_version(
+    module_id: str,
+    config_sha256: str,
+    cost_model_hash: str = FIXTURE_COST_MODEL_HASH,
+) -> str:
+    return dream_module.financial_policy_version(
+        module_id, config_sha256, cost_model_hash
+    )
 
 
 def test_evaluation_config_mismatch_is_refused(tmp_path: Path) -> None:
@@ -297,6 +326,45 @@ def test_duplicate_verdict_is_refused(tmp_path: Path) -> None:
         connection.executescript(m3_verdict._VERDICT_SCHEMA)
         connection.execute(
             "INSERT INTO m3_verdict (iteration_id, prereg_sha256, "
+            "evaluation_config_sha256, cost_model_hash, verdict, "
+            "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
+            "criterion1_bar, criterion1_paired_worlds, criterion2_pass, "
+            "criterion2_winner_fdr_deploy, criterion2_baseline_fdr_deploy, "
+            "criterion3_pass, criterion3_mean_transfer, "
+            "criterion3_domain_transfers, winner_commit_rate, "
+            "baseline_commit_rate, n_bootstrap, n_bootstrap_by_domain, "
+            "n_financial, campaign_ids, winner_module_id, created_at) VALUES "
+            "('prior-iteration', 'deadbeef', 'cafe', 'f00d', 'PASS', 1, 0.5, 0.01, 0.1, 20, "
+            "1, 0.0, 1.0, 1, 0.1, '{}', 1.0, 0.0, 50, '{}', 20, '[]', "
+            "'cand-x', '2026-01-01T00:00:00Z')"
+        )
+        with pytest.raises(m3_verdict.M3VerdictError, match="already exists"):
+            m3_verdict._verify_no_prior_verdict(connection, "deadbeef")
+        # A different pre-registration's sha256 is unaffected.
+        m3_verdict._verify_no_prior_verdict(connection, "some-other-hash")
+
+
+def test_verdict_table_written_before_addendum_2_is_upgraded_in_place(
+    tmp_path: Path,
+) -> None:
+    """A ``m3_verdict`` table written under Addendum 1's schema is brought
+    forward by ``ALTER TABLE``, and its recorded row is left exactly as filed.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that already exists,
+    so without this probe-then-``ALTER`` the next write would fail with "no
+    column named cost_model_hash".  The column is added *nullable*: the one
+    true statement a pre-Addendum-2 row can make is that no cost model was
+    recorded, and inventing one would name a fee schedule nobody measured.
+    """
+    database_url = _database_url(tmp_path)
+    heredoc = m3_verdict._VERDICT_SCHEMA.replace(
+        "    cost_model_hash                 TEXT NOT NULL,\n", ""
+    )
+    assert "cost_model_hash" not in heredoc
+    with closing(sqlite3.connect(_sqlite_path(database_url))) as connection, connection:
+        connection.executescript(heredoc)
+        connection.execute(
+            "INSERT INTO m3_verdict (iteration_id, prereg_sha256, "
             "evaluation_config_sha256, verdict, "
             "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
             "criterion1_bar, criterion1_paired_worlds, criterion2_pass, "
@@ -305,14 +373,25 @@ def test_duplicate_verdict_is_refused(tmp_path: Path) -> None:
             "criterion3_domain_transfers, winner_commit_rate, "
             "baseline_commit_rate, n_bootstrap, n_bootstrap_by_domain, "
             "n_financial, campaign_ids, winner_module_id, created_at) VALUES "
-            "('prior-iteration', 'deadbeef', 'cafe', 'PASS', 1, 0.5, 0.01, 0.1, 20, "
+            "('legacy-iteration', 'deadbeef', 'cafe', 'PASS', 1, 0.5, 0.01, 0.1, 20, "
             "1, 0.0, 1.0, 1, 0.1, '{}', 1.0, 0.0, 50, '{}', 20, '[]', "
             "'cand-x', '2026-01-01T00:00:00Z')"
         )
-        with pytest.raises(m3_verdict.M3VerdictError, match="already exists"):
-            m3_verdict._verify_no_prior_verdict(connection, "deadbeef")
-        # A different pre-registration's sha256 is unaffected.
-        m3_verdict._verify_no_prior_verdict(connection, "some-other-hash")
+        m3_verdict._upgrade_verdict_table(connection)
+        # Idempotent: a second call is a no-op.
+        m3_verdict._upgrade_verdict_table(connection)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(m3_verdict)")
+        }
+        assert "cost_model_hash" in columns
+        legacy = connection.execute(
+            "SELECT iteration_id, verdict, cost_model_hash FROM m3_verdict "
+            "WHERE iteration_id = 'legacy-iteration'"
+        ).fetchone()
+    # The recorded verdict is untouched, and its new column is NULL -- no
+    # cost model was recorded for it.
+    assert legacy == ("legacy-iteration", "PASS", None)
 
 
 # -- Criterion 1: paired delta IR --------------------------------------------
@@ -482,6 +561,203 @@ def test_criterion1_ignores_stored_m2_fixed_rows(
             revision_cap=40,
             evaluation_config_path=config_path,
         )
+
+
+def test_criterion1_refuses_an_arm_filed_under_another_cost_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Addendum 2's defect, pinned at the reader: rows filed under the right
+    *config* but another *cost model* are never read.
+
+    Both arms hold a full set of rows, so a verdict that named its arms by the
+    config's sha256 alone would pair them and report a comparison.  Addendum 2
+    -- *"A financial-world row's policy version names the config's sha256 **and
+    the cost-model hash** it was scored under.  The verdict pairs only rows
+    filed under both pinned values, and refuses, as Addendum 1 already requires
+    for a missing row, when either arm lacks them"* -- means those rows name no
+    arm under the pin, so the comparison finds nothing to pair and the existing
+    missing-row refusal fires, naming the version it looked for.
+    """
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    for index, diff in enumerate([0.65, 0.70, 0.75] * 7):
+        world_id = f"campaign-{index}"
+        # The right config, a *different* cost model: spot-priced rows for a
+        # perp-priced pin.
+        _insert_score(
+            database_url,
+            policy_version=_winner_version(winner_version, config_sha256, "522d691dspot"),
+            world_id=world_id,
+            score=diff,
+        )
+        _insert_score(
+            database_url,
+            policy_version=_baseline_version(config_sha256, "522d691dspot"),
+            world_id=world_id,
+            score=0.0,
+        )
+    # The version the criterion looks for is the pinned pair's own -- and it
+    # is exactly the version the mis-filed rows are *not* under, which is why
+    # the pairing finds nothing.
+    expected = _winner_version(winner_version, config_sha256)
+    with closing(sqlite3.connect(_sqlite_path(database_url))) as connection:
+        pinned_rows = connection.execute(
+            "SELECT COUNT(*) FROM replay_score WHERE policy_version = ?",
+            (expected,),
+        ).fetchone()[0]
+    assert pinned_rows == 0
+
+    baseline_version = _baseline_version(config_sha256)
+    # The existing missing-row refusal fires -- Addendum 1's own, produced by
+    # the paired statistic when an arm carries no rows (the same one a store
+    # with no baseline arm at all gets), never a comparison over the
+    # differently-priced rows -- and it names the versions the arms were
+    # looked for under, which is the repair a caller whose rows exist under
+    # another pair of identities needs.
+    with pytest.raises(dreaming.PairedComparisonError, match="paired comparison") as refusal:
+        m3_verdict._criterion1(
+            database_url=database_url,
+            winner_version=winner_version,
+            revision_cap=40,
+            evaluation_config_path=config_path,
+        )
+    assert expected in str(refusal.value)
+    assert baseline_version in str(refusal.value)
+
+
+def test_criterion1_reads_only_the_rows_filed_under_both_pinned_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Addendum 2: the pinned pair's rows are read, and a decoy set filed
+    under the right config and another cost model is not.
+
+    The decoys read *better* than the pinned rows on purpose -- if the
+    criterion read them, ``mean_difference`` would be the decoy figure.
+    """
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    pinned_diffs = [0.65, 0.70, 0.75] * 7
+    for index, diff in enumerate(pinned_diffs):
+        world_id = f"campaign-{index}"
+        # The pinned pair -- both values as the pin fixes them.
+        _insert_score(
+            database_url,
+            policy_version=_winner_version(winner_version, config_sha256),
+            world_id=world_id,
+            score=diff,
+        )
+        _insert_score(
+            database_url,
+            policy_version=_baseline_version(config_sha256),
+            world_id=world_id,
+            score=0.0,
+        )
+        # A decoy under the same config and another cost model, reading far
+        # better than the pinned rows.
+        _insert_score(
+            database_url,
+            policy_version=_winner_version(winner_version, config_sha256, "decoy-model"),
+            world_id=world_id,
+            score=diff + 10.0,
+        )
+        _insert_score(
+            database_url,
+            policy_version=_baseline_version(config_sha256, "decoy-model"),
+            world_id=world_id,
+            score=0.0,
+        )
+
+    difference, _p, _bar, passed = m3_verdict._criterion1(
+        database_url=database_url,
+        winner_version=winner_version,
+        revision_cap=40,
+        evaluation_config_path=config_path,
+    )
+    assert difference.paired_worlds == len(pinned_diffs)
+    # The pinned rows' own mean difference, never the decoys' +10.0.
+    assert difference.mean_difference == pytest.approx(
+        statistics.fmean(pinned_diffs)
+    )
+    assert passed is True
+
+
+def test_criterion2_ignores_a_commit_filed_under_another_cost_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion 2 reads ``committed_pick`` from the *pinned pair's* rows.
+
+    The fixture runs the winner *twice* over the same worlds: once under the
+    pinned pair of identities, committing every planted **null**, and once
+    under the right config with another cost model, committing every planted
+    **real**.  Only the pinned pair is read, so the winner's figures are the
+    null-chasing ones -- FDR_deploy ``1.0`` -- and the mis-filed commits,
+    which would read ``0.0``, are never joined to a label.
+    """
+    database_url = _database_url(tmp_path)
+    _create_replay_score_table(database_url)
+    _create_node_table(database_url)
+    config_path, digest = _pinned_config(tmp_path)
+    _pin(monkeypatch, digest)
+    winner_version = "cand-winner"
+    config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    campaigns = tuple(f"campaign-{i}" for i in range(20))
+    labels: dict[str, bool] = {}
+    for i, campaign_id in enumerate(campaigns):
+        root_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"root-{i}"))
+        is_null = i >= 10
+        labels[root_id] = is_null
+        _plant_root(database_url, campaign_id=campaign_id, node_id=root_id)
+        # The winner's mis-filed commits: right config, another cost model --
+        # and on the *real* roots, which is the figure this test must not read.
+        if not is_null:
+            _insert_score(
+                database_url,
+                policy_version=_winner_version(winner_version, config_sha256, "spot"),
+                world_id=campaign_id,
+                score=0.0,
+                committed_pick=root_id,
+            )
+        # The winner's pinned commits: both values as the pin fixes them, on
+        # the *null* roots.
+        if is_null:
+            _insert_score(
+                database_url,
+                policy_version=_winner_version(winner_version, config_sha256),
+                world_id=campaign_id,
+                score=0.0,
+                committed_pick=root_id,
+            )
+        # The baseline's commits, correctly filed under both pinned values, on
+        # the reals: a low FDR_deploy the winner must not beat.
+        if not is_null:
+            _insert_score(
+                database_url,
+                policy_version=_baseline_version(config_sha256),
+                world_id=campaign_id,
+                score=0.0,
+                committed_pick=root_id,
+            )
+    scorer = scoring.NullPickScorer(_StubSidecar(labels))
+    winner_fdr, baseline_fdr, passed = m3_verdict._criterion2(
+        database_url=database_url,
+        winner_version=winner_version,
+        campaigns=campaigns,
+        scorer=scorer,
+        config_sha256=digest,
+    )
+    # Every pinned winner commitment landed on a null: FDR_deploy 1.0.  Had
+    # the mis-filed spot rows been read, the winner would have read 0.0.
+    assert winner_fdr == pytest.approx(1.0)
+    assert baseline_fdr == pytest.approx(0.0)
+    assert passed is False
 
 
 # -- Criterion 2: FDR_deploy --------------------------------------------------
@@ -824,14 +1100,20 @@ def test_run_verdict_passes_and_persists_one_row(
     assert result.criterion3_pass is True
     assert result.prereg_sha256 == hashlib.sha256(PREREG_PATH.read_bytes()).hexdigest()
     assert result.evaluation_config_sha256 == digest
+    # Addendum 2: the row records the cost model the criteria were judged
+    # under, so a recorded verdict says what it read without a reader having
+    # to reconstruct a version string.
+    assert result.cost_model_hash == FIXTURE_COST_MODEL_HASH
 
     with closing(sqlite3.connect(_sqlite_path(fixture["database_url"]))) as connection:
         rows = connection.execute(
-            "SELECT verdict, prereg_sha256, evaluation_config_sha256 FROM m3_verdict "
-            "WHERE iteration_id = ?",
+            "SELECT verdict, prereg_sha256, evaluation_config_sha256, "
+            "cost_model_hash FROM m3_verdict WHERE iteration_id = ?",
             (iteration_id,),
         ).fetchall()
-    assert rows == [("PASS", result.prereg_sha256, digest)]
+    assert rows == [
+        ("PASS", result.prereg_sha256, digest, FIXTURE_COST_MODEL_HASH)
+    ]
 
 
 def test_run_verdict_fails_and_persists_the_fail_row(

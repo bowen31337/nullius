@@ -233,8 +233,25 @@ FINANCIAL_SUFFIX = "#financial"
 #: their config"*: *"Financial-world rows written for M3 are filed under a
 #: policy version that names the config's sha256"*.  A row's version is
 #: therefore ``f"{module_id}{FINANCIAL_SUFFIX}{FINANCIAL_CONFIG_SEPARATOR}
-#: {config_sha256}"`` -- see :func:`financial_policy_version`.
+#: {config_sha256}{FINANCIAL_COST_MODEL_SEPARATOR}{cost_model_hash}"`` --
+#: see :func:`financial_policy_version`.
 FINANCIAL_CONFIG_SEPARATOR = "@"
+
+#: The separator between the evaluation config's digest and the cost-model
+#: hash in a financial row's version -- docs/preregistration/2026-10-17-m3-
+#: dreaming.ADDENDUM.md's **Addendum 2**, *"Rows carry both identities"*: *"A
+#: financial-world row's policy version names the config's sha256 and the
+#: cost-model hash it was scored under."*  Addendum 1's version named one
+#: identity, and that was the defect Addendum 2 fixes: the cost model is
+#: **not** inside the evaluation-config file -- it comes from
+#: :data:`orchestrator._context.COST_MODEL_PATH_ENV`, and an unset variable
+#: means the shipped **spot** schedule -- so two cycles under one pinned
+#: config could net their rows through different fee and funding schedules and
+#: file both under one version.  ``+`` rather than ``@`` because the two
+#: separators name different relationships: ``@`` introduces the *config* the
+#: row was scored under, ``+`` concatenates a second, independent identity
+#: onto it.
+FINANCIAL_COST_MODEL_SEPARATOR = "+"
 
 #: The M2 fixed baseline's own source file -- the policy
 #: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md names as *"the
@@ -256,23 +273,42 @@ M2_INCUMBENT_PATH = Path("deploy/dreaming/incumbent.m2.py")
 M2_INCUMBENT_POLICY_VERSION = "m2-incumbent"
 
 
-def financial_policy_version(module_id: str, config_sha256: str) -> str:
+def financial_policy_version(
+    module_id: str, config_sha256: str, cost_model_hash: str
+) -> str:
     """The ``policy_version`` a financial-world row for M3 is filed under.
 
-    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"Financial-world
-    rows written for M3 are filed under a policy version that names the
-    config's sha256.  The verdict pairs only rows filed under the pinned
-    config's sha256, and refuses a pair scored under any other."*
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md names **both**
+    identities of such a row.  Addendum 1: *"Financial-world rows written for
+    M3 are filed under a policy version that names the config's sha256.  The
+    verdict pairs only rows filed under the pinned config's sha256, and
+    refuses a pair scored under any other."*  Addendum 2: *"A financial-world
+    row's policy version names the config's sha256 and the cost-model hash it
+    was scored under.  The verdict pairs only rows filed under both pinned
+    values, and refuses, as Addendum 1 already requires for a missing row,
+    when either arm lacks them."*
 
-    The digest rides on the version rather than in a column of its own because
-    ``replay_score`` is a migration-owned table this member may not widen, and
-    because a version *is* the identity of an arm: two rows scored under two
-    configs are two different measurements, and filing them under one name is
-    exactly the confusion the addendum exists to end.  It is spelled here, once,
-    so the writer (:func:`_financial_arm`) and the reader
+    Hence the two arguments and the two separators: the config's digest
+    (:data:`FINANCIAL_CONFIG_SEPARATOR`) *and* the cost-model hash
+    (:data:`FINANCIAL_COST_MODEL_SEPARATOR`) ride on the version string.  The
+    second is not redundant with the first -- the cost model is read from
+    :data:`orchestrator._context.COST_MODEL_PATH_ENV` and is not part of the
+    evaluation-config file the digest covers, so a row's config digest alone
+    cannot say what fee and funding schedule its IR was netted through.  That
+    gap is the whole of Addendum 2's defect.
+
+    Neither value rides in a column of its own because ``replay_score`` is a
+    migration-owned table this member may not widen, and because a version
+    *is* the identity of an arm: two rows scored under two configs -- or two
+    cost models -- are two different measurements, and filing them under one
+    name is exactly the confusion the addenda exist to end.  It is spelled
+    here, once, so the writer (:func:`_financial_arm`) and the reader
     (:func:`orchestrator.m3_verdict._criterion1`) cannot drift apart on it.
     """
-    return f"{module_id}{FINANCIAL_SUFFIX}{FINANCIAL_CONFIG_SEPARATOR}{config_sha256}"
+    return (
+        f"{module_id}{FINANCIAL_SUFFIX}{FINANCIAL_CONFIG_SEPARATOR}{config_sha256}"
+        f"{FINANCIAL_COST_MODEL_SEPARATOR}{cost_model_hash}"
+    )
 
 
 def evaluation_config_sha256(env: Mapping[str, str] | None = None) -> str | None:
@@ -452,7 +488,12 @@ _NON_COMMITTING_FLAT = "flat"
 
 
 def _financial_comparison(
-    candidate: Any, *, database_url: str, config_sha256: str, m2_version: str
+    candidate: Any,
+    *,
+    database_url: str,
+    config_sha256: str,
+    cost_model_hash: str,
+    m2_version: str,
 ) -> object:
     """One candidate's financial arm against the **re-scored** M2 baseline.
 
@@ -468,19 +509,23 @@ def _financial_comparison(
     whether the financial arm is funded at all, so it is named rather than
     folded into the caller's ``"thin"``.
 
-    Both arms are named by **the configuration they were scored under**
-    (:func:`financial_policy_version`), which is the whole of
-    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's *"Rows carry
-    their config"*.  Neither arm is the stored ``"m2-fixed"`` version: the
+    Both arms are named by **the evaluation setup they were scored under**
+    (:func:`financial_policy_version`) -- the config's sha256 *and* the
+    cost-model hash, docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's
+    *"Rows carry their config"* as its Addendum 2 extends it: *"Rows carry
+    both identities."*  Neither arm is the stored ``"m2-fixed"`` version: the
     baseline named here is the re-scored :data:`M2_INCUMBENT_POLICY_VERSION`
     arm (:func:`_baseline_candidate`), so a pair drawn from two different
     evaluation setups cannot be formed even by accident -- two rows scored
-    under two configs are filed under two versions, and the pairing simply
-    finds no partner rather than silently measuring a config difference.
+    under two configs, or two cost models, are filed under two versions, and
+    the pairing simply finds no partner rather than silently measuring a
+    config or a fee-schedule difference.
     """
     try:
         comparison = dreaming.paired_pool_difference(
-            financial_policy_version(candidate.module_id, config_sha256),
+            financial_policy_version(
+                candidate.module_id, config_sha256, cost_model_hash
+            ),
             m2_version,
             database_url=database_url,
             non_committing=_NON_COMMITTING_FLAT,
@@ -549,7 +594,15 @@ def _financial_arm(
     ``env`` is where :data:`orchestrator._context.EVALUATION_CONFIG_ENV` is read
     for the config's sha256 every row's version carries; ``None`` reads the
     process environment, the same default :func:`orchestrator._context.
-    load_evaluation_context` takes.
+    load_evaluation_context` takes.  The *second* identity every version
+    carries -- the cost-model hash -- is read off ``evaluation_context``
+    itself, because that is where :func:`orchestrator._context.
+    load_evaluation_context` resolved it from
+    :data:`orchestrator._context.COST_MODEL_PATH_ENV`: reading it off the
+    environment instead would mean a second, independently parsed cost model
+    and a second hash that could disagree with the one the scores were
+    actually netted through.  A context that carries none is refused in the
+    same ``unscoreable`` shape as a missing config, for the same reason.
     """
     campaigns = _admitted_financial_campaigns(database_url)
     n_financial = len(campaigns)
@@ -580,10 +633,32 @@ def _financial_arm(
             )
         }
 
+    cost_model_hash = getattr(evaluation_context, "cost_model_hash", None)
+    if not cost_model_hash:
+        # The cost model is the second half of a financial row's identity
+        # (Addendum 2), and it is resolved by the same load that produced this
+        # context -- so a context carrying none cannot name one, and writing
+        # its rows anyway would file measurements under a version that
+        # silently asserts a spot default they were never netted through.
+        return n_financial, {
+            "unscoreable": (
+                f"{DREAM_CODE}: an evaluation context with an out-of-sample "
+                "grid was loaded, but it carries no cost_model_hash to file "
+                "this cycle's financial-world rows under; "
+                "docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md "
+                "(Addendum 2) requires every financial-world row written for "
+                "M3 to be filed under a policy version naming both the "
+                "evaluation config's sha256 and the cost-model hash the score "
+                "was netted through"
+            )
+        }
+
     financial_context = FinancialEvalContext(evaluation=evaluation_context)
     sweep = tuple(widened) + (_baseline_candidate(),)
     for candidate in sweep:
-        version = financial_policy_version(candidate.module_id, config_sha256)
+        version = financial_policy_version(
+            candidate.module_id, config_sha256, cost_model_hash
+        )
         for campaign_id in campaigns:
             pick = score_on_financial_world(
                 candidate.source, campaign_id, context=financial_context
@@ -597,11 +672,14 @@ def _financial_arm(
                 database_url=database_url,
             )
 
-    m2_version = financial_policy_version(M2_INCUMBENT_POLICY_VERSION, config_sha256)
+    m2_version = financial_policy_version(
+        M2_INCUMBENT_POLICY_VERSION, config_sha256, cost_model_hash
+    )
     financial_arm = _financial_comparison(
         winner,
         database_url=database_url,
         config_sha256=config_sha256,
+        cost_model_hash=cost_model_hash,
         m2_version=m2_version,
     )
     if "unscoreable" not in financial_arm:
@@ -609,6 +687,7 @@ def _financial_arm(
             incumbent,
             database_url=database_url,
             config_sha256=config_sha256,
+            cost_model_hash=cost_model_hash,
             m2_version=m2_version,
         )
     return n_financial, financial_arm
@@ -681,6 +760,13 @@ def run_cycle(
     same default :func:`orchestrator._context.load_evaluation_context` takes,
     and a caller that handed ``evaluation_context`` an explicitly loaded
     context should hand that same mapping here so the two agree.
+
+    The summary states both identities of the financial rows this cycle wrote
+    -- ``evaluation_config_sha256`` and ``cost_model_hash`` -- beside each
+    other, because the cost model is *not* inside the config file (Addendum 2)
+    and the rows' version is the only place either one is recorded.  Each is
+    ``None`` when this cycle wrote no financial rows, which is the same
+    ``"thin"`` case for both.
     """
     cap_record = dreaming.record_cycle_cap(
         iteration_id, census.total, database_url=database_url
@@ -842,10 +928,28 @@ def run_cycle(
         env=env,
     )
 
+    # The two identities every financial row's version names, reported beside
+    # each other.  Both are read here, once, from the same two sources
+    # _financial_arm stamps its rows from -- the named config's digest and the
+    # loaded context's own cost-model hash -- so the JSON line and the rows it
+    # describes cannot name different evaluation setups.  `None` when the arm
+    # reported "thin" (no row was written, so there is no identity to report)
+    # or when the context carried no cost model at all.
+    config_sha256 = (
+        None if financial_arm == "thin" else evaluation_config_sha256(env)
+    )
+    cost_model_hash = (
+        None
+        if financial_arm == "thin" or evaluation_context is None
+        else getattr(evaluation_context, "cost_model_hash", None)
+    )
+
     return {
         "iteration_id": iteration_id,
         "n_bootstrap": census.n_bootstrap,
         "n_financial": n_financial,
+        "evaluation_config_sha256": config_sha256,
+        "cost_model_hash": cost_model_hash,
         "revision_cap": revision_cap,
         "module_id": winner.module_id,
         "code_hash": winner.code_hash,

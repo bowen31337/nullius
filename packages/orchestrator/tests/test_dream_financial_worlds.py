@@ -78,6 +78,7 @@ import pytest
 import replay as replay_member
 from artifacts import ArtifactStore
 from orchestrator import _financial_eval
+from orchestrator import dream as dream_module
 from orchestrator._context import EVALUATION_CONFIG_ENV
 from orchestrator._financial_eval import FinancialEvalContext, score_on_financial_world
 from orchestrator.closeout import M2_FIXED_POLICY_VERSION
@@ -125,6 +126,17 @@ ROUND_CAP = 5
 #: *"Rows carry their config"*) is the sha256 of exactly these bytes.
 EVALUATION_CONFIG_BYTES = b'{"pinned": "fixture-evaluation-config"}\n'
 
+#: Two fixture ``cost_model_hash`` values, deliberately *not* the real ones:
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, Addendum 2, makes
+#: the cost model a second half of a financial row's identity, and this suite
+#: proves that by varying exactly those two characters -- the reported
+#: reproduction's own fixture values -- never by reading a real cost-model
+#: file or anything under ``~/.config``.  Nothing in the version helper
+#: validates a hash's shape (it is an opaque identity there), so a one-letter
+#: fixture is as honest as a 64-hex one and much easier to read in a failure.
+COST_MODEL_HASH_A = "a"
+COST_MODEL_HASH_B = "b"
+
 
 def _pinned_env(tmp_path: Path) -> dict[str, str]:
     """An env whose ``NULLIUS_EVALUATION_CONFIG`` names a fixture config file."""
@@ -138,9 +150,16 @@ def _config_sha256() -> str:
     return hashlib.sha256(EVALUATION_CONFIG_BYTES).hexdigest()
 
 
-def _financial_version(module_id: str) -> str:
-    """The version a candidate's (or the baseline's) financial rows carry."""
-    return financial_policy_version(module_id, _config_sha256())
+def _financial_version(module_id: str, cost_model_hash: str = COST_MODEL_HASH_A) -> str:
+    """The version a candidate's (or the baseline's) financial rows carry.
+
+    Both identities of the row ride here --
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, Addendum 2:
+    *"A financial-world row's policy version names the config's sha256 and
+    the cost-model hash it was scored under"* -- so the cost model is a
+    required part of the name even in this suite's own assertions.
+    """
+    return financial_policy_version(module_id, _config_sha256(), cost_model_hash)
 
 #: A commit-reachable, screening-admissible incumbent -- the same shape
 #: ``test_dream_cli.INCUMBENT_SOURCE`` takes (one jitterable numeric
@@ -358,7 +377,11 @@ def _write_m2_fixed_row(
 
 
 def _fake_evaluation_context(
-    *, database_url: str, artifact_dir: Path, oos_dates: tuple[dt.date, ...]
+    *,
+    database_url: str,
+    artifact_dir: Path,
+    oos_dates: tuple[dt.date, ...],
+    cost_model_hash: str = COST_MODEL_HASH_A,
 ) -> Any:
     """A duck-typed stand-in for :class:`orchestrator._context.
     EvaluationContext` -- every field :func:`score_on_financial_world` and
@@ -370,6 +393,14 @@ def _fake_evaluation_context(
     and nothing :func:`orchestrator._evaluate.evaluate_on_dates` itself would
     need, because that call is stubbed in every test here -- a real sealed
     snapshot and sandbox are ``test_closeout_commit_oos.py``'s own concern.
+
+    ``cost_model_hash`` is Addendum 2's second identity: a real
+    :class:`~orchestrator._context.EvaluationContext` resolves it from
+    ``NULLIUS_COST_MODEL_PATH`` (feature 60's hash over the loaded schedule),
+    and :func:`orchestrator.dream._financial_arm` stamps every financial-world
+    row's version with it.  It defaults to :data:`COST_MODEL_HASH_A` and is a
+    parameter so one test can run two cycles whose contexts differ in this
+    field alone.
     """
     return SimpleNamespace(
         database_url=database_url,
@@ -378,6 +409,7 @@ def _fake_evaluation_context(
         oos_dates=oos_dates,
         closes={},
         horizon=1,
+        cost_model_hash=cost_model_hash,
     )
 
 
@@ -591,6 +623,13 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
     assert isinstance(summary["holdout_mean"], float)
     assert summary["gap"] == pytest.approx(summary["train_mean"] - summary["holdout_mean"])
 
+    # The summary states both identities of the rows it just filed, so an
+    # operator reading the one JSON line can say which evaluation setup the
+    # cycle's financial arm was netted under -- Addendum 2: the cost model is
+    # pinned *beside* the config, not inside it.
+    assert summary["evaluation_config_sha256"] == _config_sha256()
+    assert summary["cost_model_hash"] == COST_MODEL_HASH_A
+
     # The financial arm: two admitted campaigns, a computed paired figure.
     assert summary["n_financial"] == 2
     financial_arm = summary["financial_arm"]
@@ -608,7 +647,12 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
     rows = _financial_rows(database_url)
     versions = {version for version, _world, _holdout in rows}
     worlds = {campaign_a, campaign_b}
-    assert all(version.endswith(f"#financial@{sha256}") for version in versions)
+    # Addendum 2: the version names *both* identities -- the config's sha256
+    # and the cost-model hash the score was netted through.
+    assert all(
+        version.endswith(f"#financial@{sha256}+{COST_MODEL_HASH_A}")
+        for version in versions
+    )
     assert {world for _v, world, _h in rows} == worlds
     assert all(holdout == 1 for _v, _w, holdout in rows)
     # The revision sweep's own candidates, plus the re-scored baseline.
@@ -627,6 +671,97 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
             (summary["module_id"],),
         ).fetchone()[0]
     assert bootstrap_rows > 0
+
+
+def test_two_cost_models_file_their_rows_under_two_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect, pinned: two cycles under the *same* pinned config, netting
+    the same rules through two different cost models, must not share one
+    ``policy_version``.
+
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, Addendum 2:
+    *"two dreaming cycles run under the same pinned config could net their
+    financial rows through different fee and funding schedules, and the row
+    versions Addendum 1 defines could not tell them apart"* -- fixed by
+    *"A financial-world row's policy version names the config's sha256 **and
+    the cost-model hash** it was scored under."*  The cost model is not in
+    the evaluation-config file: it comes from ``NULLIUS_COST_MODEL_PATH``, so
+    the two runs here differ in **nothing but** their context's
+    ``cost_model_hash`` and the evaluation-config bytes are byte-identical
+    between them.
+
+    The row version's exact spelling is stated literally here rather than
+    through :func:`orchestrator.dream.financial_policy_version`, so this test
+    is an independent statement of the documented format and fails on the
+    behavior rather than on a signature.
+
+    :func:`orchestrator.dream._financial_arm` is driven directly -- the
+    reported reproduction's own shape, *"run the financial arm twice over one
+    fixture campaign"* -- rather than two full cycles, because the arm is the
+    whole of the writer under test and a second cycle's selection is a
+    different subject (this suite's cycle tests cover it).
+    """
+    database_url = _migrated_database(tmp_path)
+    campaign_a, node_a = _build_completed_campaign(database_url, ic_mean=0.3)
+    campaign_b, node_b = _build_completed_campaign(database_url, ic_mean=0.6)
+    artifact_dir = tmp_path / "artifacts"
+    _write_code_artifact(artifact_dir, campaign_a, node_a)
+    _write_code_artifact(artifact_dir, campaign_b, node_b)
+    _counting_stub(monkeypatch)
+    sha256 = _config_sha256()
+    env = _pinned_env(tmp_path)
+
+    def _context(cost_model_hash: str) -> Any:
+        return _fake_evaluation_context(
+            database_url=database_url,
+            artifact_dir=artifact_dir,
+            oos_dates=(dt.date(2026, 6, 1),),
+            cost_model_hash=cost_model_hash,
+        )
+
+    candidates = dreaming.revise_policy(INCUMBENT_SOURCE, 2, seed="cost-model-probe")
+    widened = dreaming.include_incumbent(
+        candidates, INCUMBENT_SOURCE, version="incumbent-cost-model-probe"
+    )
+    winner = widened[0]
+
+    def _sweep(cost_model_hash: str) -> int:
+        n_financial, arm = dream_module._financial_arm(
+            widened,
+            winner,
+            winner,
+            database_url=database_url,
+            beta=0.5,
+            evaluation_context=_context(cost_model_hash),
+            replay_component=replay_member.ReplayEngine(),
+            env=env,
+        )
+        assert n_financial == 2, arm
+        return n_financial
+
+    _sweep(COST_MODEL_HASH_A)
+    versions_a = {version for version, _world, _h in _financial_rows(database_url)}
+    assert versions_a, "the first sweep must file financial rows at all"
+
+    baseline_a = f"{M2_INCUMBENT_POLICY_VERSION}#financial@{sha256}+{COST_MODEL_HASH_A}"
+    baseline_b = f"{M2_INCUMBENT_POLICY_VERSION}#financial@{sha256}+{COST_MODEL_HASH_B}"
+    assert all(version.endswith(f"+{COST_MODEL_HASH_A}") for version in versions_a)
+    assert baseline_a in versions_a
+    assert baseline_b not in versions_a
+
+    _sweep(COST_MODEL_HASH_B)
+    versions_b = {version for version, _world, _h in _financial_rows(database_url)}
+    new_versions = versions_b - versions_a
+
+    # The second sweep's rows land under the *second* cost model's own
+    # version -- before the fix both sweeps wrote the identical string, so
+    # this set was empty and two differently-priced measurements were one arm.
+    assert baseline_b in new_versions
+    assert all(version.endswith(f"+{COST_MODEL_HASH_B}") for version in new_versions)
+    # Every one of the two sweeps' versions still names the same config -- the
+    # two runs differ in nothing else.
+    assert all(f"#financial@{sha256}" in version for version in versions_b)
 
 
 def test_void_campaign_is_excluded_from_admission_and_sweep(

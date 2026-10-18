@@ -14,6 +14,24 @@ that evidence back, computes the three pre-registered criteria exactly as
 the document fixes them, and writes one ``m3_verdict`` row -- never two,
 for one pre-registered attempt (the document's own sha256).
 
+**Addendum 2: the cost model is pinned beside the config.**
+``docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md``'s second
+addendum fixes the *second* identity a financial-world row carries.  Its
+defect: Addendum 1 pinned the evaluation config by sha256, but the cost model
+a score is netted through is **not in that file** -- it is read from
+``NULLIUS_COST_MODEL_PATH``, and an unset variable means the shipped **spot**
+schedule -- so two cycles under one pinned config could price their rows
+through different fee and funding schedules and file them under one version
+(*"72 of the 84 campaigns were scored with the spot default"*).  Two
+consequences here: (a) both criteria name each arm by the config's sha256
+**and** :data:`M3_COST_MODEL_HASH`
+(:func:`orchestrator.dream.financial_policy_version`), so a row filed under
+the pinned config but any other cost model is never read, and an arm with no
+row under the pinned pair refuses exactly as Addendum 1 already required for
+a missing row; and (b) the verdict records the cost-model hash in its own
+column, so what a recorded verdict was judged under is readable from the row
+the verdict file rather than inferred from the version strings it read.
+
 **Refusals are checked before any criterion is computed**, in the
 pre-registration's own order: the document's sha256 against its sidecar
 ``.sha256`` file; the pinned evaluation config's sha256 against
@@ -133,6 +151,7 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "M3_CODE",
+    "M3_COST_MODEL_HASH",
     "M3_EVALUATION_CONFIG_SHA256",
     "MIN_BOOTSTRAP_PER_DOMAIN",
     "MIN_BOOTSTRAP_WORLDS",
@@ -184,6 +203,27 @@ DEFAULT_EVALUATION_CONFIG_PATH = Path(
 M3_EVALUATION_CONFIG_SHA256 = (
     "6adc9a93dd4b2b52ac82c4bab91bb8e3bc33af09b010b826dd7de73d12736425"
 )
+
+#: The pinned **cost model**'s own hash --
+#: docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, **Addendum 2**:
+#: *"Every financial-world score written for M3 is netted through*
+#: ``packages/cost-model/src/cost_model/binance_usdm.yaml``, *venue*
+#: ``binance_usdm``, *cost-model hash*
+#: ``1e946e66e63e308c6d5258fdb8f1a610e7dab18cc2562a90d6084c719c5e958a``. *It
+#: is the venue the pinned config's instrument trades, and the schedule the
+#: forward shadow already uses."*  It is pinned here rather than read from a
+#: file because the cost model a running process resolves is a property of its
+#: environment (``NULLIUS_COST_MODEL_PATH``, unset meaning the shipped **spot**
+#: schedule), and the verdict's whole job is to judge one pre-registered
+#: attempt against values fixed in advance -- so the pin is the rule and the
+#: process's own resolution is not consulted at all.
+#:
+#: Beside :data:`M3_EVALUATION_CONFIG_SHA256` because both criteria must name
+#: *both* identities when they build the arms' versions: the cost model is not
+#: part of the config file the sha256 covers, so an arm named by the digest
+#: alone would pair rows the cycle netted through different fee and funding
+#: schedules -- Addendum 2's defect.
+M3_COST_MODEL_HASH = "1e946e66e63e308c6d5258fdb8f1a610e7dab18cc2562a90d6084c719c5e958a"
 
 #: The three generated bootstrap domains criterion 3 is taken over --
 #: the document's own "hpo, featsel and symreg", and the floor's own three
@@ -242,6 +282,7 @@ class VerdictResult:
     iteration_id: str
     prereg_sha256: str
     evaluation_config_sha256: str
+    cost_model_hash: str
     verdict: str
     criterion1_pass: bool
     criterion1_mean_difference: float
@@ -272,6 +313,7 @@ class VerdictResult:
             "iteration_id": self.iteration_id,
             "prereg_sha256": self.prereg_sha256,
             "evaluation_config_sha256": self.evaluation_config_sha256,
+            "cost_model_hash": self.cost_model_hash,
             "verdict": self.verdict,
             "criterion1_pass": self.criterion1_pass,
             "criterion1_mean_difference": self.criterion1_mean_difference,
@@ -462,31 +504,61 @@ def _criterion1(
     """The paired ΔIR over the financial holdout, under the pinned config.
 
     docs/preregistration/2026-10-17-m3-dreaming.md's criterion 1, computed as
-    its first addendum fixes it: the pinned configuration is verified by
-    digest first, and *both* arms are then named by versions carrying that
-    digest -- the winner's own fresh ``#financial`` sweep
-    (:func:`orchestrator.dream.financial_policy_version`) against the
+    its two addenda fix it: the pinned configuration is verified by digest
+    first, and *both* arms are then named by versions carrying **both pinned
+    identities** -- the config's :data:`M3_EVALUATION_CONFIG_SHA256` and the
+    cost model's :data:`M3_COST_MODEL_HASH` (Addendum 2's *"Rows carry both
+    identities"*).  The winner's own fresh ``#financial`` sweep
+    (:func:`orchestrator.dream.financial_policy_version`) is paired against the
     **re-scored** M2 baseline arm's
     (:data:`orchestrator.dream.M2_INCUMBENT_POLICY_VERSION`, written by the
-    same cycle under the same config).  The stored ``"m2-fixed"`` rows are not
-    read at all: each was written by a campaign's close-out under that
-    campaign's own evaluation setup, so pairing against one would measure the
-    two configs' difference rather than dreaming -- the defect the addendum
-    fixes.  Because both versions carry the digest, a pair drawn from two
-    configurations cannot be formed even by accident: the versions simply do
-    not match.
+    same cycle under the same config *and* the same cost model).  The stored
+    ``"m2-fixed"`` rows are not read at all: each was written by a campaign's
+    close-out under that campaign's own evaluation setup -- by the nodes'
+    recorded provenance, 72 of the 84 under the spot default rather than the
+    pinned perp schedule -- so pairing against one would measure the two
+    setups' difference rather than dreaming, the defect the addenda fix.
+    Because both versions carry both identities, a pair drawn from two
+    configurations, or from two cost models under one config, cannot be
+    formed even by accident: the versions simply do not match, and
+    :func:`dreaming.paired_pool_difference` refuses the pair by naming the
+    expected version, exactly as Addendum 1 already required for a missing row
+    (*"The verdict pairs only rows filed under both pinned values, and
+    refuses, as Addendum 1 already requires for a missing row, when either arm
+    lacks them"*).
     """
     config_sha256 = _verify_evaluation_config(evaluation_config_path)
-    financial_version = financial_policy_version(winner_version, config_sha256)
+    financial_version = financial_policy_version(
+        winner_version, config_sha256, M3_COST_MODEL_HASH
+    )
     baseline_version = financial_policy_version(
-        M2_INCUMBENT_POLICY_VERSION, config_sha256
+        M2_INCUMBENT_POLICY_VERSION, config_sha256, M3_COST_MODEL_HASH
     )
-    difference = dreaming.paired_pool_difference(
-        financial_version,
-        baseline_version,
-        database_url=database_url,
-        non_committing=_NON_COMMITTING_FLAT,
-    )
+    try:
+        difference = dreaming.paired_pool_difference(
+            financial_version,
+            baseline_version,
+            database_url=database_url,
+            non_committing=_NON_COMMITTING_FLAT,
+        )
+    except dreaming.PairedComparisonError as refusal:
+        # The missing-row refusal is :func:`dreaming.paired_pool_difference`'s
+        # own, and it fires *because* both arms are named by the pinned pair --
+        # but its message names the two arm *sizes* and not the versions the
+        # arms were looked for under, which is the one fact the repair needs
+        # when the rows exist under a different pair of identities (a stored
+        # config digest, or Addendum 2's spot cost model).  Naming them here
+        # rather than minting a second refusal: the exception stays
+        # :class:`dreaming.PairedComparisonError`, so every caller and every
+        # existing test reads exactly the refusal it read before, with the
+        # expected versions added.
+        raise dreaming.PairedComparisonError(
+            f"{refusal} [expected arms: candidate {financial_version!r}, "
+            f"baseline {baseline_version!r} -- file this cycle's financial-world "
+            "rows under both pinned identities, the evaluation config's sha256 "
+            "and the cost model's hash (docs/preregistration/2026-10-17-m3-"
+            "dreaming.ADDENDUM.md, Addenda 1 and 2)]"
+        ) from refusal
     one_sided_p = statistics.NormalDist().cdf(-difference.t_statistic)
     bar = dreaming.selection_bar(
         revision_cap, spread=difference.spread, worlds=difference.paired_worlds
@@ -520,9 +592,11 @@ def _criterion2(
     scorer: Any,
     config_sha256: str,
 ) -> tuple[float, float, bool]:
-    financial_version = financial_policy_version(winner_version, config_sha256)
+    financial_version = financial_policy_version(
+        winner_version, config_sha256, M3_COST_MODEL_HASH
+    )
     baseline_version = financial_policy_version(
-        M2_INCUMBENT_POLICY_VERSION, config_sha256
+        M2_INCUMBENT_POLICY_VERSION, config_sha256, M3_COST_MODEL_HASH
     )
     oracle = SubtreeOracle(_NoPostEndpoint(), database_url=database_url)
     population: list[str] = []
@@ -636,6 +710,7 @@ CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
     iteration_id                    TEXT NOT NULL UNIQUE,
     prereg_sha256                   TEXT NOT NULL,
     evaluation_config_sha256        TEXT NOT NULL,
+    cost_model_hash                 TEXT NOT NULL,
     verdict                         TEXT NOT NULL,
     criterion1_pass                 BOOLEAN NOT NULL,
     criterion1_mean_difference      REAL NOT NULL,
@@ -660,10 +735,41 @@ CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
 """
 
 
+def _upgrade_verdict_table(connection: sqlite3.Connection) -> None:
+    """Bring a verdict table written before Addendum 2 up to the current schema.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that already exists,
+    so a database whose ``m3_verdict`` row was written under Addendum 1's
+    schema would reject every write with "no column named cost_model_hash" --
+    the same failure :meth:`cost_model.store` brings its own pre-feature-60
+    table forward from, and the same ``PRAGMA table_info`` probe-then-``ALTER``
+    the ledger member's store uses for an unstamped ledger.
+
+    The column is added **nullable**, with no default, for the one true
+    statement a pre-Addendum-2 row can make: *no cost model was recorded*.  A
+    hash invented here would name a fee schedule nobody measured -- and there
+    is no safe default to invent, because an unset ``NULLIUS_COST_MODEL_PATH``
+    resolves to the **spot** schedule while every M3 row is pinned to
+    ``binance_usdm``.  Idempotent by construction: a table that already holds
+    the column is left untouched.  No row is rewritten -- an ``ALTER TABLE …
+    ADD COLUMN`` is a schema change, so every recorded verdict keeps exactly
+    the values it was filed with.
+    """
+    columns = {
+        row[1]
+        for row in connection.execute(f"PRAGMA table_info({VERDICT_TABLE})")
+    }
+    if "cost_model_hash" not in columns:
+        connection.execute(
+            f"ALTER TABLE {VERDICT_TABLE} ADD COLUMN cost_model_hash TEXT"
+        )
+
+
 def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
     connection.execute(
         f"INSERT INTO {VERDICT_TABLE} ("
-        "iteration_id, prereg_sha256, evaluation_config_sha256, verdict, "
+        "iteration_id, prereg_sha256, evaluation_config_sha256, "
+        "cost_model_hash, verdict, "
         "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
         "criterion1_bar, criterion1_paired_worlds, "
         "criterion2_pass, criterion2_winner_fdr_deploy, criterion2_baseline_fdr_deploy, "
@@ -671,11 +777,12 @@ def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
         "winner_commit_rate, baseline_commit_rate, "
         "n_bootstrap, n_bootstrap_by_domain, n_financial, campaign_ids, "
         "winner_module_id, created_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.iteration_id,
             result.prereg_sha256,
             result.evaluation_config_sha256,
+            result.cost_model_hash,
             result.verdict,
             result.criterion1_pass,
             result.criterion1_mean_difference,
@@ -743,6 +850,7 @@ def run_verdict(
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(_VERDICT_SCHEMA)
+        _upgrade_verdict_table(connection)
         _verify_no_prior_verdict(connection, prereg_sha256)
 
         revision_cap = _revision_cap(iteration_id, database_url=database_url)
@@ -794,6 +902,7 @@ def run_verdict(
             iteration_id=iteration_id,
             prereg_sha256=prereg_sha256,
             evaluation_config_sha256=config_sha256,
+            cost_model_hash=M3_COST_MODEL_HASH,
             verdict=verdict,
             criterion1_pass=criterion1_pass,
             criterion1_mean_difference=difference.mean_difference,
