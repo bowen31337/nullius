@@ -144,6 +144,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -159,6 +160,7 @@ import dreaming
 import policy_runtime
 from canary import CanaryDeterminismBrokenError, require_dreaming_allowed
 from ops import MetaOverfitGaps
+from replay import NON_COMMITTING_SCORE
 
 from ._bootstrap_eval import score_on_world
 from ._context import (
@@ -718,6 +720,63 @@ def _baseline_candidate() -> Any:
     )[0]
 
 
+def _flat_mean(
+    measured: Mapping[tuple[str, str], float], module_id: str, world_ids: Sequence[str]
+) -> float:
+    """One arm's mean over ``world_ids``, with a non-committing reading read as ``0.0``.
+
+    docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md (Addendum 3)
+    extends this pre-registration's own abstention rule — *"a non-committing
+    world scores an IR of exactly 0.0"*, already the law of every paired
+    statistic — to the selection aggregate and to the train-versus-holdout gap
+    read from it.  A world the arm abstained on (:data:`replay.NON_COMMITTING_SCORE`,
+    ``-inf``) therefore contributes the flat book's ``0.0``, exactly as
+    :func:`dreaming.commit_selection`'s ``non_committing="flat"`` reads the same
+    reading, so the summary's means and the aggregate the winner was crowned
+    under cannot disagree about what an abstention is worth.
+
+    The mapping is the one substitution the pre-registration names and no more:
+    it is applied to the reading the sweep measured, never to a stored row
+    (§12's *"existing stored rows are never rewritten"*), and it is *not* a
+    general licence to launder a figure — a reading that is neither finite nor
+    the sentinel cannot arise here, because the sweep persists every evaluator
+    answer verbatim and :mod:`orchestrator._bootstrap_eval` emits only a world's
+    honest ``r2_holdout`` or the sentinel.
+    """
+    readings = [
+        0.0
+        if measured[(module_id, world_id)] == NON_COMMITTING_SCORE
+        else measured[(module_id, world_id)]
+        for world_id in world_ids
+    ]
+    return sum(readings) / len(readings)
+
+
+def _commit_rate(
+    measured: Mapping[tuple[str, str], float], module_id: str, world_ids: Sequence[str]
+) -> float:
+    """The fraction of ``world_ids`` in that mean whose score was finite.
+
+    *"The commit rate of each arm is reported beside every criterion, but does
+    not decide any"* — so it is carried beside :func:`_flat_mean` and changes
+    no verdict.  **Finite**, not "unlike the sentinel": a stored reading is
+    finite exactly when the arm committed there, and ``-inf`` -- the value
+    :func:`_flat_mean` substitutes ``0.0`` for -- is the one non-finite reading
+    :mod:`orchestrator._bootstrap_eval` can emit.  Read from the readings the
+    sweep measured and **before** that substitution, because a flattened
+    ``0.0`` is indistinguishable from a genuine committed score of zero: only
+    the raw reading can still tell an abstention from a commitment, the same
+    ordering :func:`dreaming.paired._arm_commit_count` states for the paired
+    statistic.
+    """
+    commits = sum(
+        1
+        for world_id in world_ids
+        if math.isfinite(measured[(module_id, world_id)])
+    )
+    return commits / len(world_ids)
+
+
 def run_cycle(
     *,
     incumbent_source: str,
@@ -870,6 +929,7 @@ def run_cycle(
             beta=beta,
             iteration_id=iteration_id,
             database_url=database_url,
+            non_committing=_NON_COMMITTING_FLAT,
         )
     except dreaming.SelectionStoreError:
         rerun_winner = _existing_winner(database_url, widened)
@@ -899,15 +959,16 @@ def run_cycle(
         replay=replay_component,
     )
 
-    train_mean = sum(
-        measured[(winner.module_id, world_id)] for world_id in train_worlds
-    ) / len(train_worlds)
-    holdout_mean = sum(
-        measured[(winner.module_id, world_id)] for world_id in holdout_worlds
-    ) / len(holdout_worlds)
-    incumbent_holdout_mean = sum(
-        measured[(incumbent_entry.module_id, world_id)] for world_id in holdout_worlds
-    ) / len(holdout_worlds)
+    train_mean = _flat_mean(measured, winner.module_id, train_worlds)
+    holdout_mean = _flat_mean(measured, winner.module_id, holdout_worlds)
+    incumbent_holdout_mean = _flat_mean(
+        measured, incumbent_entry.module_id, holdout_worlds
+    )
+    train_commit_rate = _commit_rate(measured, winner.module_id, train_worlds)
+    holdout_commit_rate = _commit_rate(measured, winner.module_id, holdout_worlds)
+    incumbent_holdout_commit_rate = _commit_rate(
+        measured, incumbent_entry.module_id, holdout_worlds
+    )
 
     gap_record = MetaOverfitGaps(database_url).record(
         iteration_id,
@@ -956,6 +1017,9 @@ def run_cycle(
         "train_mean": gap_record.train_mean,
         "holdout_mean": gap_record.holdout_mean,
         "incumbent_holdout_mean": incumbent_holdout_mean,
+        "train_commit_rate": train_commit_rate,
+        "holdout_commit_rate": holdout_commit_rate,
+        "incumbent_holdout_commit_rate": incumbent_holdout_commit_rate,
         "gap": gap_record.gap,
         "financial_arm": financial_arm,
         "replay_score_rows": train_report.pair_count + holdout_report.pair_count,

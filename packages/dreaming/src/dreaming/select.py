@@ -144,8 +144,18 @@ from pathlib import Path
 from typing import Any
 
 from .cycle import sqlite_path
-from .errors import SelectionRequestError, SelectionStoreError
+from .errors import (
+    PairedComparisonError,
+    SelectionRequestError,
+    SelectionStoreError,
+)
 from .layout import REPLAY_SCORE_TABLE, pool_tables_present
+from .paired import (
+    NON_COMMITTING_FLAT,
+    NON_COMMITTING_REFUSE,
+    _flattened_arm,
+    _validated_non_committing,
+)
 
 __all__ = [
     "SELECT_REQUEST_CODE",
@@ -317,6 +327,7 @@ def commit_selection(
     database_url: Any = None,
     env: Mapping[str, str] | None = None,
     lam: float | None = None,
+    non_committing: Any = NON_COMMITTING_REFUSE,
 ) -> Any:
     """Resolve the pool, aggregate each candidate under §7, crown and persist the winner.
 
@@ -398,6 +409,7 @@ def commit_selection(
     strata = _validated_strata(strata)
     episode_beta = _validated_beta(beta)
     weight = _require_lambda(lam)
+    mode = _require_non_committing(non_committing)
 
     path = _selection_path(database_url, env)
     with closing(sqlite3.connect(path)) as connection:
@@ -413,7 +425,7 @@ def commit_selection(
             )
         objectives = {
             module_id: _aggregate_candidate(
-                connection, module_id, episode_beta, strata, weight
+                connection, module_id, episode_beta, strata, weight, mode
             )
             for module_id in ordered
         }
@@ -425,12 +437,43 @@ def commit_selection(
 # -- the store seam's private vocabulary --------------------------------------
 
 
+def _candidate_readings(
+    connection: sqlite3.Connection, module_id: str, beta: float
+) -> dict[str, float]:
+    """One candidate's stored readings at the episode's ``beta`` — the raw arm.
+
+    The last reading per world in ``id`` order (a repeated read answers the
+    same arm in any process, the §12 ordering rule every store in this
+    workspace restates), read straight from ``replay_score`` with the sentinel
+    *not yet mapped*: what a row holds is what this answers, and the
+    non-committing substitution is
+    :func:`dreaming.paired._flattened_arm`'s job one call up.  Split out of
+    :func:`_aggregate_candidate` for the same reason
+    :func:`dreaming.paired._pool_arm` is split out of
+    :func:`~dreaming.paired.paired_pool_difference`: a test that must hand the
+    blend a reading SQLite cannot itself store — ``nan`` is written as ``NULL``
+    by this driver, so no row can carry one — stubs this one seam instead of
+    the arithmetic.
+    """
+    rows = connection.execute(
+        f"SELECT world_id, score FROM {REPLAY_SCORE_TABLE} "
+        "WHERE policy_version = ? AND beta = ? "
+        "AND world_id IS NOT NULL AND score IS NOT NULL ORDER BY id",
+        (module_id, beta),
+    ).fetchall()
+    readings: dict[str, float] = {}
+    for world_id, score in rows:
+        readings[world_id] = float(score)
+    return readings
+
+
 def _aggregate_candidate(
     connection: sqlite3.Connection,
     module_id: str,
     beta: float,
     strata: Mapping[str, tuple[str, ...]],
     lam: float,
+    mode: str,
 ) -> Any:
     """One candidate's §7 objective — read its rows, group into strata, blend.
 
@@ -441,6 +484,22 @@ def _aggregate_candidate(
     with feature 263's ``aggregate_objective``, reached through the scoring
     member's namespace at call time so this module stays import-cheap.
 
+    ``mode`` is the non-committing rule the caller asked for
+    (:data:`~dreaming.paired.NON_COMMITTING_REFUSE`, the default and today's
+    behaviour, or :data:`~dreaming.paired.NON_COMMITTING_FLAT`) — the same
+    keyword :func:`dreaming.paired_pool_difference` takes, applied through the
+    same substitution (:func:`dreaming.paired._flattened_arm`, reused rather
+    than re-spelled) so the selection aggregate and the paired statistics
+    cannot drift on what a non-committing world is worth.  Under the flat
+    mode a reading equal to :data:`~dreaming.paired.NON_COMMITTING_SCORE` is
+    read as ``0.0`` *before the blend*, which is the only way the aggregate
+    ever sees it: :func:`scoring.aggregate_objective` is unchanged and still
+    refuses ``-inf``, and the mapping happens here, one level up, exactly as
+    ``docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md`` (Addendum 3)
+    requires — *"the selection aggregate … reads a non-committing world as
+    0.0 … the stored score stays ``-inf``"*.  Every other non-finite reading
+    (``nan``, ``+inf``) is refused in both modes, by the aggregate's own law.
+
     A world the rows name that no stratum covers is refused rather than
     dropped — a dropped world silently changes which tournament the argmax is
     taken over.  A stratum the candidate scored no world of is refused by the
@@ -449,15 +508,12 @@ def _aggregate_candidate(
     crowned a winner must not meet feature 263's class for an aggregate this
     selector asked for.
     """
-    rows = connection.execute(
-        f"SELECT world_id, score FROM {REPLAY_SCORE_TABLE} "
-        "WHERE policy_version = ? AND beta = ? "
-        "AND world_id IS NOT NULL AND score IS NOT NULL ORDER BY id",
-        (module_id, beta),
-    ).fetchall()
-    by_world: dict[str, float] = {}
-    for world_id, score in rows:
-        by_world[world_id] = float(score)
+    readings = _candidate_readings(connection, module_id, beta)
+    # The flattening is the paired seam's own, taken before any row is placed:
+    # a sentinel this pool's writers emit becomes the flat book's 0.0, and
+    # every other reading — nan and +inf included — crosses unchanged to meet
+    # the aggregate's finiteness law.
+    by_world = _flattened_arm(readings, mode=mode)
 
     grouped: dict[str, dict[str, _RowScore]] = {name: {} for name in strata}
     uncovered: list[str] = []
@@ -850,6 +906,39 @@ def _require_lambda(value: float | None) -> float:
             "blends under the band the aggregate answers (feature 274)"
         )
     return figure
+
+
+def _require_non_committing(value: Any) -> str:
+    """The non-committing rule the aggregate reads the pool's rows under, or refuse.
+
+    ``refuse`` (the default, today's behaviour unchanged — a ``-inf`` reading
+    is refused like any other non-finite one) or ``flat``
+    (docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md's Addendum 3: a
+    non-committing world enters the selection aggregate as ``0.0``).
+
+    The check is :func:`dreaming.paired._validated_non_committing`'s own —
+    **reused, not re-spelled**, so the two store seams that take this keyword
+    cannot drift on which two words are legal — with the one difference this
+    module states for every ask: its refusal is raised in the selection's own
+    vocabulary (:class:`~dreaming.errors.SelectionRequestError`,
+    ``selection_malformed``) rather than the comparison's, because a caller of
+    :func:`commit_selection` meets this module's refusal for this module's
+    keyword.  A typo is refused rather than answered silently as "refuse",
+    which would run today's behaviour while believing it had asked for the
+    flat book — and refused *before* the store is touched, so a malformed ask
+    never opens a database.
+    """
+    try:
+        return _validated_non_committing(value)
+    except PairedComparisonError as refusal:
+        raise SelectionRequestError(
+            f"{SELECT_REQUEST_CODE}: the §7 selection aggregate reads the "
+            f"pool's rows under a non-committing rule, and this one is not a "
+            f"rule the selector knows — {refusal}. ``non_committing`` is "
+            f"{NON_COMMITTING_REFUSE!r} or {NON_COMMITTING_FLAT!r}, the two "
+            "spellings the paired statistics already validate; there is no "
+            "third rule to ask for (feature 274)"
+        ) from refusal
 
 
 def _scoring_member() -> Any:

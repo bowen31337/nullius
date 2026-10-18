@@ -53,6 +53,7 @@ arranged around:
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
@@ -65,6 +66,12 @@ from dreaming import (
     commit_selection,
     select_argmax,
     sqlite_path,
+)
+from dreaming import select as select_module
+from dreaming.paired import (
+    NON_COMMITTING_FLAT,
+    NON_COMMITTING_REFUSE,
+    NON_COMMITTING_SCORE,
 )
 
 # -- the vocabulary of the fixtures -------------------------------------------
@@ -843,3 +850,219 @@ class TestCommitSelection:
         """Not feature 272's ``sweep_malformed`` / ``sweep_ungrounded`` — a caller acts on the right fact."""
         assert "sweep_malformed" not in str(SelectionRequestError("x"))
         assert "sweep_ungrounded" not in str(SelectionStoreError("x"))
+
+
+# -- the flat book in selection ------------------------------------------------
+
+
+class TestTheFlatBookInSelection:
+    """``non_committing`` on ``commit_selection`` — Addendum 3's flat selection.
+
+    The pre-registration's abstention rule (*"a non-committing world scores an
+    IR of exactly 0.0"*) already governs every paired statistic
+    (:func:`dreaming.paired_pool_difference`, feature 29b2fc7); Addendum 3
+    extends it to the §7 aggregate the argmax and the train-versus-holdout gap
+    are read from.  The stored row stays ``-inf``; only the reading handed to
+    the blend is flattened, and only for the one sentinel — ``nan`` and
+    ``+inf`` stay refused, exactly as they are in the paired seam.
+    """
+
+    def test_the_reproduction_refuses_under_the_default(self, pool):
+        """The bug: one abstaining world makes the whole candidate unselectable.
+
+        Two candidates over one train stratum, one of them at the sentinel on
+        a single world.  With the default (today's behaviour, unchanged) the
+        aggregate refuses the ``-inf`` reading and names the world — the
+        ``selection_ungrounded`` refusal ``./run.sh dream`` exits 1 on.
+        """
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": 0.2, "w2": NON_COMMITTING_SCORE, "w3": 0.6},
+        )
+        _write_scores(
+            pool,
+            policy_version="cand-b",
+            beta=0.0,
+            readings={"w1": 0.1, "w2": 0.1, "w3": 0.1},
+        )
+        with pytest.raises(SelectionStoreError) as caught:
+            commit_selection(
+                [_candidate("cand-a"), _candidate("cand-b")],
+                strata={"train": ("w1", "w2", "w3")},
+                beta=0.0,
+                database_url=pool,
+            )
+        message = str(caught.value)
+        assert "selection_ungrounded" in message
+        assert "w2" in message
+        assert _read_winner(pool) is None
+
+    def test_the_default_is_stated_by_its_constant(self, pool):
+        """Handing ``NON_COMMITTING_REFUSE`` is byte-for-byte the default's refusal.
+
+        The keyword's default and its spelled-out value are one behaviour, so
+        a caller that names the mode it means cannot get a different answer
+        from one that names nothing.
+        """
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": NON_COMMITTING_SCORE},
+        )
+        with pytest.raises(SelectionStoreError) as by_default:
+            commit_selection(
+                [_candidate("cand-a")],
+                strata={"train": ("w1",)},
+                beta=0.0,
+                database_url=pool,
+            )
+        with pytest.raises(SelectionStoreError) as explicit:
+            commit_selection(
+                [_candidate("cand-a")],
+                strata={"train": ("w1",)},
+                beta=0.0,
+                database_url=pool,
+                non_committing=NON_COMMITTING_REFUSE,
+            )
+        assert str(by_default.value) == str(explicit.value)
+
+    def test_flat_selects_and_counts_the_abstention_as_zero(self, pool):
+        """Under ``flat`` the sentinel enters the §7 blend as ``0.0``.
+
+        The abstaining candidate's readings are ``{0.2, 0.0, 0.6}`` once the
+        miss is flattened, and the blend is taken over one stratum — so its
+        score is that stratum's own mean, ``0.8 / 3 = 0.2666…``, strictly
+        *above* the uniform candidate's ``0.05``.  The abstainer therefore
+        still wins and the persisted ``aggregate_score`` is the hand
+        computation: the sentinel was read as a flat book, never carried into
+        the blend (a *dropped* miss would have averaged to ``0.4``, and a
+        carried ``-inf`` would have refused the candidate outright).
+        """
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": 0.2, "w2": NON_COMMITTING_SCORE, "w3": 0.6},
+        )
+        _write_scores(
+            pool,
+            policy_version="cand-b",
+            beta=0.0,
+            readings={"w1": 0.05, "w2": 0.05, "w3": 0.05},
+        )
+        winner = commit_selection(
+            [_candidate("cand-a"), _candidate("cand-b")],
+            strata={"train": ("w1", "w2", "w3")},
+            beta=0.0,
+            database_url=pool,
+            non_committing=NON_COMMITTING_FLAT,
+        )
+        assert winner.module_id == "cand-a"
+        row = _read_winner(pool)
+        assert row[0] == "cand-a"
+        assert row[3] == pytest.approx(0.8 / 3)
+
+    def test_flat_crowns_a_wholly_abstaining_candidate_as_zero(self, pool):
+        """A candidate that abstains on *every* world blends to ``0.0``, not to a refusal.
+
+        The refused ``m3-attempt-1`` cycle's own shape, narrowed to one
+        candidate: every world at the sentinel, so the stratum mean and the
+        stratum minimum are both the flattened ``0.0`` and the candidate
+        crowns with a finite aggregate score of ``0.0``.
+        """
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": NON_COMMITTING_SCORE, "w2": NON_COMMITTING_SCORE},
+        )
+        winner = commit_selection(
+            [_candidate("cand-a")],
+            strata={"train": ("w1", "w2")},
+            beta=0.0,
+            database_url=pool,
+            non_committing=NON_COMMITTING_FLAT,
+        )
+        assert winner.module_id == "cand-a"
+        row = _read_winner(pool)
+        assert row[0] == "cand-a"
+        assert row[3] == pytest.approx(0.0)
+
+    def test_flat_still_refuses_nan(self, pool, monkeypatch):
+        """The flat mode is not a licence to launder a reading the blend cannot use.
+
+        A real pool can never *store* ``nan`` — SQLite's driver converts it to
+        ``NULL`` on write, so the read filters it out before the blend ever
+        sees it — so the read seam is stubbed to hand one back, exactly the
+        way :mod:`dreaming.tests.test_paired` pins the same law at
+        ``_pool_arm``.  It is refused in both modes: the substitution is for
+        the one sentinel this pool's writers actually emit.
+        """
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": 0.2},
+        )
+        monkeypatch.setattr(
+            select_module,
+            "_candidate_readings",
+            lambda connection, module_id, beta: {"w1": 0.2, "w2": math.nan},
+        )
+        with pytest.raises(SelectionStoreError) as caught:
+            commit_selection(
+                [_candidate("cand-a")],
+                strata={"train": ("w1", "w2")},
+                beta=0.0,
+                database_url=pool,
+                non_committing=NON_COMMITTING_FLAT,
+            )
+        assert "w2" in str(caught.value)
+        assert _read_winner(pool) is None
+
+    def test_flat_still_refuses_positive_infinity(self, pool):
+        """``+inf`` is not the sentinel either — it is refused under ``flat`` as under ``refuse``."""
+        _revision_table(pool)
+        _write_scores(
+            pool,
+            policy_version="cand-a",
+            beta=0.0,
+            readings={"w1": 0.2, "w2": math.inf},
+        )
+        with pytest.raises(SelectionStoreError):
+            commit_selection(
+                [_candidate("cand-a")],
+                strata={"train": ("w1", "w2")},
+                beta=0.0,
+                database_url=pool,
+                non_committing=NON_COMMITTING_FLAT,
+            )
+
+    def test_a_bad_spelling_is_refused_before_the_store_is_touched(self, database_url):
+        """A typo must not be silently answered as today's behaviour.
+
+        The check is ``dreaming.paired``'s own validator, reused rather than
+        re-spelled, so the two store seams admit exactly the same two words.
+        Refused as a *request* fact — nothing has been read — so it is raised
+        even against a database with no pool at all.
+        """
+        with pytest.raises(SelectionRequestError) as caught:
+            commit_selection(
+                [_candidate("cand-a")],
+                strata={"train": ("w1",)},
+                beta=0.0,
+                database_url=database_url,
+                non_committing="zero-fill",
+            )
+        message = str(caught.value)
+        assert NON_COMMITTING_REFUSE in message
+        assert NON_COMMITTING_FLAT in message
+

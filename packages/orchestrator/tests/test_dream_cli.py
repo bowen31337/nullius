@@ -46,6 +46,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import math
 import sqlite3
 import uuid
 from contextlib import closing, redirect_stderr
@@ -74,6 +75,12 @@ from orchestrator.dream import (
     POLICY_ISOLATION_CODE,
     main,
 )
+
+#: The miss sentinel, taken from the member that defines it rather than
+#: re-spelled: a stored non-committing reading is exactly
+#: :data:`replay.NON_COMMITTING_SCORE`, and the tests below read it back out of
+#: ``replay_score`` to recompute the summary's own flat book.
+NON_COMMITTING_SCORE = replay_member.NON_COMMITTING_SCORE
 
 # conftest-less suite: this file is under packages/orchestrator/tests, so the
 # repository root is three parents up, the resolution test_closeout_cli.py and
@@ -130,10 +137,75 @@ def select(question):
 #: ``test_bootstrap_eval.py``'s ``FAILS_SCREENING_SOURCE`` takes.
 FAILS_SCREENING_SOURCE = "def select(question):\n    return question.legal_roots()\n"
 
+#: An incumbent that **may abstain**: it commits the highest-revealed node only
+#: when that node clears :data:`ABSTAINING_THRESHOLD`, and declares
+#: ``question.abstain()`` otherwise.  This is the shape defect M3-INC-1 is
+#: about -- a policy that commits no pick on *some* bootstrap worlds scores
+#: ``-inf`` there (``replay.NON_COMMITTING_SCORE``), and before the fix the
+#: selection aggregate refused the whole candidate for it, so no cycle could
+#: ever select such a policy, its own authoring incumbent included.
+#:
+#: At :data:`ABSTAINING_THRESHOLD` over
+#: :data:`ABSTAINING_POOL_WORLD_COUNT` the incumbent abstains on some worlds of
+#: *both* halves: the cycles below run at ``--iteration-id dream-flat-A`` (the
+#: seed, and through it the halves' rotation and every jitter, is the iteration
+#: id) and the winning revision still commits everywhere while the incumbent
+#: abstains on 7 of the 14 holdout worlds.  A seed whose jitters tie on the
+#: blend is a *different* defect's subject -- the argmax's own
+#: ``selection_malformed`` refusal -- and ``cli-flat`` and ``m3-attempt-1`` are
+#: both such seeds over this pool, which is why neither is used here.
+ABSTAINING_THRESHOLD = 0.98
+
+#: The ``--iteration-id`` the two tests below run over, and the only part of
+#: the cycle that turns the pool's rotation and the reviser's jitters into a
+#: tie-free tournament.  Named once so the select test and its refuse-under-
+#: the-default twin cannot drift onto different seeds.
+ABSTAINING_ITERATION_ID = "dream-flat-A"
+
+ABSTAINING_INCUMBENT_SOURCE = f'''
+"""An incumbent that commits only where a revealed node clears the bar."""
+
+THRESHOLD = {ABSTAINING_THRESHOLD}
+
+
+def select(question):
+    roots = question.legal_roots()
+    observed = question.observed()
+    if not observed:
+        question.abstain()
+        return list(roots)
+    best = None
+    best_value = None
+    for node_id, obs in observed.items():
+        value = obs.r2_train
+        if best_value is None or value > best_value:
+            best = node_id
+            best_value = value
+    if best_value > THRESHOLD:
+        question.commit(best)
+    else:
+        question.abstain()
+    frontier = []
+    for node_id in observed:
+        for action in question.legal_actions(node_id):
+            if action not in observed and action not in frontier:
+                frontier.append(action)
+    return frontier
+'''
+
 #: Enough worlds to clear the ladder floor (20) but stay on the capped rung
 #: (below 50), so ``M = 10`` -- a sweep small enough for a fast suite.
 POOL_WORLD_COUNT = 40
 POOL_SEED = 20261006
+
+#: The pool :data:`ABSTAINING_INCUMBENT_SOURCE` is swept over -- 45 worlds, the
+#: size the refused ``m3-attempt-1`` cycle actually ran on, chosen because at
+#: :data:`ABSTAINING_THRESHOLD` it is the pool on which that incumbent abstains
+#: on *some* worlds of both halves without any candidate tying on the blend
+#: (the argmax's own refusal, a different defect's subject).  A pool the
+#: incumbent abstains on *everywhere* would select nothing there either, and
+#: one it never abstains on would not exercise the fix at all.
+ABSTAINING_POOL_WORLD_COUNT = 45
 
 
 class _FakeApp:
@@ -640,3 +712,161 @@ def test_write_selected_writes_the_winner_source_and_refuses_to_overwrite(
 
     assert second_exit == EXIT_REFUSED
     assert "already exists" in stderr.getvalue()
+
+
+# -- the flat book in selection (M3-INC-1) --------------------------------------
+
+
+def test_an_abstaining_incumbent_selects_and_the_summary_counts_the_flat_book(
+    tmp_path: Path,
+) -> None:
+    """A cycle whose incumbent abstains on some worlds still selects and exits 0.
+
+    M3-INC-1's reproduction, end to end: :data:`ABSTAINING_INCUMBENT_SOURCE` on
+    :data:`ABSTAINING_POOL_WORLD_COUNT` worlds abstains on some train worlds,
+    so its ``replay_score`` rows carry ``replay.NON_COMMITTING_SCORE``
+    (``-inf``).  Before the fix the selection aggregate handed that reading to
+    ``scoring.aggregate_objective``, which refuses it, and the whole cycle
+    exited 1 with ``selection_ungrounded`` — *every* candidate, not only the
+    abstaining one, because the memory of a miss made the tournament
+    unselectable.  The incumbent is the policy already in force, so a cycle
+    can never select a policy that may abstain, which is exactly what the
+    pre-registration's Addendum 3 incumbent does.
+
+    Now ``commit_selection`` is asked for ``non_committing="flat"``: a miss
+    enters the §7 blend as the flat book's ``0.0``, the argmax crowns a
+    winner, and the summary's three means are finite — each one the hand
+    computation with ``0.0`` substituted for every sentinel row, over the
+    worlds *this* call measured.  The commit rates ride beside them, read from
+    the raw sentinel before the substitution: the winner committed on every
+    world, and the incumbent on ``7/14`` of the holdout worlds, so the two
+    rates disagree and neither could have been recovered from a flattened
+    mean (a genuine ``0.0`` and a flattened miss are the same number).
+    """
+    database_url = _migrated_pool(
+        tmp_path, world_count=ABSTAINING_POOL_WORLD_COUNT
+    )
+    _seed_passing_canary(database_url)
+    incumbent_path = _write_incumbent(tmp_path, ABSTAINING_INCUMBENT_SOURCE)
+    env = {"DATABASE_URL": database_url}
+    lines: list[str] = []
+
+    exit_code = main(
+        [
+            "--incumbent", incumbent_path,
+            "--iteration-id", ABSTAINING_ITERATION_ID,
+            "--round-cap", "5",
+        ],
+        env=env,
+        emit=lines.append,
+        app=_APP,
+    )
+
+    assert exit_code == EXIT_OK
+    payload = json.loads(lines[0])
+
+    # Every mean is a real number, not -inf: the sentinel never reached the
+    # arithmetic the summary reports.
+    for key in ("train_mean", "holdout_mean", "incumbent_holdout_mean"):
+        assert math.isfinite(payload[key]), key
+
+    winner = payload["module_id"]
+    incumbent = f"incumbent-{payload['iteration_id']}"
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        rows = connection.execute(
+            "SELECT policy_version, is_holdout, score FROM replay_score "
+            "WHERE beta = 0.5 AND policy_version IN (?, ?)",
+            (winner, incumbent),
+        ).fetchall()
+
+    arm: dict[tuple[str, int], list[float]] = {}
+    for policy_version, is_holdout, score in rows:
+        arm.setdefault((policy_version, int(is_holdout)), []).append(score)
+
+    def flat_mean(policy_version: str, holdout: int) -> float:
+        readings = arm[(policy_version, holdout)]
+        return sum(
+            0.0 if reading == NON_COMMITTING_SCORE else reading for reading in readings
+        ) / len(readings)
+
+    def commit_rate(policy_version: str, holdout: int) -> float:
+        readings = arm[(policy_version, holdout)]
+        return sum(
+            1 for reading in readings if reading != NON_COMMITTING_SCORE
+        ) / len(readings)
+
+    assert payload["train_mean"] == pytest.approx(flat_mean(winner, 0))
+    assert payload["holdout_mean"] == pytest.approx(flat_mean(winner, 1))
+    assert payload["incumbent_holdout_mean"] == pytest.approx(flat_mean(incumbent, 1))
+    assert payload["train_commit_rate"] == pytest.approx(commit_rate(winner, 0))
+    assert payload["holdout_commit_rate"] == pytest.approx(commit_rate(winner, 1))
+    assert payload["incumbent_holdout_commit_rate"] == pytest.approx(
+        commit_rate(incumbent, 1)
+    )
+
+    # The scenario is real rather than vacuous: the incumbent really does
+    # abstain, and the winner really is one of the abortive incumbent's own
+    # jittered revisions -- so this cycle's selection was decided on a
+    # tournament a miss had entered.
+    assert payload["incumbent_holdout_commit_rate"] < 1.0
+    assert payload["incumbent_holdout_commit_rate"] == pytest.approx(0.5)
+    assert arm[(incumbent, 1)].count(NON_COMMITTING_SCORE) == 7
+    assert arm[(incumbent, 0)].count(NON_COMMITTING_SCORE) > 0
+    assert winner != incumbent
+    assert payload["gap"] == pytest.approx(
+        payload["train_mean"] - payload["holdout_mean"]
+    )
+
+
+def test_the_default_still_refuses_an_abstaining_incumbent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scope, held end to end: the flat book is opted into, never the default.
+
+    The cycle asks for ``non_committing="flat"`` *by name* -- that is the fix.
+    The validator's own default is still today's refusal, so a caller that
+    reaches the selection seam without asking for the flat book meets the
+    ``selection_ungrounded`` refusal this defect reported.  The same pool the
+    test above selects on is run with the cycle's one call forced back to
+    ``"refuse"``: the ``-inf`` reading is refused and the CLI exits 1, which
+    proves the pool really does carry the sentinel (rather than the winner
+    being one that never misses) and that the flat book is the only thing
+    standing between this incumbent and the reported refusal.
+    """
+    from orchestrator import dream as dream_module
+
+    calls: list[object] = []
+    real_commit = dream_module.dreaming.commit_selection
+
+    def spiral(candidates, **kwargs):
+        calls.append(kwargs.get("non_committing"))
+        return real_commit(candidates, **{**kwargs, "non_committing": "refuse"})
+
+    database_url = _migrated_pool(
+        tmp_path, world_count=ABSTAINING_POOL_WORLD_COUNT
+    )
+    _seed_passing_canary(database_url)
+    incumbent_path = _write_incumbent(tmp_path, ABSTAINING_INCUMBENT_SOURCE)
+
+    monkeypatch.setattr(dream_module.dreaming, "commit_selection", spiral)
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        exit_code = main(
+            [
+                "--incumbent", incumbent_path,
+                "--iteration-id", ABSTAINING_ITERATION_ID,
+                "--round-cap", "5",
+            ],
+            env={"DATABASE_URL": database_url},
+            emit=lambda _line: None,
+            app=_APP,
+        )
+
+    # The cycle wired its own spelling through, and only the flat book was
+    # rewritten underneath it -- so the refusal that follows is the reported
+    # defect, not a differently-configured run.
+    assert calls == [dream_module._NON_COMMITTING_FLAT]
+    assert exit_code == EXIT_REFUSED
+    assert "selection_ungrounded" in stderr.getvalue()
