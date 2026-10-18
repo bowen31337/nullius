@@ -1,0 +1,56 @@
+<bug_spec>
+  <!-- M3-COST-1. Found 2026-10-18 while wiring the evaluation canary. The M3
+       financial rows are filed as module#financial@config_sha256, but the
+       cost model is not part of that config file: it comes from
+       NULLIUS_COST_MODEL_PATH, and unset means the shipped spot schedule
+       (522d691d) even though the pinned config trades perpetuals. 72 of 84
+       campaigns were scored at spot fees. Two cycles under the same pinned
+       config could therefore file differently-priced rows under one version.
+       docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, Addendum 2,
+       fixes the rule; read it first, and where it and this spec differ, the
+       ADDENDUM wins. No #financial@ row exists yet, so no stored row changes
+       meaning. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/src/orchestrator/m3_verdict.py,packages/orchestrator/tests/test_m3_verdict.py,packages/orchestrator/tests/test_dream_financial_worlds.py,packages/orchestrator/tests/test_dream_cli.py">
+    <title>M3 financial-world rows do not record the cost model they were netted through, so spot-priced and perp-priced rows share one version</title>
+    <symptoms>A dreaming cycle run without NULLIUS_COST_MODEL_PATH nets every financial-world score through the spot schedule (cost-model hash 522d691d...) and files it under the same module#financial@config_sha256 version as a cycle run with binance_usdm.yaml (1e946e66...). The M3 verdict would pair such rows as if they were one measurement.</symptoms>
+    <reproduction_steps>
+      With a fixture evaluation context whose cost_model_hash is "a" and then one whose cost_model_hash is "b", and the same evaluation-config file, run the financial arm twice over one fixture campaign. Both runs file their rows under the identical policy_version string returned by financial_policy_version(module_id, config_sha256).
+    </reproduction_steps>
+    <expected>
+      - financial_policy_version takes the cost-model hash as a third
+        argument and returns f"{module_id}#financial@{config_sha256}+{cost_model_hash}"
+        (the existing FINANCIAL_SUFFIX and FINANCIAL_CONFIG_SEPARATOR
+        constants, plus one new named separator constant "+"). Every caller
+        is updated: dream.py's financial arm and the existing-row reuse check
+        pass the loaded evaluation context's cost_model_hash; the cycle
+        summary prints cost_model_hash beside the config sha256.
+      - m3_verdict.py gains M3_COST_MODEL_HASH =
+        "1e946e66e63e308c6d5258fdb8f1a610e7dab18cc2562a90d6084c719c5e958a"
+        beside M3_EVALUATION_CONFIG_SHA256, with a comment citing Addendum 2.
+        Criteria 1 and 2 build both arms' versions with the pinned config
+        sha256 and this hash, so a row filed under any other cost model is
+        never read, and the existing missing-row refusal fires (naming the
+        expected version) when an arm has no row under the pinned pair. The
+        verdict row records the cost-model hash (add the column to the
+        table's CREATE, and probe-then-ALTER for an existing table, the same
+        way the config sha256 column was added).
+      - Tests: two contexts differing only in cost_model_hash file rows under
+        two different versions; the verdict ignores rows filed under the
+        right config but another cost model and refuses for the missing
+        pinned rows; the verdict reads rows filed under both pinned values;
+        the summary carries cost_model_hash; the verdict row stores it. Use
+        fixture hashes through the existing test seams; do not read the real
+        cost-model file or ~/.config in a test. The orchestrator tests
+        touched pass.
+    </expected>
+    <actual>Root cause: Addendum 1's fix (0871082) took the evaluation-config file's sha256 as the whole evaluation identity, but EvaluationContext.cost_model_hash is loaded separately from NULLIUS_COST_MODEL_PATH and never reaches the row version or the verdict.</actual>
+    <constraints>
+      Only the listed files change
+      Never rewrite or delete existing replay_score rows
+      Do not edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/** (baked into the gVisor runtime root)
+      Do not edit docs/preregistration/, docs/user-journeys/, deploy/shadow/, packages/router/, packages/canary/ or the shadow modules
+    </constraints>
+  </bug>
+</bug_spec>
