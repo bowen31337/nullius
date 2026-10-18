@@ -1,0 +1,29 @@
+# Paper-only forward shadow (second research book, never traded).
+# docs/preregistration/2026-10-19-shadow-paper-attention.md
+#
+# Runs deploy/shadow/shadow_paper.sh after the daily lake refresh
+# (nullius-shadow.service, 09:30 UTC): it reuses that run's sealed snapshot and
+# BingX documents and writes one more book, into its own directory. It never
+# touches active_book.json and places no order. Installing and enabling it is an
+# operator step, as for every unit in this directory.
+#
+# `run.sh shadow-book` reads the stored node code and the evaluation config under
+# the campaign env file, so this unit needs the 1Password service token the same
+# way nullius-shadow.service does.
+
+[Unit]
+Description=nullius paper-only forward shadow book (attention-volume, not traded)
+Documentation=file:/%h/projects/nullius/docs/preregistration/2026-10-19-shadow-paper-attention.md
+OnFailure=nullius-vst-alert@%n.service
+Wants=network-online.target
+After=network-online.target nullius-shadow.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/nullius
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
+Environment=SHADOW_METRICS=1
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable}"; exec %h/projects/nullius/deploy/shadow/shadow_paper.sh'
+Restart=no

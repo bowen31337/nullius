@@ -1,0 +1,16 @@
+# Fires the paper-only shadow book once a day, 20 minutes after the daily lake
+# refresh (nullius-shadow.timer, 09:30 UTC), which finishes in about 4 minutes.
+# Enabling it is an operator step: `systemctl --user enable --now nullius-shadow-paper.timer`.
+
+[Unit]
+Description=nullius paper-only forward shadow timer (daily)
+Documentation=file:/%h/projects/nullius/deploy/systemd/nullius-shadow-paper.service
+
+[Timer]
+OnCalendar=*-*-* 09:50:00 UTC
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
