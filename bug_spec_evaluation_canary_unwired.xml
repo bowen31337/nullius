@@ -1,0 +1,115 @@
+<bug_spec>
+  <!-- CANARY-EVAL-1. Found 2026-10-18 while freezing the evaluation canary
+       before the first M3 dreaming cycle. Feature 5 of
+       additions_spec_dreaming_m3.xml (274b72f) made dreaming require a recent
+       canary pass that included the evaluation canary, and gave
+       canary.run.main two seams (evaluate_node, replay_policy) for the real
+       evaluation path. Nothing supplies them: `./run.sh canary` runs
+       `python -m canary.run`, whose __main__ calls main() with neither, and
+       canary cannot import orchestrator (orchestrator depends on canary). And
+       this deployment already froze the toy pair on 2026-10-06, so
+       the freeze-reference flag refuses with canary_reference_exists before it ever
+       reaches the evaluation freeze. Result: no canary run can ever record
+       evaluation_canary=1, so `./run.sh dream` is refused forever and M3
+       cannot run. Bug 1 fixes the freeze in canary; bug 2 wires the real
+       evaluators from orchestrator and points run.sh and the unit at it. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/canary/src/canary/run.py,packages/canary/tests/test_canary_run.py">
+    <title>--freeze-reference cannot add the evaluation canary to a deployment that already froze the toy pair</title>
+    <symptoms>On a store holding an active toy reference pair and no canary_evaluation_reference row, `python -m canary.run --freeze-reference` with NULLIUS_CANARY_CAMPAIGN_ID and NULLIUS_CANARY_NODE_ID set exits 1 with canary_reference_exists and freezes nothing, even when both evaluators are supplied. The evaluation canary can therefore never be frozen on such a deployment, and every later run records evaluation_canary=0.</symptoms>
+    <reproduction_steps>
+      In a tmp sqlite store, call main(["--freeze-reference"]) with no evaluation env (freezes the toy pair). Then call main(["--freeze-reference"]) with both evaluation env vars set and stub evaluate_node/replay_policy returning finite floats. It returns 1 with canary_reference_exists and no canary_evaluation_reference row exists.
+    </reproduction_steps>
+    <expected>
+      - --freeze-reference with the evaluation canary configured (both env
+        vars set and both evaluators supplied), an active toy pair already on
+        record, and no evaluation reference yet: freezes only the evaluation
+        canary, leaves the toy pair untouched, prints the existing toy
+        reference_id and exits 0.
+      - Unchanged refusals: toy pair on record and evaluation not configured
+        is still canary_reference_exists; an evaluation reference already on
+        record is still canary_evaluation_reference_exists; configured
+        without evaluators is still refused before anything is written. A
+        fresh store freezes both, as today.
+      - A freeze refuses, writing nothing, when either evaluator returns a
+        non-finite value (a policy that commits nothing replays to -inf, and
+        |(-inf) - (-inf)| is NaN, which would record a break every night).
+        The refusal has its own code word, canary_evaluation_score_not_finite,
+        and names which half (node or replay) and the value.
+      - main() gains a keyword seam evaluation_config_sha256 (Optional[str]).
+        The freeze stores it on the evaluation reference row (new nullable
+        column config_sha256 in that table's CREATE; for an existing table,
+        probe the columns and ALTER TABLE ADD COLUMN). A plain run that has a
+        frozen evaluation reference refuses, before writing a run row, with
+        its own code word canary_evaluation_config_mismatch when the seam's
+        value differs from the stored one (including None against a stored
+        value). A stored NULL accepts any value, so a reference frozen before
+        this change keeps working.
+      - Tests in test_canary_run.py for every bullet above, using stub
+        evaluators only. The canary member suite passes.
+    </expected>
+    <actual>Root cause: _freeze_reference checks for an active toy pair first and raises canary_reference_exists unconditionally, so the evaluation freeze branch is reachable only on a store with no toy pair. Freeze also accepts any float, including -inf, and records no evaluation config identity.</actual>
+    <constraints>
+      Only the two listed files change
+      Do not change the toy pair's freeze, replay or run-row shape, or any exit code
+      Do not edit docs/preregistration/ or docs/user-journeys/
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high" depends_on="1"
+       touches_files="run.sh,deploy/systemd/nullius-canary.service,CLAUDE.md"
+       creates="packages/orchestrator/src/orchestrator/canary_cli.py,packages/orchestrator/tests/test_canary_cli.py">
+    <title>./run.sh canary never supplies the real evaluators, so no canary run can include the evaluation canary and dreaming is refused forever</title>
+    <symptoms>`./run.sh canary` prints evaluation_canary=false on every run; `./run.sh dream` is refused for a stale or missing evaluation-canary pass; setting NULLIUS_CANARY_CAMPAIGN_ID and NULLIUS_CANARY_NODE_ID makes --freeze-reference refuse with "no evaluator was supplied to freeze it".</symptoms>
+    <reproduction_steps>
+      On a fresh tmp store with NULLIUS_CANARY_CAMPAIGN_ID=x and NULLIUS_CANARY_NODE_ID=y set, run `python -m canary.run --freeze-reference`. It exits 1 naming the missing evaluator. No entry point anywhere in the workspace passes evaluate_node or replay_policy to canary.run.main.
+    </reproduction_steps>
+    <expected>
+      - New module orchestrator/canary_cli.py, run as
+        `python -m orchestrator.canary_cli [--freeze-reference]`. It calls
+        canary.run.main with the same argv and env, plus, when
+        orchestrator._context.load_evaluation_context(env) returns a context
+        with non-empty oos_dates:
+        - evaluate_node(campaign_id, node_id): that node's out-of-sample
+          cost-adjusted IR through orchestrator._financial_eval._oos_ir,
+          using a NEW FinancialEvalContext for every call, so the per-run
+          cache can never answer a nightly re-evaluation from memory.
+        - replay_policy(campaign_id): the score of
+          score_on_financial_world over deploy/dreaming/incumbent.m2.py's
+          source (the M3 baseline) and that campaign, also with a new
+          FinancialEvalContext per call.
+        - evaluation_config_sha256: the sha256 of the file
+          NULLIUS_EVALUATION_CONFIG names (reuse the existing helper dream.py
+          stamps rows with; do not re-implement it).
+        With no evaluation config, or one with no oos_dates, it passes no
+        evaluators, so canary.run's own refusals and toy-only behaviour apply
+        unchanged. Exit codes are canary.run.main's.
+      - run.sh: the canary verb runs orchestrator.canary_cli instead of
+        canary.run; nothing else in run.sh changes.
+      - deploy/systemd/nullius-canary.service gains
+        Environment=NULLIUS_EVALUATION_CONFIG=%h/.config/nullius/campaign/evaluation-config-archive-perp-bn.json
+        and Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
+        (the same cost-model line nullius-shadow.service carries), each with
+        a one-line comment saying why. The schedule and OnFailure are
+        unchanged.
+      - CLAUDE.md's operator-verb table row for canary names
+        python -m orchestrator.canary_cli and says it needs
+        NULLIUS_EVALUATION_CONFIG for the evaluation canary; change nothing
+        else in CLAUDE.md.
+      - test_canary_cli.py: with a stub evaluation context (monkeypatched
+        loader and scorers, no sandbox, no snapshot), main wires both
+        evaluators and the config sha into canary.run.main, each evaluator
+        call gets a distinct FinancialEvalContext, and the replay scores
+        incumbent.m2.py's source; with NULLIUS_EVALUATION_CONFIG unset no
+        evaluator is passed. The orchestrator tests touched pass.
+    </expected>
+    <actual>Root cause: feature 5 (274b72f) added the evaluator seams to canary.run.main but no caller was ever written; the canary member cannot import orchestrator, so the wiring has to live in orchestrator, and run.sh still points at the bare canary.run module.</actual>
+    <constraints>
+      Only the listed files change, plus the two new files
+      Do not edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/** (baked into the gVisor runtime root)
+      Do not edit docs/preregistration/, docs/user-journeys/, deploy/shadow/, packages/router/ or the shadow modules
+      Do not install or enable any systemd unit
+    </constraints>
+  </bug>
+</bug_spec>
