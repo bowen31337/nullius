@@ -162,7 +162,7 @@ applying planted nulls), persists, and stops on budget or saturation.
 
   | `run.sh` verb | Runs | Exit codes |
   |---|---|---|
-  | `canary` | `python -m canary.run [--freeze-reference]` | 0 replayed and recorded; 1 refused (no/ambiguous/already-frozen reference); 2 no `DATABASE_URL`; 3 broken determinism (halts dreaming) |
+  | `canary` | `python -m orchestrator.canary_cli [--freeze-reference]` (needs `NULLIUS_EVALUATION_CONFIG` for the evaluation canary; without it the run is toy-only and `dream` is refused) | 0 replayed and recorded; 1 refused (no/ambiguous/already-frozen reference); 2 no `DATABASE_URL`; 3 broken determinism (halts dreaming) |
   | `bootstrap-fill` | `python -m bootstrap.fill [--count N] [--pool-seed S] [--census]` | 0 filled or census-only; 1 refused (seed mismatch, bad count); 2 no `DATABASE_URL` |
   | `dream` | `python -m orchestrator.dream --incumbent PATH [...]` | 0 cycle committed; 1 refused (canary halt, pool too thin, screening failure, `--reviser llm`); 2 no `DATABASE_URL` |
   | `triage` | `python -m tripwires.triage [--seed S] [--count N]` | 0 prints the AUC over the member's own planted panel (no store read); 1 refused (bad seed/count) |

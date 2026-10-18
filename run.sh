@@ -39,7 +39,8 @@
 # No-secret commands (run with a CLEAN env — package managers and linters
 # must never see runtime credentials; this is the main supply-chain
 # countermeasure for postinstall-style attacks):
-#   ./run.sh canary        [args]  python -m canary.run
+#   ./run.sh canary        [args]  python -m orchestrator.canary_cli (the
+#                               canary with its evaluators wired in)
 #   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
 #   ./run.sh dream          [args] python -m orchestrator.dream
 #   ./run.sh triage         [args] python -m tripwires.triage
@@ -319,7 +320,7 @@ case "${cmd}" in
     export DATABASE_URL="${DATABASE_URL:-sqlite:///$HOME/.local/share/nullius/research.db}"
     cd "${SCRIPT_DIR}"
     case "${cmd}" in
-      canary)         module="canary.run" ;;
+      canary)         module="orchestrator.canary_cli" ;;
       bootstrap-fill) module="bootstrap.fill" ;;
       dream)          module="orchestrator.dream" ;;
       triage)         module="tripwires.triage" ;;

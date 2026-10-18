@@ -38,5 +38,13 @@ WorkingDirectory=%h/projects/nullius
 # It goes first so the pinned interpreter wins over any system copy; the
 # system directories follow for the ordinary tools.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The evaluation-config archive the nightly run re-evaluates the frozen node
+# and re-replays the frozen policy under; without it the canary is toy-only
+# and every `./run.sh dream` is refused for a missing evaluation-canary pass.
+Environment=NULLIUS_EVALUATION_CONFIG=%h/.config/nullius/campaign/evaluation-config-archive-perp-bn.json
+# The USD-M fee/funding schedule that archive prices a perp book with -- the
+# same line nullius-shadow.service carries, so the canary measures the venue
+# the M3 baseline is scored on rather than a spot default.
+Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
 ExecStart=%h/projects/nullius/run.sh canary
 Restart=no
