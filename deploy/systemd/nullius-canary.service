@@ -46,5 +46,10 @@ Environment=NULLIUS_EVALUATION_CONFIG=%h/.config/nullius/campaign/evaluation-con
 # same line nullius-shadow.service carries, so the canary measures the venue
 # the M3 baseline is scored on rather than a spot default.
 Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
+# The digest-pinned evaluator image the evaluation canary's evaluator_hash is
+# computed over. Host-specific, so it lives outside the repository, in the
+# same value .env.campaign.tpl gives campaigns. No leading "-": a missing file
+# fails the unit, and OnFailure pages, instead of a silently toy-only canary.
+EnvironmentFile=%h/.config/nullius/canary.env
 ExecStart=%h/projects/nullius/run.sh canary
 Restart=no
