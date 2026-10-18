@@ -1,0 +1,102 @@
+<bug_spec>
+  <!-- M3-INC-1. Found 2026-10-18: the first M3 cycle (m3-attempt-1) was
+       refused with selection_ungrounded. Its incumbent, the M2 rule, only picks
+       among already-evaluated nodes and never expands one; a bootstrap world
+       reveals nothing until asked, so every candidate abstained (-inf) on all
+       45 train worlds, and the selection aggregate refuses -inf.
+       docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md, Addendum 3,
+       fixes the rule; read it first, and where it and this spec differ, the
+       ADDENDUM wins. Bug 1 makes selection read an abstention as flat; bug 2
+       ships the exploring M3 incumbent. They are independent. -->
+
+  <bug index="1" shape="core" severity="high"
+       touches_files="packages/dreaming/src/dreaming/select.py,packages/dreaming/tests/test_select.py,packages/orchestrator/src/orchestrator/dream.py,packages/orchestrator/tests/test_dream_cli.py">
+    <title>The dreaming selection aggregate refuses a candidate that abstained on any world, so a policy that may abstain can never be selected</title>
+    <symptoms>`./run.sh dream` exits 1 with selection_ungrounded ("the score of world ... in stratum 'train' must be finite, got -inf") whenever any candidate abstains on any train world. The cycle summary's train_mean, holdout_mean and incumbent_holdout_mean would be -inf for the same reason.</symptoms>
+    <reproduction_steps>
+      In a tmp store, write replay_score rows for two candidates over a train stratum where one candidate has one row with score -inf (NON_COMMITTING_SCORE) and the rest finite. dreaming.commit_selection over those candidates raises SelectionStoreError naming the -inf world.
+    </reproduction_steps>
+    <expected>
+      - dreaming.commit_selection gains a keyword non_committing, with the
+        same two spellings and the same default (refuse) that
+        dreaming.paired already validates (reuse that validator; do not
+        re-spell the literals). With "flat", _aggregate_candidate reads a
+        row whose score is NON_COMMITTING_SCORE (-inf) as 0.0 before the §7
+        blend; any other non-finite score (NaN, +inf) is still refused as
+        today. With the default, behaviour is unchanged.
+      - orchestrator/dream.py passes non_committing="flat" to
+        commit_selection, and computes train_mean, holdout_mean and
+        incumbent_holdout_mean with -inf read as 0.0. The summary adds
+        train_commit_rate, holdout_commit_rate and
+        incumbent_holdout_commit_rate (the fraction of worlds in that mean
+        whose score was finite).
+      - The scoring member's aggregate_objective is not changed: it still
+        refuses -inf, and the mapping happens before it is called.
+      - Tests: the reproduction raises under the default and selects under
+        "flat", with the abstaining world counted as 0.0; NaN is still
+        refused under "flat"; a bad spelling of non_committing is refused;
+        the dream CLI over a tmp pool whose incumbent abstains on some worlds
+        exits 0 and the summary carries the commit rates and finite means.
+        The dreaming member suite and the orchestrator tests touched pass.
+    </expected>
+    <actual>Root cause: dreaming.select._aggregate_candidate hands raw replay_score values to scoring's aggregate_objective, whose feature-263 law refuses -inf; the pre-registration's flat abstention rule was implemented for the paired statistics (29b2fc7) but never for selection or the cycle summary.</actual>
+    <constraints>
+      Only the listed files change
+      Do not edit packages/scoring/ or any stored replay_score row
+      Do not edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/** (baked into the gVisor runtime root)
+      Do not edit docs/preregistration/, docs/user-journeys/, deploy/shadow/, packages/router/ or the shadow modules
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       creates="deploy/dreaming/incumbent.m3.py,packages/orchestrator/tests/test_m3_incumbent.py">
+    <title>M3 has no incumbent that can both explore a bootstrap world and decide on a financial world</title>
+    <symptoms>incumbent.m2.py abstains on every bootstrap world (it never expands a node), and incumbent.example.py raises TypeError on financial worlds (it subtracts from r2_train, which is None on a failed node) and ranks financial nodes by sign-blind ic_mean squared. Neither can be the M3 incumbent.</symptoms>
+    <reproduction_steps>
+      score_on_world(incumbent.m2.py source, any bootstrap world, round_cap=30) returns a miss on every world of hpo, featsel and symreg. score_on_financial_world over a fixture campaign holding a node whose ic_mean is NULL raises TypeError for incumbent.example.py.
+    </reproduction_steps>
+    <expected>
+      - New deploy/dreaming/incumbent.m3.py, exactly as Addendum 3 describes:
+        - Module-level CONTRACT = "question" and _BETA = 0.5; one function
+          _schedule(beta) returning a fresh dict with commit_z =
+          0.5 + 3.0 * w, frontier_cap = max(1, round(2.0 + 6.0 * w)) and
+          min_observed = 5, where w = beta / (1.0 + beta). Every threshold
+          select uses comes from _schedule, and each constant is a float or
+          int literal the jitter reviser can move.
+        - select(question): read each revealed node's value as its
+          observation's ic_insample when the observation has that attribute
+          and it is not None, else its r2_train; skip None, NaN and
+          infinities. If at least min_observed nodes have values and the
+          highest-valued node (ties by node id ascending) has a z-score
+          (population standard deviation; a zero deviation never clears)
+          of at least commit_z among them, commit it inline with
+          question.commit(node_id); otherwise call question.abstain(). Then,
+          if any revealed observation has an ic_insample attribute (a
+          financial world, whose tree is fully revealed before the first
+          call), return (); otherwise return up to frontier_cap
+          not-yet-revealed legal_actions of revealed nodes in a stable order,
+          and when nothing is revealed yet, abstain and return the legal
+          roots.
+        - A module docstring stating the rule, citing Addendum 3, and
+          explaining why one commit_z governs both pools.
+      - test_m3_incumbent.py:
+        - policy_runtime.screen_policy admits the module under the strict
+          question-contract rule
+        - on one fixture world per bootstrap domain it explores past the
+          root and commits a node
+        - on a fixture financial campaign it commits the z-top node when it
+          clears, abstains when none does or fewer than min_observed have
+          values, calls select once, and does not raise on a NULL-ic_mean
+          node
+        - the jitter reviser's revisions of it are still admitted
+        Use fixtures only, no sandbox and no real store; the orchestrator
+        tests touched pass.
+    </expected>
+    <actual>Root cause: the pre-registration's incumbent (incumbent.m2.py) is a pick-among-evaluated rule that suits pre-evaluated financial trees only; the shipped example explores but was written for bootstrap observations only. No policy reads the two pools' observations through one commit rule.</actual>
+    <constraints>
+      Only the two new files are created; no existing file changes
+      Do not edit deploy/dreaming/incumbent.m2.py or deploy/dreaming/incumbent.example.py
+      Do not edit docs/preregistration/, docs/user-journeys/, deploy/shadow/, packages/router/ or the shadow modules
+    </constraints>
+  </bug>
+</bug_spec>
