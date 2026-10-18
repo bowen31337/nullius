@@ -51,6 +51,9 @@ from pathlib import Path
 import pytest
 from canary import REFERENCE_TABLE
 from canary.run import (
+    CANARY_EVALUATION_CONFIG_MISMATCH,
+    CANARY_EVALUATION_REFERENCE_EXISTS,
+    CANARY_EVALUATION_SCORE_NOT_FINITE,
     CANARY_REFERENCE_ABSENT,
     CANARY_REFERENCE_AMBIGUOUS,
     CANARY_REFERENCE_EXISTS,
@@ -476,6 +479,259 @@ def test_the_evaluation_canary_is_frozen_and_replays_as_a_full_pass(
     from canary import CanaryHaltStore
 
     assert CanaryHaltStore(url).halted() is False
+
+
+def test_refreezing_an_already_frozen_evaluation_reference_is_refused(
+    tmp_path: Path,
+) -> None:
+    # Unchanged refusal: an evaluation reference already on record is named
+    # with its own code word on both deployment shapes -- a fresh store that
+    # froze both, and one that froze the toy pair first.
+    for freeze_toy_first in (False, True):
+        url = _url(tmp_path, f"double-{freeze_toy_first}.db")
+        if freeze_toy_first:
+            _freeze(url)
+        evaluate_node, replay_policy = _stub_evaluators()
+        exit_code = main(
+            ["--freeze-reference"],
+            env=_evaluation_env(url),
+            emit=lambda _line: None,
+            evaluate_node=evaluate_node,
+            replay_policy=replay_policy,
+        )
+        assert exit_code == EXIT_OK
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = main(
+                ["--freeze-reference"],
+                env=_evaluation_env(url),
+                emit=lambda _line: None,
+                evaluate_node=evaluate_node,
+                replay_policy=replay_policy,
+            )
+        assert exit_code == EXIT_REFUSED
+        message = stderr.getvalue()
+        assert CANARY_EVALUATION_REFERENCE_EXISTS in message
+        assert "Traceback" not in message
+        assert _table_count(url, EVALUATION_REFERENCE_TABLE) == 1
+
+
+def test_the_evaluation_canary_freezes_on_a_deployment_that_already_froze_the_toy_pair(
+    tmp_path: Path,
+) -> None:
+    # The reported defect: a deployment that froze the toy pair before the
+    # evaluation canary existed could never freeze it afterwards --
+    # `_freeze_reference` refused with canary_reference_exists before it
+    # ever reached the evaluation freeze, so every later run recorded
+    # evaluation_canary=0 and dreaming was refused forever.
+    url = _url(tmp_path)
+    toy_reference_id = _freeze(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+
+    freeze_lines: list[str] = []
+    exit_code = main(
+        ["--freeze-reference"],
+        env=_evaluation_env(url),
+        emit=freeze_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+    )
+
+    assert exit_code == EXIT_OK, freeze_lines
+    # The existing toy reference id is what gets printed -- the toy pair was
+    # not re-frozen, and a second pair was not added.
+    assert freeze_lines == [toy_reference_id]
+    with closing(sqlite3.connect(_path(url))) as connection:
+        active = connection.execute(
+            f"SELECT reference_id FROM {REFERENCE_TABLE} WHERE is_active = 1"
+        ).fetchall()
+    assert [row[0] for row in active] == [toy_reference_id]
+    assert _table_count(url, EVALUATION_REFERENCE_TABLE) == 1
+
+    # And a plain run on such a deployment now records a full pass.
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=_evaluation_env(url),
+        emit=run_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+    )
+    assert exit_code == EXIT_OK, run_lines
+    assert json.loads(run_lines[0])["evaluation_canary"] is True
+
+
+def test_a_freeze_refuses_a_non_finite_evaluation_score(
+    tmp_path: Path,
+) -> None:
+    # A policy that commits nothing replays to -inf, and |(-inf) - (-inf)| is
+    # NaN -- which would make every later night a recorded break for a reason
+    # that has nothing to do with determinism. Refused, naming the half and
+    # the value, with nothing written.
+    url = _url(tmp_path)
+    for half, node_score, replay_score in (
+        ("node", float("-inf"), 0.77),
+        ("replay", 0.42, float("-inf")),
+        ("node", float("nan"), 0.77),
+    ):
+        bad_evaluate_node, bad_replay_policy = _stub_evaluators(
+            node_score=node_score, replay_score=replay_score
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = main(
+                ["--freeze-reference"],
+                env=_evaluation_env(url),
+                emit=lambda _line: None,
+                evaluate_node=bad_evaluate_node,
+                replay_policy=bad_replay_policy,
+            )
+
+        assert exit_code == EXIT_REFUSED
+        message = stderr.getvalue()
+        assert CANARY_EVALUATION_SCORE_NOT_FINITE in message
+        assert half in message
+        assert "Traceback" not in message
+        # Nothing was written: neither the toy pair nor the evaluation
+        # reference -- a retry with a finite evaluator can still freeze both.
+        assert _table_count(url, REFERENCE_TABLE) == 0
+        assert _table_count(url, EVALUATION_REFERENCE_TABLE) == 0
+
+
+def test_the_evaluation_config_sha256_is_stored_and_a_mismatch_is_refused(
+    tmp_path: Path,
+) -> None:
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=lambda _line: None,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="sha-a",
+    )
+    assert exit_code == EXIT_OK
+
+    # A run under the same config replays normally.
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=env,
+        emit=run_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="sha-a",
+    )
+    assert exit_code == EXIT_OK
+    assert json.loads(run_lines[0])["evaluation_canary"] is True
+
+    # A run under a different config refuses, before writing a run row.
+    for mismatched in ("sha-b", None):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            exit_code = main(
+                [],
+                env=env,
+                emit=lambda _line: None,
+                evaluate_node=evaluate_node,
+                replay_policy=replay_policy,
+                evaluation_config_sha256=mismatched,
+            )
+        assert exit_code == EXIT_REFUSED
+        message = stderr.getvalue()
+        assert CANARY_EVALUATION_CONFIG_MISMATCH in message
+        assert "Traceback" not in message
+    assert _table_count(url, RUN_TABLE) == 1  # only the matching run's row
+
+
+def test_a_stored_null_config_sha256_accepts_any_value(tmp_path: Path) -> None:
+    # A reference frozen before this seam existed stores NULL and must keep
+    # working: it refuses no run, whatever the caller supplies.
+    url = _url(tmp_path)
+    env = _evaluation_env(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=lambda _line: None,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="sha-a",
+    )
+    assert exit_code == EXIT_OK
+    with closing(sqlite3.connect(_path(url))) as connection, connection:
+        connection.execute(
+            f"UPDATE {EVALUATION_REFERENCE_TABLE} SET config_sha256 = NULL"
+        )
+
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=env,
+        emit=run_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="anything-at-all",
+    )
+    assert exit_code == EXIT_OK, run_lines
+    assert json.loads(run_lines[0])["evaluation_canary"] is True
+
+
+def test_a_pre_existing_evaluation_reference_table_gains_the_config_column(
+    tmp_path: Path,
+) -> None:
+    # A table created before `config_sha256` existed must be upgraded in
+    # place by the freeze/read path, not left for the INSERT to fail on.
+    url = _url(tmp_path)
+    path = _path(url)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript(
+            f"CREATE TABLE {EVALUATION_REFERENCE_TABLE} ("
+            "id TEXT NOT NULL PRIMARY KEY, campaign_id TEXT NOT NULL, "
+            "node_id TEXT NOT NULL, node_score REAL NOT NULL, "
+            "replay_score REAL NOT NULL, created_at TEXT NOT NULL);"
+        )
+
+    env = _evaluation_env(url)
+    evaluate_node, replay_policy = _stub_evaluators()
+    exit_code = main(
+        ["--freeze-reference"],
+        env=env,
+        emit=lambda _line: None,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="sha-a",
+    )
+    assert exit_code == EXIT_OK
+
+    with closing(sqlite3.connect(path)) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                f"PRAGMA table_info({EVALUATION_REFERENCE_TABLE})"
+            )
+        }
+        stored = connection.execute(
+            f"SELECT config_sha256 FROM {EVALUATION_REFERENCE_TABLE}"
+        ).fetchone()[0]
+    assert "config_sha256" in columns
+    assert stored == "sha-a"
+
+    # And a plain run reads the upgraded column rather than raising.
+    run_lines: list[str] = []
+    exit_code = main(
+        [],
+        env=env,
+        emit=run_lines.append,
+        evaluate_node=evaluate_node,
+        replay_policy=replay_policy,
+        evaluation_config_sha256="sha-a",
+    )
+    assert exit_code == EXIT_OK, run_lines
 
 
 def test_freezing_the_evaluation_canary_without_an_evaluator_is_refused(

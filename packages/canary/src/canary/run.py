@@ -35,13 +35,27 @@ replay.
 uniqueness constraint on ``is_active`` — freezing a second pair with
 ``is_active=True`` would succeed at the store's own layer, and silently
 leave "which pair does the nightly canary replay?" answerable two ways.
-This module is where the answer is kept singular: ``--freeze-reference``
-refuses outright when an active pair already exists
-(:data:`CANARY_REFERENCE_EXISTS`, changing nothing), and a plain run
-refuses when it finds none (:data:`CANARY_REFERENCE_ABSENT`) or more than
-one (:data:`CANARY_REFERENCE_AMBIGUOUS`) — three readings of one
-invariant, stated as code words a systemd ``OnFailure`` hook or an
-operator's grep can tell apart without parsing prose.
+This module is where the answer is kept singular: a plain run refuses when
+it finds no active pair (:data:`CANARY_REFERENCE_ABSENT`) or more than one
+(:data:`CANARY_REFERENCE_AMBIGUOUS`), and ``--freeze-reference`` refuses to
+freeze the toy pair a second time (:data:`CANARY_REFERENCE_EXISTS`,
+changing nothing) — three readings of one invariant, stated as code words a
+systemd ``OnFailure`` hook or an operator's grep can tell apart without
+parsing prose.
+
+**The evaluation canary is frozen beside the toy pair, not instead of it.**
+A store that already holds an active toy pair and no evaluation reference
+is every deployment that froze the toy pair before the evaluation canary
+existed, and it must still be able to freeze one: ``--freeze-reference``
+with the evaluation canary configured there leaves the toy pair exactly as
+it is, writes only the evaluation reference, and prints the *existing* toy
+``reference_id``. The toy freeze, the toy replay and the run row's shape are
+untouched; what changes is only that the toy pair's own "already frozen"
+answer no longer stands in front of the evaluation canary's. It is refused
+by name either way when the evaluation reference is already on record
+(:data:`CANARY_EVALUATION_REFERENCE_EXISTS`) or when the evaluators are
+missing or return a non-finite score
+(:data:`CANARY_EVALUATION_SCORE_NOT_FINITE`).
 
 **Exit 3 is reserved.**  0 is a replay recorded, broken or not;
 1 is a refusal that touched no store (a bad reference-pair cardinality,
@@ -85,7 +99,9 @@ from ._replay import DEFAULT_TOLERANCE, CanaryReplayResult, replay_pair
 from ._void import void_scores_after_break
 
 __all__ = [
+    "CANARY_EVALUATION_CONFIG_MISMATCH",
     "CANARY_EVALUATION_REFERENCE_EXISTS",
+    "CANARY_EVALUATION_SCORE_NOT_FINITE",
     "CANARY_REFERENCE_ABSENT",
     "CANARY_REFERENCE_AMBIGUOUS",
     "CANARY_REFERENCE_EXISTS",
@@ -143,6 +159,23 @@ TreeReplayEvaluator = Callable[[str], float]
 #: a second one would leave the nightly canary unable to say which campaign,
 #: node and policy replay to trust, so nothing is changed.
 CANARY_EVALUATION_REFERENCE_EXISTS = "canary_evaluation_reference_exists"
+
+#: A freeze's evaluator returned a value that is not a finite real number.
+#: Refused rather than recorded: a policy that commits nothing replays to
+#: ``-inf``, and ``abs(-inf - -inf)`` is ``NaN``, so a constant recorded from
+#: such a score would not merely fail the ``1e-12`` comparison — it would
+#: never satisfy it either, and the nightly canary would record a break every
+#: night for a reason that has nothing to do with determinism. The message
+#: names which half (``node`` or ``replay``) and the value.
+CANARY_EVALUATION_SCORE_NOT_FINITE = "canary_evaluation_score_not_finite"
+
+#: A plain run found a frozen evaluation-canary reference whose recorded
+#: config identity disagrees with the one the caller supplied. Refused before
+#: the run row is written: the frozen constants were measured under one
+#: evaluation config, and replaying them under another compares two scores
+#: that were never meant to agree — the break such a run would report is the
+#: config having changed, not determinism having broken.
+CANARY_EVALUATION_CONFIG_MISMATCH = "canary_evaluation_config_mismatch"
 
 # -- The built-in reference pair ------------------------------------------------
 #
@@ -304,7 +337,13 @@ _COLUMNS = (
 #: and ``replay_score`` are that freeze's own two measurements (each pair's
 #: constant is its own replay, the same rule :func:`_freeze_reference`
 #: already follows for the toy pair) -- never a number invented outside a
-#: freeze.
+#: freeze. ``config_sha256`` is the identity of the evaluation config those
+#: two scores were measured under, when the caller supplied one: a plain run
+#: replays the stored policy through the same config the constants were frozen
+#: through, and a run under a different one would compare two scores that were
+#: never meant to agree. Nullable, and read as "accepts any value" -- a
+#: reference frozen before this column existed keeps working rather than being
+#: refused on every night.
 EVALUATION_REFERENCE_TABLE = "canary_evaluation_reference"
 
 _EVALUATION_REFERENCE_SCHEMA = f"""
@@ -314,7 +353,8 @@ CREATE TABLE IF NOT EXISTS {EVALUATION_REFERENCE_TABLE} (
     node_id       TEXT NOT NULL,
     node_score    REAL NOT NULL,
     replay_score  REAL NOT NULL,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    config_sha256 TEXT
 );
 """
 
@@ -715,7 +755,7 @@ def _active_reference_ids(store: CanaryReferenceStore) -> tuple[str, ...]:
 
 def _evaluation_reference_row(
     database_url: str,
-) -> Optional[tuple[str, str, float, float]]:
+) -> Optional[tuple[str, str, float, float, Optional[str]]]:
     """The frozen evaluation-canary constants, or ``None`` when none is frozen.
 
     Reads :data:`EVALUATION_REFERENCE_TABLE` directly, the same read-before-
@@ -724,19 +764,58 @@ def _evaluation_reference_row(
     such table yet — has no evaluation-canary reference, read as ``None``
     rather than an error, because this function is a read and reading
     before the first freeze must not create anything or raise.
+
+    The fifth element is the frozen config identity, ``None`` for a table
+    brought forward from before that column existed — a reference frozen
+    before then accepts any config rather than refusing every night. The
+    column is probed rather than assumed, so a database whose table predates
+    it still reads.
     """
     path = _sqlite_path(database_url)
     if not path.exists():
         return None
     with closing(sqlite3.connect(path)) as connection:
         try:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    f"PRAGMA table_info({EVALUATION_REFERENCE_TABLE})"
+                )
+            }
+            config_column = "config_sha256" if "config_sha256" in columns else "NULL"
             row = connection.execute(
-                f"SELECT campaign_id, node_id, node_score, replay_score "
-                f"FROM {EVALUATION_REFERENCE_TABLE} LIMIT 1"
+                f"SELECT campaign_id, node_id, node_score, replay_score, "
+                f"{config_column} FROM {EVALUATION_REFERENCE_TABLE} LIMIT 1"
             ).fetchone()
         except sqlite3.OperationalError:
             return None
     return row
+
+
+def _checked_score(label: str, score: float) -> float:
+    """An evaluator's score as a float, or a refusal naming the half and the value.
+
+    The check :func:`_freeze_reference` makes on each of its two evaluators
+    *before* anything is written. A non-finite score is refused rather than
+    recorded because a constant recorded from one is unusable in the way that
+    is hardest to diagnose: a policy that commits nothing replays to
+    ``-inf``, the freeze would record ``-inf``, and every later night's
+    ``abs(-inf - -inf)`` is ``NaN`` — a comparison that is neither within nor
+    past the ``1e-12`` band, recording a break every night for a reason that
+    has nothing to do with determinism. ``label`` names which half
+    (``"node"`` or ``"replay"``) so the operator knows which evaluator to
+    look at.
+    """
+    value = float(score)
+    if not math.isfinite(value):
+        raise CanaryError(
+            f"{CANARY_EVALUATION_SCORE_NOT_FINITE}: the evaluation canary's "
+            f"{label} evaluator returned {value!r}, which is not a finite "
+            "number; a constant recorded from it could never be compared "
+            "(abs(-inf - -inf) is NaN), so the nightly canary would record a "
+            "break every night, and nothing was changed"
+        )
+    return value
 
 
 def _freeze_evaluation_reference(
@@ -746,6 +825,7 @@ def _freeze_evaluation_reference(
     node_id: str,
     node_score: float,
     replay_score: float,
+    config_sha256: Optional[str] = None,
 ) -> None:
     """Freeze the evaluation canary's two constants, once.
 
@@ -754,12 +834,33 @@ def _freeze_evaluation_reference(
     exists, naming what it froze, and changes nothing in that case. The two
     scores are the caller's own evaluators' *current* answers — "the
     recorded constant is its own replay score" holds here exactly as it
-    does for the toy pair, never a number invented outside a freeze.
+    does for the toy pair, never a number invented outside a freeze — and
+    are refused with :data:`CANARY_EVALUATION_SCORE_NOT_FINITE` if either is
+    not finite, before anything is written.
+
+    ``config_sha256`` records the identity of the evaluation config the two
+    scores were measured under, when the caller supplied one; it is stored
+    ``NULL`` otherwise, and a stored ``NULL`` accepts any value on replay.
     """
     path = _sqlite_path(database_url)
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(_EVALUATION_REFERENCE_SCHEMA)
+        # `CREATE TABLE IF NOT EXISTS` leaves a table created before
+        # `config_sha256` existed untouched, so a brought-forward database is
+        # upgraded explicitly -- the same guarded `ALTER TABLE` idiom
+        # `_RUN_SCHEMA`'s own reader uses above.
+        columns = {
+            row[1]
+            for row in connection.execute(
+                f"PRAGMA table_info({EVALUATION_REFERENCE_TABLE})"
+            )
+        }
+        if "config_sha256" not in columns:
+            connection.execute(
+                f"ALTER TABLE {EVALUATION_REFERENCE_TABLE} "
+                "ADD COLUMN config_sha256 TEXT"
+            )
         existing = connection.execute(
             f"SELECT campaign_id, node_id FROM {EVALUATION_REFERENCE_TABLE} LIMIT 1"
         ).fetchone()
@@ -773,15 +874,17 @@ def _freeze_evaluation_reference(
             )
         connection.execute(
             f"INSERT INTO {EVALUATION_REFERENCE_TABLE} "
-            "(id, campaign_id, node_id, node_score, replay_score, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(id, campaign_id, node_id, node_score, replay_score, created_at, "
+            "config_sha256) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 str(uuid.uuid4()),
                 campaign_id,
                 node_id,
-                float(node_score),
-                float(replay_score),
+                _checked_score("node", node_score),
+                _checked_score("replay", replay_score),
                 _utc_now().isoformat(),
+                None if config_sha256 is None else str(config_sha256),
             ),
         )
 
@@ -853,6 +956,7 @@ def _freeze_reference(
     env: Mapping[str, str],
     evaluate_node: Optional[NodeEvaluator] = None,
     replay_policy: Optional[TreeReplayEvaluator] = None,
+    evaluation_config_sha256: Optional[str] = None,
 ) -> str:
     """``--freeze-reference``'s whole act: freeze the built-in pair, once.
 
@@ -876,16 +980,24 @@ def _freeze_reference(
     alone: a deployment that named a campaign and a node meant to freeze the
     evaluation canary, and a quiet partial freeze would leave every later
     run toy-only with no refusal to say why.
+
+    An active toy pair already on record is *not* itself a refusal when the
+    evaluation canary is configured and not yet frozen: that is the shape of
+    every deployment that froze the toy pair before the evaluation canary
+    existed, and refusing it would leave the evaluation canary unfreezable
+    there forever. In that case the toy pair is left exactly as it is, only
+    the evaluation reference is written, and the *existing* toy
+    ``reference_id`` is returned. What remains refused is the act that would
+    genuinely create a second answer — freezing the toy pair again when an
+    active pair is already on record — which is the case where the
+    evaluation canary is not configured, or is already frozen.
+
+    Returns the active toy reference id — the one already on record when
+    the toy freeze was skipped, or the newly minted one otherwise.
     """
     store = CanaryReferenceStore(database_url)
     existing = _active_reference_ids(store)
-    if existing:
-        raise CanaryError(
-            f"{CANARY_REFERENCE_EXISTS}: an active canary reference pair is "
-            f"already on record ({existing[0]!r}); freezing a second active "
-            "pair would leave the nightly canary unable to say which one to "
-            "replay, so nothing was changed"
-        )
+    active_pair_exists = bool(existing)
 
     campaign_id = env.get(EVALUATION_CAMPAIGN_ID_ENV, "").strip()
     node_id = env.get(EVALUATION_NODE_ID_ENV, "").strip()
@@ -905,42 +1017,89 @@ def _freeze_reference(
             "freezing"
         )
 
-    policy = CanaryPolicy.freeze(
-        version=REFERENCE_POLICY_VERSION, policy=REFERENCE_POLICY
-    )
-    tree = CanaryTree.freeze(REFERENCE_TREE)
-    instant = _utc_now()
-    provisional = CanaryReferencePair(
-        policy=policy,
-        tree=tree,
-        recorded_score=None,
-        id=None,
-        is_active=True,
-        created_at=instant,
-    )
-    score = replay_pair(provisional).score
-    pair = CanaryReferencePair(
-        policy=policy,
-        tree=tree,
-        recorded_score=score,
-        id=None,
-        is_active=True,
-        created_at=instant,
-    )
-    record = store.freeze(pair)
+    # Whether an evaluation reference is already on record, read only when the
+    # evaluation canary is configured, so the not-configured path stays the
+    # cheap refusal it always was. Checked independently of the toy pair: a
+    # deployment that already froze the evaluation canary is refused by name
+    # whether or not an active toy pair is beside it, because what it would
+    # change is the evaluation canary's own one row either way.
+    frozen = _evaluation_reference_row(database_url) if evaluation_configured else None
+    if frozen is not None:
+        raise CanaryError(
+            f"{CANARY_EVALUATION_REFERENCE_EXISTS}: an evaluation canary "
+            f"reference is already frozen (campaign_id={frozen[0]!r}, "
+            f"node_id={frozen[1]!r}); freezing a second one would leave the "
+            "nightly canary unable to say which campaign, node and policy "
+            "replay to trust, so nothing was changed"
+        )
+    freeze_evaluation = evaluation_configured
 
-    if evaluation_configured:
+    if active_pair_exists and not freeze_evaluation:
+        # The one refusal this command still makes, unchanged: an active toy
+        # pair on record, and no evaluation freeze to do instead -- the
+        # historical case of a deployment with no evaluation canary
+        # configured.
+        raise CanaryError(
+            f"{CANARY_REFERENCE_EXISTS}: an active canary reference pair is "
+            f"already on record ({existing[0]!r}); freezing a second active "
+            "pair would leave the nightly canary unable to say which one to "
+            "replay, so nothing was changed"
+        )
+
+    node_score: Optional[float] = None
+    replay_score: Optional[float] = None
+    if freeze_evaluation:
         assert evaluate_node is not None and replay_policy is not None
-        node_score = float(evaluate_node(campaign_id, node_id))
-        replay_score = float(replay_policy(campaign_id))
+        # Evaluated and checked *before* the toy pair is written, so a
+        # non-finite score refuses with nothing changed at all -- not a
+        # half-freeze that left the toy pair on record and the evaluation
+        # reference missing.
+        node_score = _checked_score("node", evaluate_node(campaign_id, node_id))
+        replay_score = _checked_score("replay", replay_policy(campaign_id))
+
+    if active_pair_exists:
+        assert freeze_evaluation
+        # The reported defect's fix: an active toy pair is left exactly as it
+        # is -- nothing is re-frozen, no second pair is added -- and only the
+        # evaluation canary is frozen, below. The existing id is what this
+        # call reports, because that is the pair the nightly canary replays.
+        reference_id = existing[0]
+    else:
+        policy = CanaryPolicy.freeze(
+            version=REFERENCE_POLICY_VERSION, policy=REFERENCE_POLICY
+        )
+        tree = CanaryTree.freeze(REFERENCE_TREE)
+        instant = _utc_now()
+        provisional = CanaryReferencePair(
+            policy=policy,
+            tree=tree,
+            recorded_score=None,
+            id=None,
+            is_active=True,
+            created_at=instant,
+        )
+        score = replay_pair(provisional).score
+        pair = CanaryReferencePair(
+            policy=policy,
+            tree=tree,
+            recorded_score=score,
+            id=None,
+            is_active=True,
+            created_at=instant,
+        )
+        reference_id = store.freeze(pair).reference_id
+
+    if freeze_evaluation:
+        assert node_score is not None and replay_score is not None
         _freeze_evaluation_reference(
             database_url,
             campaign_id=campaign_id,
             node_id=node_id,
             node_score=node_score,
             replay_score=replay_score,
+            config_sha256=evaluation_config_sha256,
         )
-    return record.reference_id
+    return reference_id
 
 
 def _replay_active_reference(
@@ -948,6 +1107,7 @@ def _replay_active_reference(
     *,
     evaluate_node: Optional[NodeEvaluator] = None,
     replay_policy: Optional[TreeReplayEvaluator] = None,
+    evaluation_config_sha256: Optional[str] = None,
 ) -> tuple[dict[str, Any], bool]:
     """A plain run's whole act: load, replay, record, and halt on a break.
 
@@ -974,7 +1134,13 @@ def _replay_active_reference(
     An evaluation canary frozen without an evaluator supplied to replay it
     is refused outright, before the run row is written: the nightly canary
     must not silently record a toy-only pass as a full one just because its
-    caller forgot to wire the evaluator in.
+    caller forgot to wire the evaluator in. A frozen reference whose
+    recorded config identity disagrees with ``evaluation_config_sha256`` is
+    refused the same way, with
+    :data:`CANARY_EVALUATION_CONFIG_MISMATCH`: the stored constants were
+    measured under one config, and a replay under another compares two
+    numbers that were never meant to agree. A stored ``NULL`` accepts any
+    value, so a reference frozen before this seam existed keeps working.
     """
     reference_store = CanaryReferenceStore(database_url)
     active_ids = _active_reference_ids(reference_store)
@@ -1002,7 +1168,13 @@ def _replay_active_reference(
     evaluation_row = _evaluation_reference_row(database_url)
     evaluation_included = evaluation_row is not None
     if evaluation_row is not None:
-        campaign_id, node_id, node_recorded, replay_recorded = evaluation_row
+        (
+            campaign_id,
+            node_id,
+            node_recorded,
+            replay_recorded,
+            stored_config_sha256,
+        ) = evaluation_row
         if evaluate_node is None or replay_policy is None:
             raise CanaryError(
                 "an evaluation canary reference is frozen (campaign_id="
@@ -1010,6 +1182,24 @@ def _replay_active_reference(
                 "supplied to replay it; the nightly canary must not "
                 "silently record a toy-only pass as a full one, so this run "
                 "refuses rather than skipping the evaluation canary"
+            )
+        # Checked before either evaluator runs and before the run row is
+        # written: the stored constants were measured under the config the
+        # freeze recorded, and replaying them under a different one compares
+        # two numbers that were never meant to agree. A stored NULL is
+        # accepted by any value -- the "frozen before this seam existed"
+        # case, which must keep working.
+        if stored_config_sha256 is not None and (
+            evaluation_config_sha256 != stored_config_sha256
+        ):
+            raise CanaryError(
+                f"{CANARY_EVALUATION_CONFIG_MISMATCH}: the frozen evaluation "
+                "canary reference records config_sha256="
+                f"{stored_config_sha256!r}, but this run's evaluation config "
+                f"is {evaluation_config_sha256!r}; the stored constants were "
+                "measured under the recorded config, and replaying them under "
+                "a different one would compare scores that were never meant "
+                "to agree, so this run refuses before recording anything"
             )
         node_score = float(evaluate_node(campaign_id, node_id))
         replay_score = float(replay_policy(campaign_id))
@@ -1084,6 +1274,7 @@ def main(
     emit: Callable[[str], object] = print,
     evaluate_node: Optional[NodeEvaluator] = None,
     replay_policy: Optional[TreeReplayEvaluator] = None,
+    evaluation_config_sha256: Optional[str] = None,
 ) -> int:
     """``python -m canary.run [--freeze-reference]``.
 
@@ -1116,7 +1307,11 @@ def main(
     :data:`EVALUATION_CAMPAIGN_ID_ENV`/:data:`EVALUATION_NODE_ID_ENV` (to
     freeze) or already froze an evaluation-canary reference (to replay)
     without supplying them is refused by name rather than silently running
-    the toy canary alone.
+    the toy canary alone. ``evaluation_config_sha256`` is the identity of the
+    evaluation config those evaluators run under, when the caller has one:
+    the freeze stores it, and a later run whose value disagrees with the
+    stored one (including ``None`` against a stored value) is refused with
+    :data:`CANARY_EVALUATION_CONFIG_MISMATCH` before a run row is written.
     """
     arguments = _build_parser().parse_args(argv)
     source = os.environ if env is None else env
@@ -1137,6 +1332,7 @@ def main(
                 env=source,
                 evaluate_node=evaluate_node,
                 replay_policy=replay_policy,
+                evaluation_config_sha256=evaluation_config_sha256,
             )
         except CanaryError as exc:
             print(str(exc), file=sys.stderr)
@@ -1146,7 +1342,10 @@ def main(
 
     try:
         payload, broken = _replay_active_reference(
-            database_url, evaluate_node=evaluate_node, replay_policy=replay_policy
+            database_url,
+            evaluate_node=evaluate_node,
+            replay_policy=replay_policy,
+            evaluation_config_sha256=evaluation_config_sha256,
         )
     except CanaryError as exc:
         print(str(exc), file=sys.stderr)
