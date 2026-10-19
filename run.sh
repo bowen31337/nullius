@@ -107,7 +107,10 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.pw-browsers}
 export PYTHONUNBUFFERED=1
 ENV_TPL="${SCRIPT_DIR}/.env.tpl"
 ENV_VST_TPL="${SCRIPT_DIR}/.env.vst.tpl"
-ENV_CAMPAIGN_TPL="${SCRIPT_DIR}/.env.campaign.tpl"
+# Overridable so a pre-registered series can run under its own template (a
+# different evaluation config) without editing the file the shadow pipeline
+# and every other campaign verb read. Unset, the default is unchanged.
+ENV_CAMPAIGN_TPL="${ENV_CAMPAIGN_TPL:-${SCRIPT_DIR}/.env.campaign.tpl}"
 
 cmd="${1:-help}"
 shift || true
