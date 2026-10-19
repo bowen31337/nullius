@@ -96,6 +96,7 @@ close-out.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -112,6 +113,7 @@ from ._policy import DEFAULT_BASELINE_WIDTH, PolicyLoadError, load_exploration_p
 from .closeout import EXIT_OK as CLOSEOUT_EXIT_OK
 from .closeout import EXIT_VOID as CLOSEOUT_EXIT_VOID
 from .closeout import main as run_closeout
+from .dream import evaluation_config_sha256
 
 __all__ = [
     "CAMPAIGN_CLI_CODE",
@@ -119,7 +121,9 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_VOID",
+    "GRID_COLUMN_NAMES",
     "LIVE_EVALUATOR_COMPONENT_NAME",
+    "evaluation_grid",
     "main",
 ]
 
@@ -151,6 +155,98 @@ EXIT_VOID = 3
 #: of restating), and this feature's own file claim does not touch that
 #: module to add one.
 LIVE_EVALUATOR_COMPONENT_NAME = "live-evaluator"
+
+
+#: The five column names feature 4's grid record is written under, in the
+#: order :data:`discovery.GRID_COLUMNS` names them.  Spelled here as well as
+#: there because the two spellings serve different readers: discovery's is
+#: the store's contract with its own table, and this one is the driver's
+#: contract with :func:`evaluation_grid`'s caller — the five keywords
+#: :func:`~orchestrator._campaign.run_campaign` forwards to
+#: ``discovery.create_campaign``.
+GRID_COLUMN_NAMES: tuple[str, ...] = (
+    "evaluation_config_sha256",
+    "horizon",
+    "grid_first_date",
+    "grid_last_date",
+    "oos_first_date",
+)
+
+
+def _iso_date(value: Any) -> str | None:
+    """One calendar date as ISO-8601 text, or ``None`` for anything else.
+
+    The one conversion :func:`evaluation_grid` needs from
+    :class:`~orchestrator._context.EvaluationContext`'s date tuples to the
+    columns that hold them.  Both shapes are accepted because both occur:
+    the real loader keeps ``dt.date`` objects (its own validators parse the
+    document's strings once, at load), while a test double may carry the
+    document's strings unchanged.  Anything that is neither — a number, a
+    blank string, a malformed date — answers ``None`` rather than raising:
+    a grid column the driver cannot render is a value the store would
+    refuse, and a campaign that cannot be created because a *decorative*
+    column was unreadable is a worse outcome than a campaign created with
+    that one column ``NULL``.  The store validates whatever this returns.
+    """
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, str) and value.strip():
+        try:
+            return dt.date.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def evaluation_grid(
+    context: Any, env: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """The evaluation grid ``context`` ran on — feature 4's five values.
+
+    The driver's half of the feature's second step: *"the driver
+    (orchestrator/campaign.py) passes them from its EvaluationContext"*.
+    Returned as a mapping keyed by the five column names, ready to be
+    splatted into ``discovery.create_campaign`` (or into
+    :func:`~orchestrator._campaign.run_campaign`, which forwards it):
+
+    * ``evaluation_config_sha256`` — the digest of the file
+      ``NULLIUS_EVALUATION_CONFIG`` names, through
+      :func:`orchestrator.dream.evaluation_config_sha256`, reusing that
+      function rather than hashing the file a second time here: the digest
+      is already *the* name of an evaluation configuration in this system
+      (``dream`` files every financial-world row under it), and a second
+      spelling would let a campaign's digest and a world's digest disagree
+      about the same file.  ``None`` when the variable is unset.
+    * ``horizon`` — ``context.horizon``, the forward window the run's picks
+      were selected for.
+    * ``grid_first_date`` / ``grid_last_date`` — the min and the max of
+      ``context.evaluation_dates``, the in-sample grid the run measured on.
+    * ``oos_first_date`` — the min of ``context.oos_dates``, or ``None``
+      when the configuration carried no out-of-sample grid.  *None when
+      there is none*, per the feature's own words: an absent OOS window is
+      a fact about the configuration, never a date this function invents.
+
+    Every value is read defensively (``getattr`` with a ``None`` default)
+    because this is the one place the orchestrator reads these attributes
+    of a context, and the context a caller supplies is not always the real
+    :class:`~orchestrator._context.EvaluationContext`: a deployment whose
+    evaluator exposes a narrower object gets five ``NULL`` columns, which is
+    exactly the honest record of a run whose grid was not available to the
+    driver.  The alternative — raising — would refuse a whole campaign over
+    a column the campaign does not need to run.
+    """
+    dates = getattr(context, "evaluation_dates", None) or ()
+    oos_dates = getattr(context, "oos_dates", None) or ()
+    rendered = [text for text in (_iso_date(value) for value in dates) if text]
+    oos_rendered = [text for text in (_iso_date(value) for value in oos_dates) if text]
+    horizon = getattr(context, "horizon", None)
+    return {
+        "evaluation_config_sha256": evaluation_config_sha256(env),
+        "horizon": horizon if isinstance(horizon, int) and not isinstance(horizon, bool) else None,
+        "grid_first_date": min(rendered) if rendered else None,
+        "grid_last_date": max(rendered) if rendered else None,
+        "oos_first_date": min(oos_rendered) if oos_rendered else None,
+    }
 
 
 def _missing_component_line(name: str) -> str:
@@ -322,6 +418,15 @@ def main(
             policy=policy,
             context=evaluator.context,
             sidecar_selection=sidecar_selection,
+            # Feature 4: the evaluation grid this run's campaign row must
+            # carry.  Built here rather than inside the loop because the
+            # digest's own source (``NULLIUS_EVALUATION_CONFIG``) is a
+            # process-environment fact this CLI owns ``env`` for, and
+            # because a malformed one that the store will refuse is better
+            # caught before a root is planted than after.  The loop forwards
+            # the mapping to ``discovery.create_campaign`` unchanged — see
+            # :func:`~orchestrator._campaign.run_campaign`.
+            grid=evaluation_grid(evaluator.context, env),
             emit=_emit_line,
         )
     except Exception as exc:  # noqa: BLE001 - every collaborator's own

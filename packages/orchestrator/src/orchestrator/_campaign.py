@@ -62,7 +62,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -881,6 +881,7 @@ def run_campaign(
     context: Any,
     sidecar_selection: Any,
     emit: Callable[[dict[str, Any]], None],
+    grid: Mapping[str, Any] | None = None,
 ) -> CampaignResult:
     """Run one campaign end to end — feature 6's whole sentence, as one call.
 
@@ -915,8 +916,24 @@ def run_campaign(
     Reads no node's null status, the sidecar key or an ``is_null`` value
     anywhere in its body: the only thing this function does with
     ``sidecar_selection`` is call ``.persist(campaign_id)`` on it, once.
+
+    ``grid`` is feature 4's five campaign-row columns — the evaluation grid
+    this run is scored on, as :func:`orchestrator.campaign.evaluation_grid`
+    builds it (keyed by column name).  It is forwarded to
+    :func:`discovery.create_campaign` **unchanged and unexamined**: the
+    driver owns which values describe a run, and the store owns what a
+    column will accept, so this loop is the pipe between them rather than a
+    third place that could disagree with either.  ``None`` (the default) is
+    the same as an empty mapping — a caller written before feature 4
+    creates exactly the row it always did, with five ``NULL`` columns, which
+    is the honest record of a run whose grid nobody told the driver.
     """
-    record = discovery.create_campaign(campaign_type, workspaces, database_url=context.database_url)
+    record = discovery.create_campaign(
+        campaign_type,
+        workspaces,
+        database_url=context.database_url,
+        **(grid or {}),
+    )
     campaign_id = record.campaign_id
 
     artifact_store = ArtifactStore(context.artifact_dir)

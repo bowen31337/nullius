@@ -91,12 +91,28 @@ def test_fresh_tree_reaches_head(test_database_url: str) -> None:
     """Every file's ``apply()`` returns normally against an empty database,
     and the chain is walked all the way to its head — the last file's own
     tables exist, not just an early file's.
+
+    The head is whatever the tree's own last file declares, read from that
+    file rather than pinned here.  A hard-coded revision would make this
+    test's subject *"no migration was added"* rather than *"the chain
+    reaches its head"* — every feature that adds a revision would have to
+    edit this file (outside its own scope) to keep a green suite, which is
+    a test that fails for the wrong reason.  What is asserted instead is
+    the structural fact the docstring is about: the last file's
+    ``DOWN_REVISION`` names a revision that is actually in the tree, so the
+    chain is connected rather than a dangling file, and the last file's own
+    tables exist in the built database.
     """
     _apply_tree(test_database_url)
 
     head = _load_migration(MIGRATION_FILES[-1])
-    assert head.REVISION == "0119_canary_reference_pair"
-    assert head.DOWN_REVISION == "0118_node_table"
+    revisions = {_load_migration(path).REVISION for path in MIGRATION_FILES}
+    assert head.REVISION in revisions
+    assert head.DOWN_REVISION in revisions, (
+        f"the head file {head.REVISION!r} chains onto {head.DOWN_REVISION!r}, "
+        "which names no file in the tree"
+    )
+    assert head.DOWN_REVISION != head.REVISION
 
     with _connect(test_database_url) as connection:
         names = _table_names(connection)
@@ -104,6 +120,22 @@ def test_fresh_tree_reaches_head(test_database_url: str) -> None:
         missing_head_tables = set(head.TABLES) - names
         assert not missing_head_tables, (
             f"head's own tables missing after a fresh build: {sorted(missing_head_tables)}"
+        )
+
+    # The columns a migration *adds* to a table are as much a part of "the
+    # chain reached head" as the tables it creates: a file whose ``upgrade``
+    # never ran leaves no table behind to notice, only a missing column.
+    added = getattr(head, "COLUMNS", ())
+    if added:
+        target = (getattr(head, "REQUIRES_TABLES", ()) or ("campaign",))[0]
+        with _connect(test_database_url) as connection:
+            columns = {row[1] for row in _table_info(connection, target)}
+        # ``REQUIRES_TABLES`` is the first table the file names; a file that
+        # widens a table it does not create states it there.
+        missing = set(added) - columns
+        assert not missing, (
+            f"{head.REVISION} adds {sorted(missing)} to {target!r}, which a "
+            "fresh build does not have"
         )
 
 

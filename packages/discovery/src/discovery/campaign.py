@@ -149,6 +149,7 @@ happens.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sqlite3
 import uuid
@@ -167,9 +168,15 @@ __all__ = [
     "CAMPAIGN_TYPE_COLUMN",
     "CREATED_AT_COLUMN",
     "DATABASE_URL_ENV",
+    "EVALUATION_CONFIG_SHA256_COLUMN",
+    "GRID_COLUMNS",
+    "GRID_FIRST_DATE_COLUMN",
+    "GRID_LAST_DATE_COLUMN",
+    "HORIZON_COLUMN",
     "ID_COLUMN",
     "NODE_TABLE",
     "NULL_FRACTION_COLUMN",
+    "OOS_FIRST_DATE_COLUMN",
     "PHI_CEILING",
     "PHI_FLOOR",
     "REGIMES",
@@ -240,6 +247,68 @@ CREATED_AT_COLUMN = "created_at"
 #: planner that spelled it would be the second place that vocabulary lived.
 CALIBRATION_STATUS_DEFAULT = "ok"
 
+#: The campaign row's evaluation grid, recorded on the row the campaign
+#: itself lives in — additions_spec_engine_edge_recovery.xml, "Campaign
+#: Grid", feature 4.  Five columns, added by
+#: ``migrations/versions/0120_campaign_evaluation_grid.py`` and all nullable:
+#: a campaign planned before that migration ran, or one the backfill could
+#: not place on a known grid, reads ``NULL`` in every one of them, which is
+#: how a later reader tells *this campaign ran on a grid nobody recorded*
+#: apart from *this campaign ran on a grid*.
+#:
+#: Why the row and not the node: a campaign selected its picks on **one**
+#: grid, so the grid is a property of the campaign.  The admission defect
+#: ``docs/research/2026-10-19-alpha-diagnosis.md`` names is asked of
+#: campaigns — *did this campaign's in-sample grid end before the
+#: out-of-sample grid it is about to be scored on?* — and the 17 worlds
+#: ``2026-10-17-m3-dreaming.RESULT.md``'s erratum separates out are
+#: campaigns, not nodes.
+
+#: The sha256 of the evaluation-configuration file the campaign's run read
+#: (``NULLIUS_EVALUATION_CONFIG``, via
+#: :func:`orchestrator.dream.evaluation_config_sha256`).  It names *which*
+#: grid-and-cost-model document produced this campaign, which is what a
+#: later reader needs before comparing two campaigns' grids at all — two
+#: campaigns on the same dates under two configurations are two different
+#: measurements.  ``TEXT``, and ``NULL`` for a row the driver did not write
+#: it for (every backfilled row: the config file a past run read is not
+#: recoverable from its artifacts).
+EVALUATION_CONFIG_SHA256_COLUMN = "evaluation_config_sha256"
+
+#: The horizon — in trading days — the campaign's picks were selected for.
+#: The number that makes ``cost_adjusted_ir`` readable at all: the same edge
+#: measured at horizon 1 and horizon 5 are two different claims, and M3's
+#: whole finding was that a pick must be judged at the horizon it was
+#: selected for.  ``INTEGER``, ``NULL`` when neither the driver nor the
+#: backfill could name one.
+HORIZON_COLUMN = "horizon"
+
+#: The first and last dates of the campaign's in-sample evaluation grid, as
+#: ISO-8601 text (``grid_first_date <= grid_last_date``).  ``grid_last_date``
+#: is the one a reader compares against an out-of-sample grid: a campaign
+#: whose in-sample window ends on or after the first out-of-sample date has
+#: already seen the data it is about to be scored on.
+GRID_FIRST_DATE_COLUMN = "grid_first_date"
+GRID_LAST_DATE_COLUMN = "grid_last_date"
+
+#: The first date of the out-of-sample grid the campaign's configuration
+#: carried, or ``NULL`` when it carried none.  Optional in the config
+#: document itself (``_context``: an omitted ``oos_dates`` means no OOS
+#: window, not an invented one), so ``NULL`` here is a fact about the
+#: configuration rather than a gap in the record.
+OOS_FIRST_DATE_COLUMN = "oos_first_date"
+
+#: The five grid columns, in the order the feature sentence names them — the
+#: one spelling a reader (the backfill's writer, a diagnosis query, a test)
+#: iterates rather than restating.  All nullable, none with a default.
+GRID_COLUMNS: tuple[str, ...] = (
+    EVALUATION_CONFIG_SHA256_COLUMN,
+    HORIZON_COLUMN,
+    GRID_FIRST_DATE_COLUMN,
+    GRID_LAST_DATE_COLUMN,
+    OOS_FIRST_DATE_COLUMN,
+)
+
 #: §4.1.1's clip floor — the smallest fraction a campaign plants.
 PHI_FLOOR = 0.15
 
@@ -264,6 +333,14 @@ REGIMES = (TYPE_R_CAMPAIGN_TYPE, TYPE_D_CAMPAIGN_TYPE)
 _NODE_TABLE_EXISTS_SQL = (
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
 )
+
+#: The sixteen characters a sha256 hex digest is drawn from, as a frozen set
+#: so :func:`_validated_config_sha256` tests membership rather than
+#: re-deriving the alphabet.  Lowercase only:
+#: :func:`hashlib.sha256(...).hexdigest` answers lowercase, and this member
+#: canonicalizes to it, so a digest stored by one code path and compared
+#: against another's cannot differ by case alone.
+_HEX_DIGITS = frozenset("0123456789abcdef")
 
 
 def null_fraction(workspace_count: Any) -> float:
@@ -471,6 +548,121 @@ def _validated_stored_fraction(value: Any, campaign: str) -> float:
     return fraction
 
 
+# -- The evaluation grid's five values ------------------------------------------
+
+
+def _validated_grid_date(value: Any, column: str, campaign: str) -> str | None:
+    """One ISO-8601 calendar date, or ``None`` when none was recorded.
+
+    The three grid-date columns hold ISO text rather than a date type, for
+    the reason ``0120_campaign_evaluation_grid.py`` states: the config
+    document itself carries ``"2026-09-01"`` strings and the only
+    comparison a reader makes with them — *does this grid end before that
+    one* — is the one lexical order answers correctly for a zero-padded
+    ISO date.  So the value is kept as the text it is, and this function's
+    job is to refuse text that is not a calendar date: a stored
+    ``"2026-9-1"`` would sort after ``"2026-10-01"``, which is precisely
+    the comparison the column exists to support.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {column} {value!r}; a grid "
+            "date is ISO-8601 text (YYYY-MM-DD) or NULL, and a non-text "
+            "value names no date a reader could compare"
+        )
+    text = value.strip()
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except ValueError as exc:
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {column} {text!r}, which is not "
+            "an ISO-8601 calendar date (YYYY-MM-DD); the grid columns are "
+            "stored as text and compared lexically, so a date that does not "
+            "round-trip through fromisoformat would sort against another "
+            "grid's date by accident"
+        ) from exc
+    return parsed.isoformat()
+
+
+def _validated_horizon(value: Any, campaign: str) -> int | None:
+    """The horizon in trading days, or ``None`` when none was recorded.
+
+    A positive integer and nothing else: a horizon of zero or a negative
+    one names no forward window a pick could be selected for, and a float
+    (``5.0``) is the kind of value that arrives when a JSON document is
+    read loosely — accepting it would let one campaign's horizon be a
+    different *kind* of number from another's in the same column.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {HORIZON_COLUMN} {value!r}; a "
+            "horizon is a whole number of trading days or NULL"
+        )
+    if value < 1:
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {HORIZON_COLUMN} {value!r}; a "
+            "horizon is a positive number of trading days — the forward "
+            "window a pick was selected for — and a zero or negative one "
+            "names no window at all"
+        )
+    return value
+
+
+def _validated_config_sha256(value: Any, campaign: str) -> str | None:
+    """The evaluation config's sha256 hex digest, or ``None`` when absent.
+
+    Sixty-four lowercase hex characters, which is what
+    :func:`hashlib.sha256(...).hexdigest` answers and what
+    :func:`orchestrator.dream.evaluation_config_sha256` therefore writes.
+    A value of any other shape names no digest this system could have
+    computed, and a reader comparing two campaigns' rows for *same
+    configuration?* would be comparing two strings neither of which
+    identifies a file.  Not imported from anywhere: the digest's spelling
+    is :mod:`hashlib`'s, and a member that reached into the orchestrator
+    for it would be the second place that vocabulary lived.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {EVALUATION_CONFIG_SHA256_COLUMN} "
+            f"{value!r}; a configuration digest is hex text or NULL"
+        )
+    text = value.strip().lower()
+    if len(text) != 64 or any(character not in _HEX_DIGITS for character in text):
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {EVALUATION_CONFIG_SHA256_COLUMN} "
+            f"{value!r}, which is not a sha256 hex digest; the column names "
+            "the configuration file a campaign's grid was read from, so a "
+            "value that is not a digest names no configuration"
+        )
+    return text
+
+
+def _ordered_grid(
+    first: str | None, last: str | None, campaign: str
+) -> None:
+    """Refuse a stored grid whose first date is after its last.
+
+    An inverted grid is not a grid: every reader of these two columns
+    compares their order against another grid's dates, and a row whose own
+    two ends contradict each other would answer those comparisons by
+    accident.  Checked only when both ends are present — a row with one end
+    recorded and the other ``NULL`` is a partial record, not a contradiction.
+    """
+    if first is not None and last is not None and first > last:
+        raise CampaignPlanningError(
+            f"campaign {campaign!r} carries {GRID_FIRST_DATE_COLUMN} "
+            f"{first!r} after {GRID_LAST_DATE_COLUMN} {last!r}; the two ends "
+            "of an in-sample grid describe a window, and a window that ends "
+            "before it starts is not one any evaluation ran on"
+        )
+
+
 def _sqlite_path(database_url: str) -> Path:
     """Translate a ``sqlite:///`` URL into the filesystem path it names.
 
@@ -527,6 +719,17 @@ class CampaignRecord:
     and a field here would invite a caller to read a p-value off a record
     the guard has not tested.  Feature 123's guard is where that number is
     read.
+    *Feature 4 adds the five grid fields beside them* —
+    ``evaluation_config_sha256``, ``horizon``, ``grid_first_date``,
+    ``grid_last_date`` and ``oos_first_date`` — each optional and defaulting
+    to ``None``.  They are the evaluation grid the campaign ran on, and
+    ``None`` on every one of them is the honest reading of a row written
+    before ``0120_campaign_evaluation_grid.py`` ran or left unfilled by
+    :mod:`orchestrator.backfill_campaign_grid`, never an error: a campaign
+    on an unrecorded grid is a different fact from one on a recorded grid,
+    and the columns exist so a later reader can tell them apart.  Nothing
+    here re-derives the in-sample series from them; they are the record of a
+    decision, like every other field.
 
     Frozen, so a record that has been read back cannot be edited into a
     different campaign by a caller who kept a reference — the same
@@ -547,6 +750,11 @@ class CampaignRecord:
     null_fraction: float
     calibration_status: str
     created_at: Any
+    evaluation_config_sha256: str | None = None
+    horizon: int | None = None
+    grid_first_date: str | None = None
+    grid_last_date: str | None = None
+    oos_first_date: str | None = None
 
     def __post_init__(self) -> None:
         # ``object.__setattr__`` because the dataclass is frozen: the
@@ -589,6 +797,31 @@ class CampaignRecord:
                 "NOT NULL DEFAULT 'ok', so a row without one is not a row "
                 "this feature could have created"
             )
+        # The five grid columns, feature 4.  Every one is optional and every
+        # one is canonicalized here rather than only on the write path, for
+        # the reason the fields above are: a record rebuilt by
+        # ``dataclasses.replace`` or an unpickle never passes through
+        # :meth:`CampaignRecords.create`, so validation living only there
+        # would be validation a hand-built record could skip.
+        object.__setattr__(
+            self,
+            EVALUATION_CONFIG_SHA256_COLUMN,
+            _validated_config_sha256(
+                getattr(self, EVALUATION_CONFIG_SHA256_COLUMN), campaign
+            ),
+        )
+        object.__setattr__(
+            self,
+            HORIZON_COLUMN,
+            _validated_horizon(getattr(self, HORIZON_COLUMN), campaign),
+        )
+        for column in (GRID_FIRST_DATE_COLUMN, GRID_LAST_DATE_COLUMN, OOS_FIRST_DATE_COLUMN):
+            object.__setattr__(
+                self,
+                column,
+                _validated_grid_date(getattr(self, column), column, campaign),
+            )
+        _ordered_grid(self.grid_first_date, self.grid_last_date, campaign)
 
     @property
     def planted_nulls(self) -> float:
@@ -614,7 +847,11 @@ class CampaignRecord:
         mapping and a structured log record name the same things the same
         way.  ``ks_pvalue`` is absent rather than ``None``, because the
         column is not one this feature fills and reporting it as a null
-        would suggest the planner had an opinion about it.
+        would suggest the planner had an opinion about it.  The five grid
+        columns are present even when ``None`` — the opposite choice, and
+        deliberately: ``None`` there is the recorded fact *this campaign's
+        grid is unrecorded*, which is exactly what a reader of the mapping
+        needs to see, whereas ``ks_pvalue`` is a number another feature owns.
         """
         return {
             ID_COLUMN: self.campaign_id,
@@ -623,6 +860,11 @@ class CampaignRecord:
             NULL_FRACTION_COLUMN: self.null_fraction,
             "calibration_status": self.calibration_status,
             CREATED_AT_COLUMN: self.created_at,
+            EVALUATION_CONFIG_SHA256_COLUMN: self.evaluation_config_sha256,
+            HORIZON_COLUMN: self.horizon,
+            GRID_FIRST_DATE_COLUMN: self.grid_first_date,
+            GRID_LAST_DATE_COLUMN: self.grid_last_date,
+            OOS_FIRST_DATE_COLUMN: self.oos_first_date,
         }
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
@@ -740,6 +982,11 @@ class CampaignRecords:
         workspace_count: Any,
         *,
         campaign_id: Any = None,
+        evaluation_config_sha256: Any = None,
+        horizon: Any = None,
+        grid_first_date: Any = None,
+        grid_last_date: Any = None,
+        oos_first_date: Any = None,
     ) -> CampaignRecord:
         """Create one campaign's record, before any node is expanded.
 
@@ -769,10 +1016,28 @@ class CampaignRecords:
            row's, because features 123 and 124 write against that row by the
            id this call hands back.
 
+        The five **grid** keyword arguments — feature 4 — are the evaluation
+        grid the campaign ran on, written into the row beside the planning
+        facts above and all optional: ``evaluation_config_sha256`` (the
+        digest of the configuration file the run read), ``horizon``,
+        ``grid_first_date``, ``grid_last_date`` and ``oos_first_date``.
+        They are validated by the same helpers :class:`CampaignRecord` uses
+        (an ISO date that does not round-trip, a non-positive horizon, a
+        sha256 that is not a digest and a grid whose ends contradict each
+        other are all refused *before* the insert), and their defaults are
+        ``None`` — the honest value for a caller that has no grid to
+        record, which is every caller written before feature 4 and every
+        test that does not name one.  They are deliberately **not**
+        compared on the re-issued path (see :meth:`_reissued`): they
+        describe the run, not the plan.
+
         Refuses, in this order, each naming what it is about:
 
         * a type, count or id that is not the kind of value the feature's
           sentence is about (:class:`~discovery.errors.CampaignPlanningError`);
+        * a grid value that is not the shape its column holds
+          (:class:`~discovery.errors.CampaignPlanningError`), before any
+          database is opened;
         * a re-issued plan that disagrees with the stored row
           (:class:`~discovery.errors.CampaignOrderError`) — §7.3 fixes the
           regime and §4.1.1 the count at planning time, so a second
@@ -793,6 +1058,14 @@ class CampaignRecords:
         regime = _validated_campaign_type(campaign_type)
         wells = _validated_workspace_count(workspace_count)
         fraction = null_fraction(wells)
+        grid = self._validated_grid(
+            campaign,
+            evaluation_config_sha256=evaluation_config_sha256,
+            horizon=horizon,
+            grid_first_date=grid_first_date,
+            grid_last_date=grid_last_date,
+            oos_first_date=oos_first_date,
+        )
 
         with closing(self._connect()) as connection, connection:
             if campaign is not None:
@@ -800,7 +1073,7 @@ class CampaignRecords:
                 if stored is not None:
                     return self._reissued(stored, regime, wells, fraction)
             self._require_no_expanded_node(connection, campaign)
-            return self._insert(connection, campaign, regime, wells, fraction)
+            return self._insert(connection, campaign, regime, wells, fraction, grid)
 
     def get(self, campaign_id: Any) -> CampaignRecord | None:
         """One campaign's record, or ``None`` when it is not held.
@@ -830,6 +1103,97 @@ class CampaignRecords:
             return None
         return self._record_from_row(row)
 
+    # -- Feature 4: the evaluation grid -------------------------------------
+
+    def _present_grid_columns(
+        self, connection: sqlite3.Connection
+    ) -> tuple[str, ...]:
+        """The grid columns this database's ``campaign`` table actually has.
+
+        ``0120_campaign_evaluation_grid.py`` is the authority on the five
+        columns, but the table reaches this store through an *assembled*
+        chain and this member writes against whichever one the deployment
+        ran — the same rule :meth:`discovery.persist.AttemptLog._table_shape`
+        states from its own side (*"read from the live table rather than
+        assumed from the migration tree"*).  A database at ``0111`` alone
+        has none of the five, and this store must still plan a campaign on
+        it rather than raising ``no such column`` — which is why the read
+        path selects a literal ``NULL`` under each absent name (:meth:`_grid_select_list`)
+        and the write path omits the column entirely (:meth:`_insert`).
+
+        Returned in :data:`GRID_COLUMNS` order so the caller can append them
+        to a fixed select list and know which position each value lands in.
+        A table that does not exist at all answers with no rows from the
+        pragma — and therefore an empty tuple, which is the right answer:
+        the ``SELECT`` that follows raises SQLite's own ``no such table``,
+        which is the refusal :meth:`_connect` documents.
+        """
+        present = {
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({CAMPAIGN_TABLE})")
+        }
+        return tuple(column for column in GRID_COLUMNS if column in present)
+
+    def _grid_select_list(self, connection: sqlite3.Connection) -> str:
+        """The select-list text for the five grid columns, present or not.
+
+        A column the table has is selected by name; one it does not have is
+        selected as a literal ``NULL`` *under that name*, so the row this
+        store reads is always eleven values in the same order and
+        :meth:`_record_from_row` stays positional.  The alternative — a row
+        whose width depends on the revision — would make every read a
+        question about which columns came back, and the one thing a reader
+        of a nullable column needs is that an absent value and an unrecorded
+        one are indistinguishable, which is exactly what this produces.
+        """
+        present = self._present_grid_columns(connection)
+        return "".join(
+            f", {column}" if column in present else f", NULL AS {column}"
+            for column in GRID_COLUMNS
+        )
+
+    def _validated_grid(
+        self,
+        campaign: str | None,
+        *,
+        evaluation_config_sha256: Any,
+        horizon: Any,
+        grid_first_date: Any,
+        grid_last_date: Any,
+        oos_first_date: Any,
+    ) -> dict[str, Any]:
+        """The five grid values, validated and keyed by their column names.
+
+        One place where the write path's five keyword arguments are turned
+        into the five column values, so :meth:`_insert` reads a mapping
+        rather than five positional arguments that could be transposed —
+        ``grid_first_date`` and ``grid_last_date`` are both ISO text and
+        both nullable, which is exactly the pair a caller could swap without
+        anything refusing it.
+
+        The refusals are :class:`CampaignRecord`'s own helpers, called here
+        *before* a connection is opened: a malformed grid is a malformed
+        ask, and this member's rule for the type and the count — refuse
+        without touching a database — applies to these five for the same
+        reason.  ``campaign`` is the id the caller supplied, or ``None`` on
+        the minted path; the refusal message names what it can.
+        """
+        named = campaign or "a campaign with a minted id"
+        first = _validated_grid_date(grid_first_date, GRID_FIRST_DATE_COLUMN, named)
+        last = _validated_grid_date(grid_last_date, GRID_LAST_DATE_COLUMN, named)
+        _ordered_grid(first, last, named)
+        return {
+            EVALUATION_CONFIG_SHA256_COLUMN: _validated_config_sha256(
+                evaluation_config_sha256, named
+            ),
+            HORIZON_COLUMN: _validated_horizon(horizon, named),
+            GRID_FIRST_DATE_COLUMN: first,
+            GRID_LAST_DATE_COLUMN: last,
+            OOS_FIRST_DATE_COLUMN: _validated_grid_date(
+                oos_first_date, OOS_FIRST_DATE_COLUMN, named
+            ),
+        }
+
     # -- The words ----------------------------------------------------------
 
     def _read_row(
@@ -841,11 +1205,20 @@ class CampaignRecords:
         :meth:`_record_from_row` reads must be the order this names, and a
         migration that appends a column (features 123's and 124's writes
         already share this table) must not silently shift the fields.
+
+        The five grid columns are appended through
+        :meth:`_grid_select_list`, which substitutes a literal ``NULL`` for
+        any the database's table does not have yet — so the row is eleven
+        values wide on every revision, and this store serves a deployment
+        whose chain has not reached ``0120`` exactly as it did before
+        feature 4, with five ``None`` values rather than a
+        ``no such column``.
         """
         cursor = connection.execute(
             f"SELECT {ID_COLUMN}, {CAMPAIGN_TYPE_COLUMN}, "
             f"{WORKSPACE_COUNT_COLUMN}, {NULL_FRACTION_COLUMN}, "
-            f"calibration_status, {CREATED_AT_COLUMN} FROM {CAMPAIGN_TABLE} "
+            f"calibration_status, {CREATED_AT_COLUMN}"
+            f"{self._grid_select_list(connection)} FROM {CAMPAIGN_TABLE} "
             f"WHERE {ID_COLUMN} = ?",
             (campaign,),
         )
@@ -873,6 +1246,15 @@ class CampaignRecords:
                 null_fraction=row[3],
                 calibration_status=row[4],
                 created_at=row[5],
+                # The five grid columns, in GRID_COLUMNS order — the order
+                # ``_read_row``/``_read_latest_row`` append them in, and the
+                # reason both use ``_grid_select_list`` rather than spelling
+                # the five out themselves.
+                evaluation_config_sha256=row[6],
+                horizon=row[7],
+                grid_first_date=row[8],
+                grid_last_date=row[9],
+                oos_first_date=row[10],
             )
         except CampaignPlanningError as exc:
             raise CampaignPlanningError(
@@ -901,6 +1283,18 @@ class CampaignRecords:
         mismatch with an equal count means the stored row was written by
         something other than this arithmetic, which is worth naming
         separately rather than folding into the count's comparison.
+
+        **The five grid columns are deliberately not compared.**  They
+        describe the *run*, not the plan: a campaign's declared regime and
+        workspace count are §7.3's and §4.1.1's planning-time decisions,
+        but its horizon and its grid dates come off the evaluation context a
+        particular deployment ran under.  A retry that arrives with a
+        corrected grid, or with none at all, has not declared a second
+        campaign — and refusing it would leave the row carrying whatever the
+        first caller wrote, punishing the retry for the very correction
+        feature 4 exists to record.  The stored row's own grid values are
+        returned unchanged, the same answer this method gives for
+        ``created_at`` and ``calibration_status``.
         """
         stored = self._record_from_row(row)
         campaign = stored.campaign_id
@@ -1000,6 +1394,7 @@ class CampaignRecords:
         regime: str,
         wells: int,
         fraction: float,
+        grid: Mapping[str, Any],
     ) -> CampaignRecord:
         """Insert the campaign row and read it back — the write itself.
 
@@ -1020,18 +1415,34 @@ class CampaignRecords:
         the guard has not tested, which ``0111`` refuses for exactly that
         reason).
 
+        **Feature 4's five grid columns join them, and only those the
+        database actually has.**  ``grid`` carries all five values keyed by
+        column name, but a deployment whose chain has not reached
+        ``0120_campaign_evaluation_grid.py`` has none of the columns, and an
+        ``INSERT`` naming them would fail with ``no such column`` on a
+        database this store served yesterday.  :meth:`_present_grid_columns`
+        is read on the same connection, so the column list is the table's
+        own rather than the migration tree's — and the read-back below is
+        what states the resulting values, so a caller can never believe a
+        grid landed on a database that has no column for it.
+
         The row is then **read back inside the same transaction** — the
         store's own answer, not the arguments' — so the returned ``id`` is
         the one the table holds and features 123 and 124 will write against,
         and an ``INSERT`` that somehow landed nothing is caught here rather
         than surfacing as a phantom campaign at the first reader.
         """
+        present = self._present_grid_columns(connection)
+        written = tuple(column for column in GRID_COLUMNS if column in present)
         if campaign is None:
+            columns = [CAMPAIGN_TYPE_COLUMN, WORKSPACE_COUNT_COLUMN, NULL_FRACTION_COLUMN]
+            values: list[Any] = [regime, wells, fraction]
+            values.extend(grid[column] for column in written)
+            columns.extend(written)
             cursor = connection.execute(
-                f"INSERT INTO {CAMPAIGN_TABLE} ({CAMPAIGN_TYPE_COLUMN}, "
-                f"{WORKSPACE_COUNT_COLUMN}, {NULL_FRACTION_COLUMN}) "
-                "VALUES (?, ?, ?)",
-                (regime, wells, fraction),
+                f"INSERT INTO {CAMPAIGN_TABLE} ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                tuple(values),
             )
             identifier = cursor.lastrowid
             cursor.close()
@@ -1041,11 +1452,19 @@ class CampaignRecords:
             # the table knows what that default answered.
             row = self._read_latest_row(connection, identifier)
         else:
+            columns = [
+                ID_COLUMN,
+                CAMPAIGN_TYPE_COLUMN,
+                WORKSPACE_COUNT_COLUMN,
+                NULL_FRACTION_COLUMN,
+            ]
+            values = [campaign, regime, wells, fraction]
+            values.extend(grid[column] for column in written)
+            columns.extend(written)
             connection.execute(
-                f"INSERT INTO {CAMPAIGN_TABLE} ({ID_COLUMN}, "
-                f"{CAMPAIGN_TYPE_COLUMN}, {WORKSPACE_COUNT_COLUMN}, "
-                f"{NULL_FRACTION_COLUMN}) VALUES (?, ?, ?, ?)",
-                (campaign, regime, wells, fraction),
+                f"INSERT INTO {CAMPAIGN_TABLE} ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                tuple(values),
             )
             row = self._read_row(connection, campaign)
         if row is None:
@@ -1079,7 +1498,8 @@ class CampaignRecords:
         cursor = connection.execute(
             f"SELECT {ID_COLUMN}, {CAMPAIGN_TYPE_COLUMN}, "
             f"{WORKSPACE_COUNT_COLUMN}, {NULL_FRACTION_COLUMN}, "
-            f"calibration_status, {CREATED_AT_COLUMN} FROM {CAMPAIGN_TABLE} "
+            f"calibration_status, {CREATED_AT_COLUMN}"
+            f"{self._grid_select_list(connection)} FROM {CAMPAIGN_TABLE} "
             "WHERE rowid = ?",
             (rowid,),
         )
@@ -1099,6 +1519,11 @@ def create_campaign(
     campaign_id: Any = None,
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
+    evaluation_config_sha256: Any = None,
+    horizon: Any = None,
+    grid_first_date: Any = None,
+    grid_last_date: Any = None,
+    oos_first_date: Any = None,
 ) -> CampaignRecord:
     """Create one campaign's record — the module-level spelling.
 
@@ -1110,6 +1535,14 @@ def create_campaign(
     quietly skipped its write would leave the orchestrator expanding a tree
     whose campaign does not exist — and the seven readers that join this row
     would refuse every node of it.
+
+    Feature 4's five grid keyword arguments pass straight through to
+    :meth:`CampaignRecords.create`, all optional and all defaulting to
+    ``None`` — the driver
+    (:mod:`orchestrator._campaign`) is the caller that fills them, from the
+    :class:`~orchestrator._context.EvaluationContext` its run was built
+    with, and a caller that has no grid to record writes the same row it
+    wrote before this feature existed.
 
     A :class:`~discovery.errors.DiscoveryError` from the store is left to
     propagate unwrapped: the refusal already names the campaign and the fact,
@@ -1133,5 +1566,12 @@ def create_campaign(
             "that join this row"
         )
     return CampaignRecords(url).create(
-        campaign_type, workspace_count, campaign_id=campaign_id
+        campaign_type,
+        workspace_count,
+        campaign_id=campaign_id,
+        evaluation_config_sha256=evaluation_config_sha256,
+        horizon=horizon,
+        grid_first_date=grid_first_date,
+        grid_last_date=grid_last_date,
+        oos_first_date=oos_first_date,
     )

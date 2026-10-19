@@ -384,10 +384,21 @@ def _patch_fixed_campaign_id(monkeypatch: pytest.MonkeyPatch) -> None:
         campaign_id: Any = None,
         database_url: str | None = None,
         env: Any = None,
+        **grid: Any,
     ) -> Any:
+        # ``**grid`` is feature 4's five evaluation-grid columns
+        # (``evaluation_config_sha256``, ``horizon``, ``grid_first_date``,
+        # ``grid_last_date``, ``oos_first_date``).  The driver now passes
+        # them to every ``create_campaign`` call, so a double that spelled
+        # the old argument list would refuse a real run's own call — this
+        # stub forwards whatever it is given rather than enumerating a
+        # signature that grows.  The campaign id is still pinned, which is
+        # this patch's whole purpose; the grid is left to the real store,
+        # which validates it.
         return original(
             campaign_type, workspace_count,
             campaign_id=FIXED_CAMPAIGN_ID, database_url=database_url, env=env,
+            **grid,
         )
 
     monkeypatch.setattr(discovery, "create_campaign", fixed)

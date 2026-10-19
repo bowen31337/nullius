@@ -534,10 +534,16 @@ def _patch_fixed_campaign_id(mp: pytest.MonkeyPatch) -> None:
         campaign_id: Any = None,
         database_url: str | None = None,
         env: Any = None,
+        **grid: Any,
     ) -> Any:
+        # ``**grid`` carries feature 4's five evaluation-grid columns, which
+        # the driver now passes on every call; forwarding rather than
+        # enumerating keeps this stub working as the store's keyword-only
+        # arguments grow.
         return original(
             campaign_type, workspace_count,
             campaign_id=FIXED_CAMPAIGN_ID, database_url=database_url, env=env,
+            **grid,
         )
 
     mp.setattr(discovery, "create_campaign", fixed)
