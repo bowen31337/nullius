@@ -44,6 +44,12 @@
 #   ./run.sh bootstrap-fill [args] python -m bootstrap.fill
 #   ./run.sh dream          [args] python -m orchestrator.dream
 #   ./run.sh triage         [args] python -m tripwires.triage
+#   ./run.sh portfolio-oos  [args] python -m orchestrator.portfolio_oos:
+#                               scores a set of committed picks (--picks
+#                               PATH or --policy-version V) as one
+#                               equal-weight book out of sample and prints
+#                               K, mean, sd, t and N_eff as one JSON line;
+#                               writes nothing to the store
 #   ./run.sh vst-fidelity   [args] python -m router.vst_fidelity: report the
 #                               VST fidelity distributions (gap_bps, costs,
 #                               latency, fill ratio, rounding, funding) —
@@ -312,7 +318,7 @@ case "${cmd}" in
     exec docker compose -f "${SCRIPT_DIR}/docker-compose.yml" down
     ;;
 
-  canary|bootstrap-fill|dream|triage|migrate|llm-usage)
+  canary|bootstrap-fill|dream|triage|portfolio-oos|migrate|llm-usage)
     # None of these needs a secret, so they run with a CLEAN env, like the
     # other no-secret commands above — never wrapped in `op run`. Each shares
     # the research store with `campaign`, defaulting to the same path.
@@ -324,6 +330,7 @@ case "${cmd}" in
       bootstrap-fill) module="bootstrap.fill" ;;
       dream)          module="orchestrator.dream" ;;
       triage)         module="tripwires.triage" ;;
+      portfolio-oos)  module="orchestrator.portfolio_oos" ;;
       migrate)        module="app.migrate" ;;
       llm-usage)      module="providers.usage" ;;
     esac
