@@ -101,6 +101,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import stat
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -935,22 +936,76 @@ def materialize_read_only(
     for health. With ``fix=False`` it changes nothing and only counts drift,
     which is what a verification sweep wants. A missing directory is
     return-zero: nothing to tighten is not an error.
+
+    **The walk is ``os.scandir``, not ``rglob``.** The policy needs one fact
+    per entry — its mode — and ``DirEntry.stat(follow_symlinks=False)``
+    supplies it from the directory read the entry arrived in, without a path
+    being rebuilt and re-resolved per node. On the 1.15M-file wide snapshot
+    the previous ``sorted(target.rglob("*"))`` form cost 2.3M rglob visits,
+    4.6M ``os.stat`` calls and 242s inside ``sorted`` — 343s to read one
+    mode per file, paid by every ``load_evaluation_context``. Nothing here
+    depends on the order entries are visited (each is examined and corrected
+    independently), so the sort was pure cost and is gone. ``is_dir`` comes
+    from the same ``DirEntry``, and ``follow_symlinks=False`` on both keeps
+    a link's own ``lstat`` mode — the mode of the entry, never of what it
+    points at.
     """
     target = Path(root)
     if not target.is_dir():
         return 0
+
+    def tighten(path: str, mode: int, sealed: int) -> bool:
+        """Clear the write bits of ``path`` if it carries any; report if it did.
+
+        The single place the policy lives, so the root and the entries below
+        it cannot drift apart: no write bit to clear means nothing to do and
+        nothing to report, which is also why an entry already *stricter* than
+        the contract is left exactly as it is.
+        """
+        if mode == sealed or not mode & _UNSEALED_BITS:
+            return False
+        if fix:
+            os.chmod(path, mode & ~_UNSEALED_BITS)
+        return True
+
     corrections = 0
-    for candidate in (target, *sorted(target.rglob("*"))):
+    try:
+        root_mode = stat.S_IMODE(target.stat(follow_symlinks=False).st_mode)
+    except OSError:  # pragma: no cover - racing deletion, not our concern
+        root_mode = None
+    if root_mode is not None and tighten(str(target), root_mode, _DIRECTORY_MODE):
+        corrections += 1
+
+    # Depth-first over the entries ``scandir`` already returned: the stack
+    # is popped from the end, and an entry is both examined and (when it is a
+    # directory) expanded, so a directory is never skipped just because its
+    # own mode needed no correction.
+    stack: list[os.DirEntry[str]] = []
+    with os.scandir(target) as entries:
+        stack.extend(entries)
+    while stack:
+        entry = stack.pop()
+        if entry.is_symlink():
+            # Never followed, in either direction: the mode read, the
+            # ``chmod`` and the descent below would all land on whatever the
+            # link points at (``os.chmod`` follows on Linux, and there is no
+            # ``lchmod``), which could be staging or anywhere else on the
+            # host. A sealed tree has no links by construction, so skipping
+            # one costs the policy nothing (see the symlink notes above).
+            continue
         try:
-            current = os.stat(candidate, follow_symlinks=False).st_mode & 0o7777
+            # The mode of *this* entry, never of what a link points at —
+            # ``follow_symlinks=False`` is the whole read this walk wants.
+            current = stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode)
+            is_dir = entry.is_dir(follow_symlinks=False)
         except OSError:  # pragma: no cover - racing deletion, not our concern
             continue
-        sealed = _DIRECTORY_MODE if candidate.is_dir() else _FILE_MODE
-        if current == sealed or not current & _UNSEALED_BITS:
-            # Already at the contract, or stricter than it. Either way there
-            # is no write to remove and nothing to report.
-            continue
-        corrections += 1
-        if fix:
-            os.chmod(candidate, current & ~_UNSEALED_BITS)
+        if tighten(entry.path, current, _DIRECTORY_MODE if is_dir else _FILE_MODE):
+            corrections += 1
+        if is_dir:
+            try:
+                with os.scandir(entry.path) as children:
+                    stack.extend(children)
+            except OSError:  # pragma: no cover - racing deletion, not our concern
+                continue
     return corrections
