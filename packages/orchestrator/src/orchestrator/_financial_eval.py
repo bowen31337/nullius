@@ -87,7 +87,13 @@ their in-sample grids ended inside the OOS window):
   (:func:`orchestrator._targets.snapshot_forward_returns` reads the request's
   own), and a campaign that records none (``NULL``, every row written before
   ``0120_campaign_evaluation_grid.py``) is scored at the context's horizon,
-  exactly as before;
+  exactly as before.  Since bug_spec_metrics_horizon.xml bug 2, the
+  re-horizoned context's ``metrics_horizon_value`` follows the replacement
+  when the evaluation config sets ``metrics_horizon`` to ``"configured"``
+  (``EvaluationContext.metrics_horizon_value`` is derived from ``horizon``),
+  so under that mode the read is *measured* at the campaign's own horizon;
+  under the default ``"shortest"`` the metrics keep the shortest-covered
+  policy exactly as before;
 * a campaign is admitted as a financial world only through
   :func:`admit_financial_worlds` -- the shared admission helper -- which,
   beside the standing VOID filter, excludes a campaign whose recorded
@@ -594,7 +600,15 @@ def _oos_ir(node_id: str, *, campaign_id: str, context: FinancialEvalContext) ->
     horizon the pick was *selected for* is the horizon it is judged on, never
     the dreaming context's own.  :func:`_dream_oracle` serves the requested
     horizon out of the same snapshot's real forward returns, so the read stays
-    one oracle over one grid.  A campaign row with no ``horizon`` (or no row
+    one oracle over one grid.  Since bug_spec_metrics_horizon.xml bug 2, the
+    replacement reaches the *metrics* too: the re-horizoned context's
+    ``metrics_horizon_value`` resolves to the campaign's horizon when the
+    evaluation config sets ``metrics_horizon`` to ``"configured"``
+    (:class:`orchestrator._context.EvaluationContext` derives the value from
+    ``horizon``, so the ``replace`` re-resolves it), and under the default
+    ``"shortest"`` the metrics keep the shortest-covered policy exactly as
+    they always were -- the pre-fix state, where this replacement moved only
+    the cache key.  A campaign row with no ``horizon`` (or no row
     at all) scores at ``context.evaluation.horizon`` exactly as before this
     law existed.  The horizon is part of the cache key because it is part of
     the measurement: the same node scored under two horizons is two figures.

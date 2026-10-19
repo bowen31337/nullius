@@ -1340,6 +1340,7 @@ def _gross_ir_tstat(
     betas: Mapping[dt.date, Mapping[str, float]] | None = None,
     vols: Mapping[dt.date, Mapping[str, float]] | None = None,
     weighting: str = Z_WEIGHTING,
+    horizon: int | None = None,
 ) -> float:
     """``ir_tstat`` recomputed over the same panel with no turnover charge.
 
@@ -1358,7 +1359,11 @@ def _gross_ir_tstat(
     of the tail-decile book too: ``vols`` alone cannot say it, because
     ``"tail_decile"`` carries no side panel, so a gross diagnostic that
     only forwarded the panel would silently measure a z-weighted book
-    against a tail-decile net figure.
+    against a tail-decile net figure.  ``horizon``
+    (bug_spec_metrics_horizon.xml bug 2) is handed through for the same
+    reason again: the gross figure is measured over the same horizon's
+    series as the net one, never the shortest covered one the config did
+    not name.
     """
     gross = compute_node_metrics(
         priced,
@@ -1367,6 +1372,7 @@ def _gross_ir_tstat(
         betas=betas,
         vols=vols,
         weighting=weighting,
+        horizon=horizon,
     )
     return gross.ir_standalone * math.sqrt(gross.dates)
 
@@ -1997,6 +2003,18 @@ def evaluate_node(
     """
     if context.sandbox_runtime == "unisolated":
         _logger.warning("unisolated sandbox: evaluating node %s", node_id)
+    # bug_spec_metrics_horizon.xml bug 2: the evaluation line names the book's
+    # weighting and the horizon the metrics are measured at, so a "horizon 5"
+    # campaign's log carries the mode its numbers were actually reduced under.
+    _logger.info(
+        "evaluating node %s: book weighting %r, metrics_horizon %r (measuring %s)",
+        node_id,
+        context.book.weighting,
+        context.metrics_horizon,
+        "the shortest covered horizon"
+        if context.metrics_horizon_value is None
+        else f"horizon {context.metrics_horizon_value}",
+    )
 
     decision = sandbox.sandbox_imports().screen(code)
     if not decision.admitted:
@@ -2073,6 +2091,7 @@ def evaluate_node(
             betas=betas,
             vols=vols,
             weighting=context.book.weighting,
+            horizon=context.metrics_horizon_value,
         )
         tripwire_outcome = run_tripwires(
             scores,
@@ -2124,6 +2143,7 @@ def evaluate_node(
         betas=betas,
         vols=vols,
         weighting=context.book.weighting,
+        horizon=context.metrics_horizon_value,
     )
 
     _persist_tripwire_verdicts(
@@ -2370,6 +2390,7 @@ def evaluate_on_dates(
         betas=betas,
         vols=vols,
         weighting=context.book.weighting,
+        horizon=context.metrics_horizon_value,
     )
     return _OutOfSampleEvaluation(
         metrics,
@@ -2380,5 +2401,6 @@ def evaluate_on_dates(
             betas=betas,
             vols=vols,
             weighting=context.book.weighting,
+            horizon=context.metrics_horizon_value,
         ),
     )

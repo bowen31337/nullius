@@ -190,6 +190,7 @@ __all__ = [
     "DEFAULT_EXECUTION",
     "DEFAULT_INSTRUMENT",
     "DEFAULT_MAX_HISTORY_DAYS",
+    "DEFAULT_METRICS_HORIZON",
     "DEFAULT_VOL_WINDOW_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
@@ -210,6 +211,10 @@ __all__ = [
     "LAKE_ROOTS_KEY",
     "MAX_EVALUATION_WORKERS",
     "MAX_HISTORY_DAYS_KEY",
+    "METRICS_HORIZONS",
+    "METRICS_HORIZON_CONFIGURED",
+    "METRICS_HORIZON_KEY",
+    "METRICS_HORIZON_SHORTEST",
     "MIN_EVALUATION_WORKERS",
     "MIN_VOL_WINDOW_DAYS",
     "OOS_DATES_KEY",
@@ -428,6 +433,40 @@ EXECUTIONS: Final[tuple[str, str]] = (TAKER, MAKER)
 #: taker behaviour, unchanged, the same stance :data:`DEFAULT_INSTRUMENT`
 #: and :data:`DEFAULT_EVALUATION_MODE` take toward their own optional keys.
 DEFAULT_EXECUTION: Final[str] = TAKER
+
+#: The optional key choosing which horizon the node metrics themselves are
+#: measured at — bug_spec_metrics_horizon.xml bug 2.  Both evaluation chains
+#: align and gate all of :data:`evaluator.HORIZONS`, so the panel a
+#: ``compute_node_metrics`` call reduces over carries every horizon the
+#: oracle answered, and before this key the metrics silently took the
+#: shortest covered one — always 1 — whatever ``horizon`` the campaign was
+#: configured and selected under.  Optional, the same stance
+#: :data:`EXECUTION_KEY` takes toward its own two-member set: a document
+#: that omits it gets :data:`DEFAULT_METRICS_HORIZON` rather than a
+#: refusal, since "the shortest covered horizon" is what every evaluation
+#: config written before this key existed already measured.
+METRICS_HORIZON_KEY: Final[str] = "metrics_horizon"
+
+#: :data:`METRICS_HORIZON_KEY`'s two values.  ``"shortest"`` keeps
+#: :func:`evaluator.compute_node_metrics`'s own shortest-covered policy —
+#: every number this system has ever stored was measured that way, and a
+#: default that moved them would rewrite the meaning of rows this fix is
+#: forbidden to touch.  ``"configured"`` asks for the campaign's own
+#: :attr:`EvaluationContext.horizon`, through the derived
+#: :attr:`EvaluationContext.metrics_horizon_value` the evaluation chains
+#: hand to every metrics call.
+METRICS_HORIZON_SHORTEST: Final[str] = "shortest"
+METRICS_HORIZON_CONFIGURED: Final[str] = "configured"
+METRICS_HORIZONS: Final[tuple[str, str]] = (
+    METRICS_HORIZON_SHORTEST,
+    METRICS_HORIZON_CONFIGURED,
+)
+
+#: :data:`METRICS_HORIZON_KEY`'s default when the document omits it — the
+#: shortest covered horizon, today's behaviour unchanged, the same stance
+#: :data:`DEFAULT_EXECUTION` and :data:`DEFAULT_BOOK_WEIGHTING` take toward
+#: their own optional keys.
+DEFAULT_METRICS_HORIZON: Final[str] = METRICS_HORIZON_SHORTEST
 
 #: The optional key naming the out-of-sample evaluation grid —
 #: additions_spec_m2_baseline_financial_worlds.xml feature 1.  Absent means
@@ -754,6 +793,38 @@ class EvaluationContext:
     #: :attr:`~cost_model.FeeSchedule.passive_penalty_fraction` is not
     #: ``None``.
     execution: str = DEFAULT_EXECUTION
+    #: The mode choosing which horizon the node metrics are measured at —
+    #: :data:`METRICS_HORIZON_SHORTEST` (the default) or
+    #: :data:`METRICS_HORIZON_CONFIGURED` — read from the optional
+    #: :data:`METRICS_HORIZON_KEY`.  With the default,
+    #: :func:`evaluator.compute_node_metrics` keeps its own
+    #: shortest-covered policy and every number is exactly what it was
+    #: before this key existed.  With ``"configured"``, the derived
+    #: :attr:`metrics_horizon_value` names :attr:`horizon`, so the
+    #: evaluation chains measure — and an out-of-sample read re-measures,
+    #: through ``dataclasses.replace(context, horizon=…)`` — at the horizon
+    #: the campaign was configured under.
+    metrics_horizon: str = DEFAULT_METRICS_HORIZON
+
+    @property
+    def metrics_horizon_value(self) -> int | None:
+        """The horizon the metrics are measured at, or ``None`` for "shortest".
+
+        ``None`` under :data:`METRICS_HORIZON_SHORTEST` — the caller hands
+        ``compute_node_metrics`` no horizon and its own shortest-covered
+        policy applies — and :attr:`horizon` under
+        :data:`METRICS_HORIZON_CONFIGURED`.  A property, not a field, on
+        purpose: it is *derived* from :attr:`horizon`, so
+        ``dataclasses.replace(context, horizon=h)`` — the seam
+        :func:`orchestrator._financial_eval._oos_ir` and
+        :func:`orchestrator.portfolio_oos._score_pick_oos` re-horizon a
+        context through — re-resolves it to ``h`` under ``"configured"``,
+        which is what makes that re-horizoning reach the metrics rather
+        than only a cache key.
+        """
+        if self.metrics_horizon == METRICS_HORIZON_CONFIGURED:
+            return self.horizon
+        return None
 
 
 def load_evaluation_context(
@@ -809,6 +880,7 @@ def load_evaluation_context(
     book = _book_config(document, named)
     instrument = _instrument(document, named)
     execution = _execution(document, named)
+    metrics_horizon = _metrics_horizon(document, named)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -887,6 +959,7 @@ def load_evaluation_context(
         instrument=instrument,
         funding=funding,
         execution=execution,
+        metrics_horizon=metrics_horizon,
     )
 
 
@@ -958,6 +1031,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             BOOK_KEY,
             INSTRUMENT_KEY,
             EXECUTION_KEY,
+            METRICS_HORIZON_KEY,
         )
     )
     for key in document:
@@ -971,8 +1045,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
                 f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r}, "
-                f"{OOS_DATES_KEY!r}, {BOOK_KEY!r}, {INSTRUMENT_KEY!r} and "
-                f"{EXECUTION_KEY!r}); "
+                f"{OOS_DATES_KEY!r}, {BOOK_KEY!r}, {INSTRUMENT_KEY!r}, "
+                f"{EXECUTION_KEY!r} and {METRICS_HORIZON_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -1324,6 +1398,34 @@ def _execution(document: Mapping[str, Any], named: str) -> str:
             "crossing order at the venue's taker fee, or a resting order "
             "at the maker fee plus its queue-position penalty — and a "
             "third spelling is refused rather than guessed"
+        )
+    return raw
+
+
+def _metrics_horizon(document: Mapping[str, Any], named: str) -> str:
+    """Which horizon the node metrics are measured at —
+    :data:`DEFAULT_METRICS_HORIZON` when :data:`METRICS_HORIZON_KEY` is
+    absent.
+
+    bug_spec_metrics_horizon.xml bug 2's own rule: the key is optional with
+    a closed two-member vocabulary, and a present value outside
+    :data:`METRICS_HORIZONS` is refused by name — the same stance
+    :func:`_execution`, :func:`_instrument` and the ``"book"`` document's
+    own ``weighting`` parser take toward their sets.  A refused spelling
+    names the mode, never a horizon: the horizon itself is
+    :data:`REQUIRED_KEYS`'s own ``horizon`` key, unchanged.
+    """
+    if METRICS_HORIZON_KEY not in document:
+        return DEFAULT_METRICS_HORIZON
+    raw = document[METRICS_HORIZON_KEY]
+    if not isinstance(raw, str) or raw not in METRICS_HORIZONS:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {METRICS_HORIZON_KEY} must be one "
+            f"of {', '.join(repr(name) for name in METRICS_HORIZONS)}, got "
+            f"{raw!r}; this chooses which horizon the node metrics are "
+            "measured at — the shortest one the priced panel covers, or "
+            "the horizon this document's own 'horizon' key configures — "
+            "and a third spelling is refused rather than guessed"
         )
     return raw
 
