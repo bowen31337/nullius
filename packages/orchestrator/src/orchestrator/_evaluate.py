@@ -118,7 +118,14 @@ answers this evaluation's point-in-time per-date betas from
 silently measured against a different book from the other.  ``None`` when
 the block is absent or ``beta_neutral`` is false, which reproduces every
 figure exactly as this module measured them before the book carried an
-opinion.
+opinion.  The same holds for the book's *weighting*: when
+``context.book.weighting`` is ``"inverse_vol"``,
+:func:`orchestrator._context.compute_vols` answers this evaluation's
+point-in-time per-date realised volatilities from the same ``closes``, and
+both chains hand them to the same two calls as ``vols=`` — one key in the
+evaluation config switches the whole engine to volatility-scaled books.
+With ``"z"`` (the default, key absent or spelled ``"z"``) ``vols`` stays
+``None`` and every figure is unchanged.
 
 **``charges_budget`` is the oracle's bit, nothing else, and it defaults
 conservatively until the oracle has spoken.**  Before ``gate_targets`` asks
@@ -202,9 +209,11 @@ from ._charge import charge_failed_node, charge_node
 from ._context import (
     BARS_STREAM,
     DEFAULT_MAX_HISTORY_DAYS,
+    INVERSE_VOL_WEIGHTING,
     PERP_INSTRUMENT,
     EvaluationContext,
     compute_betas,
+    compute_vols,
     signal_sandbox,
 )
 from ._tree_writer import NodeMetricsWriter
@@ -891,6 +900,7 @@ def _gross_ir_tstat(
     scores: Mapping[Any, Any],
     *,
     betas: Mapping[dt.date, Mapping[str, float]] | None = None,
+    vols: Mapping[dt.date, Mapping[str, float]] | None = None,
 ) -> float:
     """``ir_tstat`` recomputed over the same panel with no turnover charge.
 
@@ -901,10 +911,13 @@ def _gross_ir_tstat(
     node's own book.  ``betas`` (additions_spec_research_book_v2.xml feature
     2) is handed through unchanged, so the gross diagnostic is measured
     over the same beta-neutral book as the net figure — never the plain
-    dollar-neutral one the net figure no longer is.
+    dollar-neutral one the net figure no longer is.  ``vols`` is handed
+    through unchanged for the same reason: the gross figure is measured
+    over the same inverse-volatility (or z-weighted) book as the net one,
+    never a different weighting the config did not name.
     """
     gross = compute_node_metrics(
-        priced, scores, cost_per_unit_traded=0.0, betas=betas
+        priced, scores, cost_per_unit_traded=0.0, betas=betas, vols=vols
     )
     return gross.ir_standalone * math.sqrt(gross.dates)
 
@@ -1588,6 +1601,11 @@ def evaluate_node(
         execution, dropped_perp_symbols = _drop_unpriced_symbols(execution, context)
         scores, flat_dates = _score_rebalance_dates(execution, node_id)
         betas = compute_betas(context, scores) if context.book.beta_neutral else None
+        vols = (
+            compute_vols(context, scores)
+            if context.book.weighting == INVERSE_VOL_WEIGHTING
+            else None
+        )
         alignment = align_targets(execution, context.closes)
         gated = gate_targets(
             alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
@@ -1604,6 +1622,7 @@ def evaluate_node(
             scores,
             cost_per_unit_traded=_turnover_fee_from_context(context),
             betas=betas,
+            vols=vols,
         )
         tripwire_outcome = run_tripwires(
             scores,
@@ -1649,7 +1668,7 @@ def evaluate_node(
 
     cost_adjusted_ir = _cost_adjusted_ir(priced, metrics)
     ir_tstat = metrics.ir_standalone * math.sqrt(metrics.dates)
-    ir_tstat_gross = _gross_ir_tstat(priced, scores, betas=betas)
+    ir_tstat_gross = _gross_ir_tstat(priced, scores, betas=betas, vols=vols)
 
     _persist_tripwire_verdicts(
         tripwire_outcome, node_id=node_id, database_url=context.database_url
@@ -1873,6 +1892,11 @@ def evaluate_on_dates(
     execution, _dropped_perp_symbols = _drop_unpriced_symbols(execution, context)
     scores, _flat_dates = _score_rebalance_dates(execution, node_id)
     betas = compute_betas(context, scores) if context.book.beta_neutral else None
+    vols = (
+        compute_vols(context, scores)
+        if context.book.weighting == INVERSE_VOL_WEIGHTING
+        else None
+    )
     alignment = align_targets(execution, context.closes)
     gated = gate_targets(
         alignment, oracle, node_id=node_id, campaign_id=campaign_id, depth=depth
@@ -1888,9 +1912,10 @@ def evaluate_on_dates(
         scores,
         cost_per_unit_traded=_turnover_fee_from_context(context),
         betas=betas,
+        vols=vols,
     )
     return _OutOfSampleEvaluation(
         metrics,
         _cost_adjusted_ir(priced, metrics),
-        _gross_ir_tstat(priced, scores, betas=betas),
+        _gross_ir_tstat(priced, scores, betas=betas, vols=vols),
     )

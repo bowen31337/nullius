@@ -178,13 +178,16 @@ __all__ = [
     "ACKNOWLEDGE_UNISOLATED_KEY",
     "BARS_STREAM",
     "BOOK_KEY",
+    "BOOK_WEIGHTINGS",
     "BWRAP_RUNTIME",
     "DEFAULT_BETA_BENCHMARK",
     "DEFAULT_BETA_WINDOW_DAYS",
+    "DEFAULT_BOOK_WEIGHTING",
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
     "DEFAULT_INSTRUMENT",
     "DEFAULT_MAX_HISTORY_DAYS",
+    "DEFAULT_VOL_WINDOW_DAYS",
     "EVALUATION_CONFIG_CODE",
     "EVALUATION_CONFIG_ENV",
     "EVALUATION_MODES",
@@ -197,21 +200,25 @@ __all__ = [
     "GVISOR_STATE_ROOT_KEY",
     "INSTRUMENTS",
     "INSTRUMENT_KEY",
+    "INVERSE_VOL_WEIGHTING",
     "ISOLATION_REQUIRED",
     "LAKE_ROOTS_KEY",
     "MAX_EVALUATION_WORKERS",
     "MAX_HISTORY_DAYS_KEY",
     "MIN_EVALUATION_WORKERS",
+    "MIN_VOL_WINDOW_DAYS",
     "OOS_DATES_KEY",
     "PERP_INSTRUMENT",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "SPOT_INSTRUMENT",
     "TEST_STUB_SANDBOX_ENV",
+    "Z_WEIGHTING",
     "BookConfig",
     "EvaluationConfigError",
     "EvaluationContext",
     "compute_betas",
+    "compute_vols",
     "load_evaluation_context",
     "signal_sandbox",
 ]
@@ -408,14 +415,17 @@ OOS_DATES_KEY: Final[str] = "oos_dates"
 #: unchanged-behaviour stance :data:`MAX_HISTORY_DAYS_KEY` takes toward its
 #: own optional knob.  Present, its value is a JSON object validated by
 #: :func:`_book_config`: a closed vocabulary of its own
-#: (``beta_neutral``, ``beta_window_days``, ``beta_benchmark``), so a
-#: typo'd inner key is refused rather than silently ignored.
+#: (``beta_neutral``, ``beta_window_days``, ``beta_benchmark``,
+#: ``weighting``, ``vol_window_days``), so a typo'd inner key is refused
+#: rather than silently ignored.
 BOOK_KEY: Final[str] = "book"
 
-#: :data:`BOOK_KEY`'s three inner keys.
+#: :data:`BOOK_KEY`'s five inner keys.
 _BOOK_BETA_NEUTRAL_KEY: Final[str] = "beta_neutral"
 _BOOK_BETA_WINDOW_DAYS_KEY: Final[str] = "beta_window_days"
 _BOOK_BETA_BENCHMARK_KEY: Final[str] = "beta_benchmark"
+_BOOK_WEIGHTING_KEY: Final[str] = "weighting"
+_BOOK_VOL_WINDOW_DAYS_KEY: Final[str] = "vol_window_days"
 
 #: ``beta_window_days``' default — the trailing daily returns a point-in-time
 #: beta is regressed over, when the document omits the key.
@@ -424,6 +434,39 @@ DEFAULT_BETA_WINDOW_DAYS: Final[int] = 60
 #: ``beta_benchmark``'s default — the symbol :func:`compute_betas` regresses
 #: every other symbol's returns on, when the document omits the key.
 DEFAULT_BETA_BENCHMARK: Final[str] = "BTCUSDT"
+
+#: The two weightings :data:`BOOK_KEY`'s ``weighting`` inner key accepts —
+#: closed, the same stance :data:`INSTRUMENTS` takes toward its own
+#: two-member set: ``"z"`` is today's score-proportional book, unchanged;
+#: ``"inverse_vol"`` divides each score by its own symbol's point-in-time
+#: realised volatility before the book is normalized (see
+#: :func:`compute_vols`).  A third spelling is refused by name rather than
+#: guessed, because a weighting is the whole book's construction — running
+#: one a document never named is measuring a different portfolio than the
+#: one the campaign configured.
+Z_WEIGHTING: Final[str] = "z"
+INVERSE_VOL_WEIGHTING: Final[str] = "inverse_vol"
+BOOK_WEIGHTINGS: Final[tuple[str, str]] = (Z_WEIGHTING, INVERSE_VOL_WEIGHTING)
+
+#: ``weighting``'s default when the document omits it — today's book,
+#: unchanged, the same stance :data:`DEFAULT_INSTRUMENT` takes toward its own
+#: optional key.
+DEFAULT_BOOK_WEIGHTING: Final[str] = Z_WEIGHTING
+
+#: ``vol_window_days``' default — the trailing daily returns a point-in-time
+#: volatility is measured over, when the document omits the key.  The same
+#: 60 :data:`DEFAULT_BETA_WINDOW_DAYS` carries, for the same reason: a
+#: season of daily returns is what either estimate is asking the window for.
+DEFAULT_VOL_WINDOW_DAYS: Final[int] = 60
+
+#: ``vol_window_days``' floor.  A volatility measured over fewer than twenty
+#: returns is noise dressed as a scale — it weights the book on the strength
+#: of a fortnight — so a shorter window is refused rather than honoured,
+#: unlike ``beta_window_days``' own positive-any bound: a beta is a
+#: *relative* figure the rescale only uses to balance legs, while a vol is
+#: an *absolute* scale the weights divide by, and a bad one bends every
+#: weight in the book.
+MIN_VOL_WINDOW_DAYS: Final[int] = 20
 
 #: Test-only environment variable naming a stub signal executor as
 #: ``"<path-to-.py-file>:<zero-arg-factory-name>"`` — read directly off
@@ -466,15 +509,19 @@ class EvaluationConfigError(Exception):
 class BookConfig:
     """The research book's construction — :data:`BOOK_KEY`'s parsed value.
 
-    ``beta_neutral=False`` (with the other two fields at their own
-    defaults) is what every context carries when the document omits
-    :data:`BOOK_KEY` entirely — today's plain dollar-neutral book,
-    unchanged.  With ``beta_neutral=True``,
-    :func:`orchestrator._evaluate.evaluate_node` and
-    :func:`~orchestrator._evaluate.evaluate_on_dates` ask :func:`compute_betas`
-    for this evaluation's point-in-time betas and hand them to
-    :func:`evaluator.compute_node_metrics`, which rescales each date's book so
-    its long and short legs carry equal benchmark beta.
+    ``beta_neutral=False`` (with the other fields at their own defaults) is
+    what every context carries when the document omits :data:`BOOK_KEY`
+    entirely — today's plain dollar-neutral book, unchanged.  With
+    ``beta_neutral=True``, :func:`orchestrator._evaluate.evaluate_node` and
+    :func:`~orchestrator._evaluate.evaluate_on_dates` ask
+    :func:`compute_betas` for this evaluation's point-in-time betas and hand
+    them to :func:`evaluator.compute_node_metrics`, which rescales each
+    date's book so its long and short legs carry equal benchmark beta.  With
+    ``weighting="inverse_vol"``, the same two chains ask :func:`compute_vols`
+    for this evaluation's point-in-time volatilities and hand those to the
+    same call, which divides each score by its own symbol's vol before the
+    book is normalized — one key in the evaluation config switches the whole
+    engine to volatility-scaled books, and no other change is needed.
     """
 
     #: Whether the book is rescaled to be benchmark-beta-neutral.
@@ -485,6 +532,16 @@ class BookConfig:
     #: The symbol every beta is regressed against —
     #: :data:`DEFAULT_BETA_BENCHMARK` when the document omits it.
     beta_benchmark: str = DEFAULT_BETA_BENCHMARK
+    #: Which weighting each date's book is built under —
+    #: :data:`Z_WEIGHTING` (score-proportional, today's book) or
+    #: :data:`INVERSE_VOL_WEIGHTING` (each score divided by its own symbol's
+    #: point-in-time realised volatility before normalization).
+    #: :data:`DEFAULT_BOOK_WEIGHTING` when the document omits it.
+    weighting: str = DEFAULT_BOOK_WEIGHTING
+    #: How many trailing daily returns a point-in-time volatility is measured
+    #: over — :data:`DEFAULT_VOL_WINDOW_DAYS` when the document omits it,
+    #: never below :data:`MIN_VOL_WINDOW_DAYS`.
+    vol_window_days: int = DEFAULT_VOL_WINDOW_DAYS
 
 
 @dataclass(frozen=True)
@@ -1025,9 +1082,15 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
     Present, the value must be a JSON object holding only
     ``beta_neutral`` (required — there is no default for the field that
     decides whether the book is rescaled at all), ``beta_window_days``
-    (a positive integer, :data:`DEFAULT_BETA_WINDOW_DAYS` when absent)
-    and ``beta_benchmark`` (a non-blank string, :data:`DEFAULT_BETA_BENCHMARK`
-    when absent); any other inner key is refused by name, the same closed
+    (a positive integer, :data:`DEFAULT_BETA_WINDOW_DAYS` when absent),
+    ``beta_benchmark`` (a non-blank string, :data:`DEFAULT_BETA_BENCHMARK`
+    when absent), ``weighting`` (one of :data:`BOOK_WEIGHTINGS`,
+    :data:`DEFAULT_BOOK_WEIGHTING` when absent — a key of its own rather
+    than folded into ``beta_neutral``, because the two constructions are
+    independent: a book can be inverse-vol weighted and not beta-neutral,
+    or both, or neither) and ``vol_window_days`` (an integer of at least
+    :data:`MIN_VOL_WINDOW_DAYS`, :data:`DEFAULT_VOL_WINDOW_DAYS` when
+    absent); any other inner key is refused by name, the same closed
     vocabulary discipline :func:`_refuse_unknown_keys` holds for the
     outer document.
     """
@@ -1040,7 +1103,13 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
             f"object, got {type(raw).__name__}"
         )
     allowed = frozenset(
-        (_BOOK_BETA_NEUTRAL_KEY, _BOOK_BETA_WINDOW_DAYS_KEY, _BOOK_BETA_BENCHMARK_KEY)
+        (
+            _BOOK_BETA_NEUTRAL_KEY,
+            _BOOK_BETA_WINDOW_DAYS_KEY,
+            _BOOK_BETA_BENCHMARK_KEY,
+            _BOOK_WEIGHTING_KEY,
+            _BOOK_VOL_WINDOW_DAYS_KEY,
+        )
     )
     for key in raw:
         if key not in allowed:
@@ -1082,10 +1151,41 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
             f"must be a non-blank symbol string, got {benchmark_raw!r} "
             f"({type(benchmark_raw).__name__})"
         )
+    weighting_raw = raw.get(_BOOK_WEIGHTING_KEY, DEFAULT_BOOK_WEIGHTING)
+    if not isinstance(weighting_raw, str) or weighting_raw not in BOOK_WEIGHTINGS:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {BOOK_KEY}.{_BOOK_WEIGHTING_KEY} must "
+            f"be one of {', '.join(repr(name) for name in BOOK_WEIGHTINGS)}, "
+            f"got {weighting_raw!r}; the weighting is the whole book's "
+            "construction — 'z' weights each name by its own score, "
+            f"'{INVERSE_VOL_WEIGHTING}' divides each score by its own "
+            "symbol's realised volatility first — and a value outside that "
+            "closed set is refused rather than guessed, because running a "
+            "weighting the document never named would measure a portfolio "
+            "the campaign did not configure"
+        )
+    vol_window_raw = raw.get(
+        _BOOK_VOL_WINDOW_DAYS_KEY, DEFAULT_VOL_WINDOW_DAYS
+    )
+    if (
+        isinstance(vol_window_raw, bool)
+        or not isinstance(vol_window_raw, int)
+        or vol_window_raw < MIN_VOL_WINDOW_DAYS
+    ):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: "
+            f"{BOOK_KEY}.{_BOOK_VOL_WINDOW_DAYS_KEY} must be an integer of "
+            f"at least {MIN_VOL_WINDOW_DAYS} (a count of daily returns), "
+            f"got {vol_window_raw!r} ({type(vol_window_raw).__name__}); a "
+            "volatility over a shorter window is noise the whole book's "
+            "weights would be divided by"
+        )
     return BookConfig(
         beta_neutral=beta_neutral,
         beta_window_days=window_raw,
         beta_benchmark=benchmark_raw,
+        weighting=weighting_raw,
+        vol_window_days=vol_window_raw,
     )
 
 
@@ -2185,15 +2285,16 @@ def _cost_inputs(
     return cost_model, cost_schedule, cost_model_hash
 
 
-# -- The beta-neutral book: point-in-time betas, read from context.closes ------
+# -- The configured book: point-in-time betas and vols, from context.closes -----
 
 
 def _beta_window_dates(end: dt.date, window_days: int) -> tuple[dt.date, ...]:
     """The ``window_days`` calendar dates ending at and including ``end``.
 
     Never a date after ``end`` — the point-in-time discipline
-    :func:`compute_betas` holds throughout: a beta for ``end`` is regressed
-    only over returns whose own entry and exit dates are both at or before it.
+    :func:`compute_betas` and :func:`compute_vols` hold throughout: a figure
+    for ``end`` is measured only over returns whose own entry and exit dates
+    are both at or before it.
     """
     return tuple(
         end - dt.timedelta(days=offset) for offset in range(window_days - 1, -1, -1)
@@ -2316,6 +2417,90 @@ def compute_betas(
     """
     return {
         day: _betas_for_date(context, day, row) for day, row in scores.items() if row
+    }
+
+
+#: The fraction of a vol window's returns a symbol must carry to be measured
+#: at all — half the window, compared as ``count * 2 >= vol_window_days``
+#: rather than a float ratio so the threshold is exact for odd window
+#: lengths.  A symbol under it gets *no* volatility (it is simply absent
+#: from that date's row), which the consumer refuses by name — see
+#: :func:`compute_vols`.
+_VOL_COVERAGE_DENOMINATOR: Final[int] = 2
+
+
+def _population_std(values: Iterable[float]) -> float:
+    """The population standard deviation (``ddof=0``) of ``values``.
+
+    The whole window's dispersion, not a sample estimate of a larger one:
+    the window *is* the population the vol is asked to describe, and the
+    metrics side consumes the scale as-is — nothing downstream re-counts the
+    returns or re-scales the answer.
+    """
+    items = list(values)
+    mean = math.fsum(items) / len(items)
+    variance = math.fsum((value - mean) ** 2 for value in items) / len(items)
+    return math.sqrt(variance)
+
+
+def _vols_for_date(
+    context: EvaluationContext, day: dt.date, symbols: Iterable[str]
+) -> Mapping[str, float]:
+    """``{symbol: vol}`` for ``day``, among ``symbols`` — point-in-time.
+
+    The same date and symbol handling :func:`_betas_for_date` takes: the
+    window is :func:`_beta_window_dates`' own trailing dates ending at
+    ``day`` (never a return after it), a symbol ``context.closes`` does not
+    carry is skipped, and the returns are :func:`_close_to_close_returns`'s
+    own — a date both closes must be present for, gaps contributing nothing.
+    A symbol with fewer than half the window's returns is *absent from the
+    answer* rather than given a default vol: the inverse-volatility book
+    refuses a scored symbol its date's vols row does not name
+    (:func:`evaluator.book_weights`'s by-name refusal), so a thin history
+    stops the evaluation naming the name, instead of trading it at a
+    volatility nobody measured.
+    """
+    window_days = context.book.vol_window_days
+    window = _beta_window_dates(day, window_days)
+    vols: dict[str, float] = {}
+    for symbol in symbols:
+        if symbol not in context.closes:
+            continue
+        returns = _close_to_close_returns(context.closes[symbol], window)
+        if len(returns) * _VOL_COVERAGE_DENOMINATOR < window_days:
+            continue
+        vols[symbol] = _population_std(returns.values())
+    return vols
+
+
+def compute_vols(
+    context: EvaluationContext, scores: Mapping[dt.date, Mapping[str, float]]
+) -> Mapping[dt.date, Mapping[str, float]]:
+    """Point-in-time realised volatilities for every date ``scores`` names a
+    symbol for.
+
+    For each date ``D`` in ``scores``, a symbol's volatility is the
+    population standard deviation of its own daily close-to-close returns
+    over the trailing ``context.book.vol_window_days`` returns ending at
+    ``D`` — read from ``context.closes``, so the instrument in force
+    (:data:`SPOT_INSTRUMENT`'s bars close, or :data:`PERP_INSTRUMENT`'s
+    ``fut_close``) is what every vol is measured against, and never a row
+    after ``D`` (see :func:`_beta_window_dates`).  A date with no scored
+    symbol is skipped, the same stance :func:`compute_betas` takes: there is
+    no book on it for a vol to scale.  A symbol with fewer than half the
+    window's returns gets no vol (see :func:`_vols_for_date`) — the
+    downstream book refuses it by name rather than this function inventing
+    a default.
+
+    Like :func:`compute_betas`, this is a pure read of ``context`` and
+    ``scores``; it does not consult ``context.book.weighting`` —
+    :func:`orchestrator._evaluate.evaluate_node` and
+    :func:`~orchestrator._evaluate.evaluate_on_dates` are what decide
+    whether to call it at all, so a context whose book is z-weighted never
+    pays for this computation.
+    """
+    return {
+        day: _vols_for_date(context, day, row) for day, row in scores.items() if row
     }
 
 
