@@ -883,6 +883,37 @@ class SnapshotMount:
             if entry.name.endswith(".parquet") and entry.is_file()
         )
 
+    def part_path(self, stream: str, symbol: str, date: str) -> tuple[ReadOnlyPath, ...]:
+        """One partition's Parquet part, addressed without listing anything.
+
+        The same answer :meth:`select` gives for the one-part-per-day layout
+        the lake writes (``<stream>/symbol=<S>/date=<D>/part-0.parquet``,
+        see ``nullius_ingest.bars_backfill`` and ``derivs_backfill``), but
+        derived from the ``(stream, symbol, date)`` triple instead of read
+        off the directory: a caller that already knows the partition — the
+        evaluation materializer does, from the resolution's own surviving
+        slices — pays three ``is_dir`` checks and one ``is_file`` rather
+        than a ``scandir`` plus a sort for every symbol-day it reads.
+
+        Empty in exactly the cases :meth:`select` answers empty: a missing
+        partition, a symlinked component at any of the three levels, or a
+        partition whose part is not a regular file.  The two disagree only
+        for a partition carrying parts under other names (a lone
+        ``part-1.parquet``), which this path cannot see without listing and
+        the lake never writes; a reader that takes the day's first part —
+        the materializer does — gets identical rows from either on every
+        snapshot that exists.
+        """
+        level = self.root
+        for part in (stream, f"symbol={symbol}", f"date={date}"):
+            level = level / part
+            if level.path.is_symlink() or not level.is_dir():
+                return ()
+        candidate = level / "part-0.parquet"
+        if candidate.path.is_symlink() or not candidate.is_file():
+            return ()
+        return (candidate,)
+
     # -- Observability ------------------------------------------------------
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
