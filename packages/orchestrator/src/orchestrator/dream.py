@@ -30,7 +30,15 @@ feature 3: the completed, non-``VOID`` campaigns
 worlds, and ``n_financial`` is now their count -- not the worlds
 ``world_census`` counts in ``replay_score`` that the bootstrap pool does
 not hold, which was always a byproduct reading of a prior cycle's own
-writes rather than the admitted pool itself. The bootstrap sweep is
+writes rather than the admitted pool itself.  Since
+``additions_spec_engine_edge_recovery.xml`` feature 5, admission is
+clean-grid (:func:`orchestrator._financial_eval.admit_financial_worlds`,
+the one helper the M3 verdict's own pool check shares): a campaign whose
+in-sample grid ended on or after the first out-of-sample date -- or one
+that records no ``grid_last_date`` at all -- is not admitted, and the
+cycle's summary reports the counts (``financial_admission``: admitted,
+excluded for overlap, excluded as unknown) with every excluded campaign's
+own error message naming its ``grid_last_date``. The bootstrap sweep is
 unchanged: ``score_on_world`` (feature 4, :mod:`orchestrator._bootstrap_eval`)
 still drives every bootstrap world's own question object, and the
 bootstrap pool's world list is still :meth:`bootstrap.BootstrapPool.worlds`.
@@ -142,6 +150,7 @@ own, where the library's message carries none); 2 for a missing
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import math
@@ -155,7 +164,6 @@ from pathlib import Path
 from typing import Any
 
 import bootstrap
-import discovery
 import dreaming
 import policy_runtime
 from canary import CanaryDeterminismBrokenError, require_dreaming_allowed
@@ -169,7 +177,12 @@ from ._context import (
     EvaluationContext,
     load_evaluation_context,
 )
-from ._financial_eval import FinancialEvalContext, score_on_financial_world
+from ._financial_eval import (
+    FinancialEvalContext,
+    FinancialWorldAdmission,
+    admit_financial_worlds,
+    score_on_financial_world,
+)
 
 __all__ = [
     "DREAMING_MIN_FINANCIAL_WORLDS",
@@ -450,30 +463,27 @@ def _existing_winner(database_url: str, widened: Sequence[Any]) -> Any | None:
     return None
 
 
-def _admitted_financial_campaigns(database_url: str) -> tuple[str, ...]:
+def _admitted_financial_campaigns(
+    database_url: str, *, oos_first_date: dt.date | None = None
+) -> FinancialWorldAdmission:
     """The completed, non-``VOID`` campaigns admitted as financial worlds.
 
-    Every manifest :class:`discovery.CampaignManifests` holds, filtered one
-    at a time through :func:`discovery.admit_completed_campaigns` -- a
-    single-manifest call per campaign (the same shape
-    :func:`orchestrator.closeout.close_out` already uses for its own M2
-    commit), because the function's own batch form refuses the *whole*
-    batch the moment one campaign is ``VOID`` (docs §7.4), and this cycle's
-    job is to admit every campaign it can rather than refuse the lot over
-    one voided one. :meth:`~discovery.CampaignManifests.completed` creates
-    its own table on first read, so a database this cycle's own migrations
-    never touched (no completed campaign has ever been persisted here)
-    answers an empty tuple rather than raising.
+    A thin wrapper over :func:`orchestrator._financial_eval.
+    admit_financial_worlds` -- the one shared admission the M3 verdict's own
+    pool check mirrors, so the cycle and the verdict can never drift into two
+    readings of the same law.  The whole contract (the standing per-manifest
+    ``VOID`` filter, and -- only when ``oos_first_date`` is given -- the
+    clean-grid rule that refuses a campaign whose in-sample grid ended on or
+    after that date, and one that records no ``grid_last_date`` at all) is
+    that helper's to state; this wrapper exists only so this module's own
+    name for the call stays where it has always been.
+
+    :meth:`~discovery.CampaignManifests.completed` creates its own table on
+    first read, so a database this cycle's own migrations never touched (no
+    completed campaign has ever been persisted here) answers an empty
+    admission rather than raising.
     """
-    manifests = discovery.CampaignManifests(database_url).completed()
-    admitted: list[str] = []
-    for manifest in manifests:
-        try:
-            discovery.admit_completed_campaigns([manifest])
-        except discovery.VoidCampaignError:
-            continue
-        admitted.append(manifest.campaign_id)
-    return tuple(admitted)
+    return admit_financial_worlds(database_url, oos_first_date=oos_first_date)
 
 
 #: The non-committing mode every financial comparison is taken under --
@@ -555,11 +565,11 @@ def _financial_arm(
     evaluation_context: EvaluationContext | None,
     replay_component: Any,
     env: Mapping[str, str] | None = None,
-) -> tuple[int, object]:
+) -> tuple[int, object, FinancialWorldAdmission]:
     """Score every widened candidate, and the M2 baseline, on every financial world.
 
-    Answers ``(n_financial, financial_arm)``: the admitted campaign count,
-    always honestly reported, and either the string ``"thin"`` (fewer than
+    Answers ``(n_financial, financial_arm, admission)``: the admitted campaign
+    count, always honestly reported; either the string ``"thin"`` (fewer than
     :data:`DREAMING_MIN_FINANCIAL_WORLDS` admitted, or no out-of-sample grid
     configured for this process) or :func:`_financial_comparison`'s dict for
     the cycle's own winner against the **re-scored** baseline on the admitted
@@ -570,7 +580,20 @@ def _financial_arm(
     comparison taken for the incumbent (:func:`_financial_comparison` again, on
     the policy already in force), so a cycle's summary states not only *whether
     the winner clears the baseline* but *whether the incumbent already did* --
-    the two facts §12's deployment decision reads together.
+    the two facts §12's deployment decision reads together.  And the third
+    element is the whole :class:`~orchestrator._financial_eval.
+    FinancialWorldAdmission` the counts came from, so ``run_cycle``'s summary
+    reports the counts the arm actually measured -- admitted, excluded for
+    overlap, excluded as unknown, with every excluded campaign's own error
+    message -- rather than a figure re-derived beside them.
+
+    **The worlds are admitted on a clean grid.**  When the loaded context
+    carries an out-of-sample grid, its first date is the anchor the admission
+    applies: a campaign whose in-sample grid ended on or after it -- or one
+    that records no ``grid_last_date`` at all -- is not a world for this cycle
+    (see :func:`orchestrator._financial_eval.admit_financial_worlds` for the
+    law and its leak).  A context with no OOS grid admits exactly as this
+    cycle always did: the standing ``VOID`` filter alone.
 
     **The baseline is re-scored, not read.**
     docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"The baseline is*
@@ -606,14 +629,22 @@ def _financial_arm(
     actually netted through.  A context that carries none is refused in the
     same ``unscoreable`` shape as a missing config, for the same reason.
     """
-    campaigns = _admitted_financial_campaigns(database_url)
+    oos_first = (
+        None
+        if evaluation_context is None or not evaluation_context.oos_dates
+        else min(evaluation_context.oos_dates)
+    )
+    admission = _admitted_financial_campaigns(
+        database_url, oos_first_date=oos_first
+    )
+    campaigns = admission.campaign_ids
     n_financial = len(campaigns)
     if (
         n_financial < DREAMING_MIN_FINANCIAL_WORLDS
         or evaluation_context is None
         or not evaluation_context.oos_dates
     ):
-        return n_financial, "thin"
+        return n_financial, "thin", admission
 
     config_sha256 = evaluation_config_sha256(env)
     if config_sha256 is None:
@@ -633,7 +664,7 @@ def _financial_arm(
                 "to be filed under a policy version naming the configuration's "
                 "sha256"
             )
-        }
+        }, admission
 
     cost_model_hash = getattr(evaluation_context, "cost_model_hash", None)
     if not cost_model_hash:
@@ -653,7 +684,7 @@ def _financial_arm(
                 "evaluation config's sha256 and the cost-model hash the score "
                 "was netted through"
             )
-        }
+        }, admission
 
     financial_context = FinancialEvalContext(evaluation=evaluation_context)
     sweep = tuple(widened) + (_baseline_candidate(),)
@@ -692,7 +723,7 @@ def _financial_arm(
             cost_model_hash=cost_model_hash,
             m2_version=m2_version,
         )
-    return n_financial, financial_arm
+    return n_financial, financial_arm, admission
 
 
 def _baseline_candidate() -> Any:
@@ -978,7 +1009,7 @@ def run_cycle(
         holdout_worlds=len(holdout_worlds),
     )
 
-    n_financial, financial_arm = _financial_arm(
+    n_financial, financial_arm, financial_admission = _financial_arm(
         widened,
         winner,
         incumbent_entry,
@@ -1022,6 +1053,12 @@ def run_cycle(
         "incumbent_holdout_commit_rate": incumbent_holdout_commit_rate,
         "gap": gap_record.gap,
         "financial_arm": financial_arm,
+        # The counts the arm's n_financial was measured from -- admitted,
+        # excluded for overlap, excluded as unknown, with every excluded
+        # campaign's own error message naming its grid_last_date -- so the
+        # JSON line states not only how many worlds were scored but which
+        # campaigns were refused and why (feature 5's clean-grid admission).
+        "financial_admission": financial_admission.summary(),
         "replay_score_rows": train_report.pair_count + holdout_report.pair_count,
         "_winner_source": winner.source,
     }

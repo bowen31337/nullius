@@ -53,6 +53,17 @@ One test per claim the feature sentence and the spec's test list make:
   :class:`dreaming.PairedComparisonError` other than the thin-pool gate is
   reported ``{"unscoreable": "<message>"}``, never conflated with ``"thin"``.
 
+Since ``additions_spec_engine_edge_recovery.xml`` feature 5, this suite's
+fixture campaigns record an evaluation grid
+(:meth:`discovery.create_campaign`'s five grid columns,
+``0120_campaign_evaluation_grid``) ending **before** the context's first
+out-of-sample date, so every cycle here runs under the clean-grid admission
+the feature added -- and the cycle's summary reports its
+``financial_admission`` counts (admitted, excluded for overlap, excluded as
+unknown) beside ``n_financial``.  The admission law's own one-test-per-claim
+suite -- what a dirty grid, an absent grid and no anchor each admit -- is
+``test_financial_world_admission.py``'s subject, not this module's.
+
 No test opens a network connection or reads a real credential, and no state
 is kept at module scope across tests, so the suite passes under
 pytest-xdist.
@@ -66,6 +77,7 @@ import importlib.util
 import sqlite3
 import uuid
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -100,6 +112,11 @@ VERSIONS_DIR = REPO_ROOT / "migrations" / "versions"
 REPLAY_MIGRATION = "0109_replay_score_and_policy_revision"
 CAMPAIGN_MIGRATION = "0111_campaign_table"
 NODE_TABLE_MIGRATIONS = ("0118_node_table", "0114_node_metrics")
+#: The five grid columns (``horizon`` among them) every fixture campaign here
+#: records -- feature 5's clean-grid admission reads them, and the
+#: native-horizon scorer (:func:`orchestrator._financial_eval._oos_ir`)
+#: re-horizons through the campaign row's own ``horizon``.
+GRID_MIGRATION = "0120_campaign_evaluation_grid"
 
 #: Enough bootstrap worlds to clear the ladder floor (20) but stay on the
 #: capped rung (below 50), so ``M = 10`` -- ``test_dream_cli.py``'s own
@@ -272,13 +289,31 @@ def _migrated_database(tmp_path: Path, *, world_count: int = POOL_WORLD_COUNT) -
     The bootstrap pool and ``0109``'s replay tables (``test_dream_cli.py``'s
     own recipe), plus the campaign and node tables
     ``test_closeout_commit_oos.py`` migrates for its own M2 commit suite --
-    this feature's financial worlds are read off exactly those two tables.
+    this feature's financial worlds are read off exactly those two tables --
+    and ``0120``'s five grid columns, which every campaign here records and
+    both the clean-grid admission and the native-horizon scorer read.
     """
     database_url = f"sqlite:///{tmp_path / 'dream-financial-test.db'}"
     pool = bootstrap.BootstrapPool(database_url)
     pool.persist_worlds(world_count, pool_seed=POOL_SEED)
     _load_migration(REPLAY_MIGRATION).apply(database_url)
     _load_migration(CAMPAIGN_MIGRATION).apply(database_url)
+    _load_migration(GRID_MIGRATION).apply(database_url)
+    for revision in NODE_TABLE_MIGRATIONS:
+        _load_migration(revision).apply(database_url)
+    return database_url
+
+
+def _bare_campaign_database(tmp_path: Path, name: str) -> str:
+    """A database with only the campaign, grid and node tables -- no bootstrap
+    pool, no replay tables -- the schema the direct
+    :func:`score_on_financial_world` calls below need: ``0120``'s grid columns
+    ride with ``0111``'s table because every campaign this suite builds
+    records one.
+    """
+    database_url = f"sqlite:///{tmp_path / name}"
+    _load_migration(CAMPAIGN_MIGRATION).apply(database_url)
+    _load_migration(GRID_MIGRATION).apply(database_url)
     for revision in NODE_TABLE_MIGRATIONS:
         _load_migration(revision).apply(database_url)
     return database_url
@@ -315,6 +350,16 @@ def _build_completed_campaign(
     (:func:`discovery.admit_completed_campaigns`) reads only the manifest
     those two tables produce.
 
+    The campaign records a **clean** evaluation grid (feature 5): its
+    in-sample grid ends ``2026-05-31``, strictly before the ``2026-06-01``
+    first out-of-sample date every fake context in this suite carries, so a
+    campaign built here is admitted under the clean-grid admission exactly
+    as it was under the standing ``VOID`` filter alone.  What a dirty or an
+    absent grid does to admission is ``test_financial_world_admission.py``'s
+    own subject.  ``horizon=1`` matches the fake context's own horizon, so
+    the native-horizon scorer's re-horizoning leaves every figure here as it
+    was.
+
     ``ic_tstat`` is what :func:`orchestrator._live_tree.live_question` folds
     into the one field a policy reads (``ic_insample``); the default sits
     *below* the M2 rule's own discovery bar, so a campaign built with it is
@@ -322,7 +367,14 @@ def _build_completed_campaign(
     """
     campaign_id = str(uuid.uuid4())
     discovery.create_campaign(
-        discovery.TYPE_R_CAMPAIGN_TYPE, 4, campaign_id=campaign_id, database_url=database_url
+        discovery.TYPE_R_CAMPAIGN_TYPE,
+        4,
+        campaign_id=campaign_id,
+        database_url=database_url,
+        horizon=1,
+        grid_first_date="2026-05-01",
+        grid_last_date="2026-05-31",
+        oos_first_date="2026-06-01",
     )
     node_id = str(uuid.uuid4())
     _plant_node(database_url, campaign_id, node_id=node_id, ic_mean=ic_mean, ic_tstat=ic_tstat)
@@ -376,13 +428,8 @@ def _write_m2_fixed_row(
     )
 
 
-def _fake_evaluation_context(
-    *,
-    database_url: str,
-    artifact_dir: Path,
-    oos_dates: tuple[dt.date, ...],
-    cost_model_hash: str = COST_MODEL_HASH_A,
-) -> Any:
+@dataclass(frozen=True)
+class _StubEvaluationContext:
     """A duck-typed stand-in for :class:`orchestrator._context.
     EvaluationContext` -- every field :func:`score_on_financial_world` and
     its own collaborators read by attribute
@@ -394,6 +441,33 @@ def _fake_evaluation_context(
     need, because that call is stubbed in every test here -- a real sealed
     snapshot and sandbox are ``test_closeout_commit_oos.py``'s own concern.
 
+    A **frozen dataclass, not a** ``SimpleNamespace``, since
+    ``additions_spec_engine_edge_recovery.xml`` feature 5: the native-horizon
+    scorer re-horizons the evaluation it hands ``evaluate_on_dates`` through
+    ``dataclasses.replace(context.evaluation, horizon=...)`` when the
+    campaign row records its own horizon, which a ``SimpleNamespace`` cannot
+    take -- the stub now matches the real context's shape on the one
+    operation this suite's paths perform on it beyond attribute reads.
+    """
+
+    database_url: str
+    artifact_dir: Path
+    evaluation_dates: tuple[dt.date, ...]
+    oos_dates: tuple[dt.date, ...]
+    closes: dict[Any, Any]
+    horizon: int
+    cost_model_hash: str
+
+
+def _fake_evaluation_context(
+    *,
+    database_url: str,
+    artifact_dir: Path,
+    oos_dates: tuple[dt.date, ...],
+    cost_model_hash: str = COST_MODEL_HASH_A,
+) -> Any:
+    """One :class:`_StubEvaluationContext`, the suite's shared fake context.
+
     ``cost_model_hash`` is Addendum 2's second identity: a real
     :class:`~orchestrator._context.EvaluationContext` resolves it from
     ``NULLIUS_COST_MODEL_PATH`` (feature 60's hash over the loaded schedule),
@@ -402,7 +476,7 @@ def _fake_evaluation_context(
     parameter so one test can run two cycles whose contexts differ in this
     field alone.
     """
-    return SimpleNamespace(
+    return _StubEvaluationContext(
         database_url=database_url,
         artifact_dir=artifact_dir,
         evaluation_dates=(dt.date(2026, 1, 1),),
@@ -435,11 +509,8 @@ def test_second_policy_committing_the_same_node_hits_the_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A bare node/campaign database -- no bootstrap pool needed for this
-    # direct call, so only the campaign and node migrations are applied.
-    database_url = f"sqlite:///{tmp_path / 'cache-test.db'}"
-    _load_migration(CAMPAIGN_MIGRATION).apply(database_url)
-    for revision in NODE_TABLE_MIGRATIONS:
-        _load_migration(revision).apply(database_url)
+    # direct call, so only the campaign, grid and node migrations are applied.
+    database_url = _bare_campaign_database(tmp_path, "cache-test.db")
 
     campaign_id, node_id = _build_completed_campaign(database_url, ic_mean=0.5)
     artifact_dir = tmp_path / "artifacts"
@@ -473,10 +544,7 @@ def test_abstaining_policy_returns_a_miss_whose_record_reports_abstained(
     # (NON_COMMITTING_SCORE), and never reaches the sandboxed scorer: there is
     # no pick to hand it, exactly as replay.committed_pick's own miss path
     # never calls the scorer at all.
-    database_url = f"sqlite:///{tmp_path / 'abstain-test.db'}"
-    _load_migration(CAMPAIGN_MIGRATION).apply(database_url)
-    for revision in NODE_TABLE_MIGRATIONS:
-        _load_migration(revision).apply(database_url)
+    database_url = _bare_campaign_database(tmp_path, "abstain-test.db")
 
     campaign_id, node_id = _build_completed_campaign(database_url, ic_mean=0.5)
     artifact_dir = tmp_path / "artifacts"
@@ -632,6 +700,16 @@ def test_cycle_scores_both_arms_with_financial_suffixed_rows(
 
     # The financial arm: two admitted campaigns, a computed paired figure.
     assert summary["n_financial"] == 2
+    # Feature 5's clean-grid counts, as the cycle itself measured them: both
+    # campaigns' grids end before the context's first OOS date, so both are
+    # admitted and nothing is refused -- the summary states the counts beside
+    # the admitted total rather than leaving them implied.
+    assert summary["financial_admission"] == {
+        "admitted": 2,
+        "excluded_overlap": 0,
+        "excluded_unknown": 0,
+        "excluded": {},
+    }
     financial_arm = summary["financial_arm"]
     assert isinstance(financial_arm, dict)
     assert financial_arm["paired_worlds"] == 2
@@ -727,7 +805,7 @@ def test_two_cost_models_file_their_rows_under_two_versions(
     winner = widened[0]
 
     def _sweep(cost_model_hash: str) -> int:
-        n_financial, arm = dream_module._financial_arm(
+        n_financial, arm, admission = dream_module._financial_arm(
             widened,
             winner,
             winner,
@@ -738,6 +816,13 @@ def test_two_cost_models_file_their_rows_under_two_versions(
             env=env,
         )
         assert n_financial == 2, arm
+        # Both campaigns record a clean grid, so the anchor admits both and
+        # refuses neither (feature 5's counts, as the arm measured them).
+        assert admission.counts() == {
+            "admitted": 2,
+            "excluded_overlap": 0,
+            "excluded_unknown": 0,
+        }
         return n_financial
 
     _sweep(COST_MODEL_HASH_A)
@@ -793,6 +878,13 @@ def test_void_campaign_is_excluded_from_admission_and_sweep(
 
     # The VOID campaign never clears admission, so it is neither counted...
     assert summary["n_financial"] == 2
+    # ...and it is not one of feature 5's three counts either: the VOID
+    # filter is the standing one that runs first, and the overlap/unknown
+    # counts name only what the clean-grid rule refused -- a VOID campaign
+    # is never reported as a grid exclusion, whatever its grid says.
+    assert summary["financial_admission"]["admitted"] == 2
+    assert summary["financial_admission"]["excluded_overlap"] == 0
+    assert summary["financial_admission"]["excluded_unknown"] == 0
     # ...nor swept: no #financial row names it as a world, however many
     # candidates this cycle widened to.
     rows = _financial_rows(database_url)
@@ -859,6 +951,15 @@ def test_no_evaluation_context_reports_thin_and_bootstrap_behaviour_is_unchanged
     # Two campaigns are honestly admitted and counted, even though the
     # missing evaluation context means neither is ever swept.
     assert summary["n_financial"] == 2
+    # No context means no OOS anchor, so admission is exactly what it was
+    # before feature 5: the standing VOID filter alone, counts included --
+    # nothing is excluded, because no grid was ever read.
+    assert summary["financial_admission"] == {
+        "admitted": 2,
+        "excluded_overlap": 0,
+        "excluded_unknown": 0,
+        "excluded": {},
+    }
     assert summary["financial_arm"] == "thin"
     assert _financial_rows(database_url) == []
 

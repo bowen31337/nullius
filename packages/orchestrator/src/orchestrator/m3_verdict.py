@@ -106,6 +106,7 @@ recorded (the row is saved either way); 1 when a refusal fires, naming it;
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -125,6 +126,7 @@ import scoring
 from replay import NON_COMMITTING_SCORE
 
 from ._bootstrap_eval import score_on_world
+from ._financial_eval import admit_financial_worlds
 from ._oracle import SubtreeOracle
 from .closeout import (
     DATABASE_URL_ENV,
@@ -135,7 +137,6 @@ from .closeout import _read_campaign_root_ids as _campaign_root_ids
 from .closeout import _resolve_root as _root_of
 from .dream import (
     M2_INCUMBENT_POLICY_VERSION,
-    _admitted_financial_campaigns,
     _existing_winner,
     financial_policy_version,
 )
@@ -430,13 +431,43 @@ def _verify_bootstrap_pool(pool: Any) -> Any:
     return census
 
 
-def _verify_financial_pool(database_url: str) -> tuple[str, ...]:
-    """The admitted financial campaigns, refused below the floor."""
-    campaigns = _admitted_financial_campaigns(database_url)
+def _verify_financial_pool(
+    database_url: str, *, oos_first_date: dt.date | None = None
+) -> tuple[str, ...]:
+    """The admitted financial campaigns, refused below the floor.
+
+    Admission is the one shared helper
+    (:func:`orchestrator._financial_eval.admit_financial_worlds`) the
+    dreaming cycle's own pool check uses -- the verdict's admission mirrors
+    the cycle's, so the two are one code path.  The verdict itself holds no
+    evaluation context (it knows the pinned configuration only by its
+    digest), so it verifies the pool with no OOS anchor
+    (``oos_first_date=None``, the standing ``VOID`` filter alone) and the
+    recorded verdict's world list is the one it was computed under -- **the
+    M3 verdict is final and nothing here recomputes it**.  The keyword
+    exists so a future cycle, which *does* load a context, can verify its
+    own pool under the same clean-grid admission the dreaming cycle applies;
+    the refusal below the floor then reports the counts the anchor measured
+    -- admitted, excluded for overlap, excluded as unknown -- and names the
+    first excluded campaign's own ``grid_last_date``, so an operator learns
+    *which* grid kept the pool thin, not only that it is.
+    """
+    admission = admit_financial_worlds(database_url, oos_first_date=oos_first_date)
+    campaigns = admission.campaign_ids
     if len(campaigns) < MIN_FINANCIAL_WORLDS:
+        counts = admission.counts()
+        refused = (
+            ""
+            if not admission.exclusions
+            else f"; first refused: {admission.exclusions[0].message}"
+        )
         raise M3VerdictError(
-            f"{M3_CODE}: {len(campaigns)} financial world(s) are admitted, "
-            f"fewer than the {MIN_FINANCIAL_WORLDS} the M3 gate requires"
+            f"{M3_CODE}: {counts['admitted']} financial world(s) are admitted "
+            f"({counts['excluded_overlap']} excluded for grid overlap, "
+            f"{counts['excluded_unknown']} excluded with no recorded "
+            "grid_last_date), fewer than the "
+            f"{MIN_FINANCIAL_WORLDS} the M3 gate requires"
+            f"{refused}"
         )
     return campaigns
 

@@ -66,11 +66,34 @@ the identical node of one campaign's tree, and the out-of-sample read
 (:func:`orchestrator._evaluate.evaluate_on_dates`) is the expensive act here:
 it re-runs the stored signal inside a sandbox over the OOS grid.
 :class:`FinancialEvalContext` is one dreaming cycle's own cache, keyed by
-``(node_id, oos_dates)`` -- a caller builds one per cycle and hands the same
-instance to every :func:`score_on_financial_world` call the cycle makes, so
-a second policy committing a node :func:`score_on_financial_world` has
-already scored this run reads the cached figure rather than re-running the
-sandbox.
+``(node_id, oos_dates, horizon)`` -- a caller builds one per cycle and hands
+the same instance to every :func:`score_on_financial_world` call the cycle
+makes, so a second policy committing a node :func:`score_on_financial_world`
+has already scored this run reads the cached figure rather than re-running
+the sandbox.
+
+**A pick is judged at its own campaign's horizon, and a world is admitted
+only on a grid its campaign never saw.**  Two laws, both from
+``additions_spec_engine_edge_recovery.xml`` "Campaign Grid" feature 5, both
+repairs for the leak the M3 RESULT's erratum records (17 of the 103
+financial worlds were *not* out of sample for the picks scored on them --
+their in-sample grids ended inside the OOS window):
+
+* a committed node is scored at **its own campaign's recorded horizon**
+  (:func:`_oos_ir` reads the ``campaign`` row's ``horizon`` and evaluates
+  through ``dataclasses.replace(context.evaluation, horizon=that)``), so a
+  pick is judged on the forward window it was selected for -- the oracle
+  already serves whatever horizon the evaluator asks
+  (:func:`orchestrator._targets.snapshot_forward_returns` reads the request's
+  own), and a campaign that records none (``NULL``, every row written before
+  ``0120_campaign_evaluation_grid.py``) is scored at the context's horizon,
+  exactly as before;
+* a campaign is admitted as a financial world only through
+  :func:`admit_financial_worlds` -- the shared admission helper -- which,
+  beside the standing VOID filter, excludes a campaign whose recorded
+  ``grid_last_date`` falls on or after the first out-of-sample date and a
+  campaign that records none at all (unknown is not admitted), whenever the
+  scoring context carries an OOS grid.
 
 **No null sidecar.**  ``./run.sh dream`` needs no secret (CLAUDE.md's own
 table), unlike ``./run.sh closeout``, which reads the sealed sidecar to gate
@@ -90,9 +113,13 @@ which stays close-out's (:mod:`orchestrator.closeout`) alone to certify.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+import discovery
 from artifacts import ArtifactStore
 from policy_runtime import POLICY_MODULE_NAME, episode_commit, guard_policy
 from replay import TerminalPick, committed_pick, run_replay
@@ -103,7 +130,16 @@ from ._evaluate import evaluate_on_dates
 from ._live_tree import live_question
 from ._targets import snapshot_forward_returns
 
-__all__ = ["FinancialEvalContext", "score_on_financial_world"]
+__all__ = [
+    "EXCLUDED_AS_UNKNOWN",
+    "EXCLUDED_FOR_OVERLAP",
+    "FINANCIAL_ADMISSION_CODE",
+    "FinancialEvalContext",
+    "FinancialWorldAdmission",
+    "FinancialWorldExclusion",
+    "admit_financial_worlds",
+    "score_on_financial_world",
+]
 
 #: The round cap a financial-world replay is driven at.  An internal
 #: implementation detail of this module -- ``dream``'s own ``--round-cap``
@@ -116,6 +152,225 @@ __all__ = ["FinancialEvalContext", "score_on_financial_world"]
 #: never stops selecting, not to ration a walk that would otherwise finish on
 #: its own.
 _FINANCIAL_ROUND_CAP = 100
+
+
+# -- The shared financial-world admission --------------------------------------
+#
+# One helper, two callers: the dreaming cycle's own admission
+# (``orchestrator.dream._admitted_financial_campaigns``) and the M3 verdict's
+# (``orchestrator.m3_verdict._verify_financial_pool``) -- the verdict's
+# admission mirrors the cycle's, so the two must be one code path and not two
+# readings of the same law that could drift apart.
+
+
+#: The greppable word every exclusion :func:`admit_financial_worlds` reports
+#: opens with -- an excluded campaign is reported with an error message of
+#: this module's own, naming the ``grid_last_date`` that excluded it, so an
+#: operator reading a cycle's summary (or a verdict's refusal) can grep one
+#: token and find this law.
+FINANCIAL_ADMISSION_CODE = "financial_world_admission"
+
+#: The reason a campaign was excluded because its in-sample grid reached
+#: into the out-of-sample window: ``grid_last_date`` on or after the first
+#: OOS date.
+EXCLUDED_FOR_OVERLAP = "overlap"
+
+#: The reason a campaign was excluded because no ``grid_last_date`` is
+#: recorded at all: whether its grid precedes the OOS window is unknown, and
+#: unknown is not admitted.
+EXCLUDED_AS_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class FinancialWorldExclusion:
+    """One campaign the admission refused, and why.
+
+    Carries the ``grid_last_date`` that decided the refusal (``None`` for the
+    unknown case -- the absent value *is* the reason) beside the full
+    :attr:`message`, because the counts a summary displays say *how many*
+    and this row is the *which one* an operator repairs next.
+    """
+
+    #: The excluded campaign's own id.
+    campaign_id: str
+    #: :data:`EXCLUDED_FOR_OVERLAP` or :data:`EXCLUDED_AS_UNKNOWN`.
+    reason: str
+    #: The campaign row's ``grid_last_date`` (ISO text), or ``None`` when the
+    #: row records none -- the one fact the refusal turned on.
+    grid_last_date: str | None
+    #: The full error message, opening with :data:`FINANCIAL_ADMISSION_CODE`
+    #: and naming the ``grid_last_date`` -- reported verbatim by the dream
+    #: summary and by the verdict's thin-pool refusal.
+    message: str
+
+
+@dataclass(frozen=True)
+class FinancialWorldAdmission:
+    """What :func:`admit_financial_worlds` decided: the admitted ids, the refusals.
+
+    ``campaign_ids`` is the admitted pool in the manifest store's own stable
+    order; ``exclusions`` carries every refused campaign with its reason and
+    message.  The count views (:meth:`counts`, :meth:`summary`) are the
+    figures the dream summary displays -- admitted, excluded for overlap,
+    excluded as unknown -- never re-derived from the tuples by a caller.
+    """
+
+    #: The campaigns admitted as financial worlds, in
+    #: :meth:`discovery.CampaignManifests.completed`'s own id order.
+    campaign_ids: tuple[str, ...]
+    #: Every refused campaign, in the same order, empty when all were
+    #: admitted.
+    exclusions: tuple[FinancialWorldExclusion, ...]
+
+    @property
+    def excluded_overlap(self) -> tuple[str, ...]:
+        """The ids refused for an in-sample grid reaching into the OOS window."""
+        return tuple(
+            exclusion.campaign_id
+            for exclusion in self.exclusions
+            if exclusion.reason == EXCLUDED_FOR_OVERLAP
+        )
+
+    @property
+    def excluded_unknown(self) -> tuple[str, ...]:
+        """The ids refused for carrying no recorded ``grid_last_date``."""
+        return tuple(
+            exclusion.campaign_id
+            for exclusion in self.exclusions
+            if exclusion.reason == EXCLUDED_AS_UNKNOWN
+        )
+
+    def counts(self) -> dict[str, int]:
+        """The three counts a refusal or a summary reports."""
+        return {
+            "admitted": len(self.campaign_ids),
+            "excluded_overlap": len(self.excluded_overlap),
+            "excluded_unknown": len(self.excluded_unknown),
+        }
+
+    def summary(self) -> dict[str, Any]:
+        """:meth:`counts`, with each excluded campaign's own error message.
+
+        The shape the dream cycle's summary carries as its
+        ``financial_admission`` figure: the three counts beside
+        ``{campaign_id: message}`` for every refused campaign, so the line an
+        operator reads states not only *how many* were excluded but *which*
+        and *why* -- the message names the ``grid_last_date``.
+        """
+        payload = self.counts()
+        payload["excluded"] = {
+            exclusion.campaign_id: exclusion.message
+            for exclusion in self.exclusions
+        }
+        return payload
+
+
+def _overlap_message(
+    campaign_id: str, grid_last_date: str, oos_first_date: dt.date
+) -> str:
+    """The error message for a grid that reached into the OOS window."""
+    return (
+        f"{FINANCIAL_ADMISSION_CODE}: campaign {campaign_id!r} is excluded as "
+        f"a financial world: its in-sample grid ended {grid_last_date} "
+        f"(grid_last_date), on or after the first out-of-sample date "
+        f"{oos_first_date.isoformat()} the picks would be scored over, so a "
+        "pick judged on that window would be judged on bars the campaign's "
+        "own in-sample evaluation already saw"
+    )
+
+
+def _unknown_message(campaign_id: str, oos_first_date: dt.date) -> str:
+    """The error message for a campaign whose grid's end is not recorded."""
+    return (
+        f"{FINANCIAL_ADMISSION_CODE}: campaign {campaign_id!r} is excluded as "
+        f"a financial world: its campaign row records no grid_last_date "
+        f"(NULL), so whether its in-sample grid ended before the first "
+        f"out-of-sample date {oos_first_date.isoformat()} is unknown -- and "
+        "unknown is not admitted"
+    )
+
+
+def admit_financial_worlds(
+    database_url: str, *, oos_first_date: dt.date | None = None
+) -> FinancialWorldAdmission:
+    """Admit the completed campaigns that may serve as financial worlds.
+
+    The standing VOID filter first, exactly as
+    ``orchestrator.dream._admitted_financial_campaigns`` always applied it:
+    every manifest :class:`discovery.CampaignManifests` holds, one at a time
+    through :func:`discovery.admit_completed_campaigns` -- a single-manifest
+    call per campaign (the same shape :func:`orchestrator.closeout.close_out`
+    uses for its own M2 commit), because the function's own batch form
+    refuses the *whole* batch the moment one campaign is ``VOID`` (docs
+    §7.4), and a caller's job here is to admit every campaign it can rather
+    than refuse the lot over one voided one.
+
+    Then, **only when ``oos_first_date`` is given** -- the first date of the
+    out-of-sample grid the scoring context carries -- the clean-grid rule
+    ``additions_spec_engine_edge_recovery.xml`` feature 5 states, read off
+    each campaign's own row (:meth:`discovery.CampaignRecords.get`, whose
+    five grid columns ``0120_campaign_evaluation_grid.py`` added):
+
+    * a campaign whose ``grid_last_date`` is **on or after**
+      ``oos_first_date`` is excluded (:data:`EXCLUDED_FOR_OVERLAP`) -- its
+      in-sample evaluation already saw bars the out-of-sample read would
+      judge it on, which is the leak the M3 RESULT's erratum records (17 of
+      103 admitted worlds were not out of sample for the picks scored on
+      them);
+    * a campaign that records **no** ``grid_last_date`` is excluded
+      (:data:`EXCLUDED_AS_UNKNOWN`) -- whether its grid precedes the OOS
+      window is unknown, and unknown is not admitted.
+
+    ``oos_first_date=None`` -- a context with no out-of-sample grid, and the
+    M3 verdict, which holds an evaluation configuration only by its digest --
+    leaves admission exactly as it was before this helper existed: the VOID
+    filter alone, no grid column ever read.  A campaign row that is missing
+    entirely (a manifest without its campaign row) is read as the unknown
+    case, never silently admitted.
+
+    Answers the whole decision -- admitted ids, and every exclusion with its
+    own error message naming the ``grid_last_date`` -- so each caller reports
+    the counts it measured rather than re-deriving them.
+    """
+    manifests = discovery.CampaignManifests(database_url).completed()
+    records = discovery.CampaignRecords(database_url)
+    admitted: list[str] = []
+    exclusions: list[FinancialWorldExclusion] = []
+    for manifest in manifests:
+        try:
+            discovery.admit_completed_campaigns([manifest])
+        except discovery.VoidCampaignError:
+            continue
+        if oos_first_date is None:
+            admitted.append(manifest.campaign_id)
+            continue
+        record = records.get(manifest.campaign_id)
+        grid_last_date = None if record is None else record.grid_last_date
+        if grid_last_date is None:
+            exclusions.append(
+                FinancialWorldExclusion(
+                    campaign_id=manifest.campaign_id,
+                    reason=EXCLUDED_AS_UNKNOWN,
+                    grid_last_date=None,
+                    message=_unknown_message(manifest.campaign_id, oos_first_date),
+                )
+            )
+        elif dt.date.fromisoformat(grid_last_date) >= oos_first_date:
+            exclusions.append(
+                FinancialWorldExclusion(
+                    campaign_id=manifest.campaign_id,
+                    reason=EXCLUDED_FOR_OVERLAP,
+                    grid_last_date=grid_last_date,
+                    message=_overlap_message(
+                        manifest.campaign_id, grid_last_date, oos_first_date
+                    ),
+                )
+            )
+        else:
+            admitted.append(manifest.campaign_id)
+    return FinancialWorldAdmission(
+        campaign_ids=tuple(admitted), exclusions=tuple(exclusions)
+    )
 
 
 @dataclass
@@ -138,11 +393,15 @@ class FinancialEvalContext:
     #: cost model, the sandbox runtime, and the configured ``oos_dates`` the
     #: feature scores every committed pick over.
     evaluation: EvaluationContext
-    #: The per-run cache, keyed by ``(node_id, oos_dates)`` -- a committed
-    #: pick's out-of-sample cost-adjusted IR, the quantity this module's
-    #: scorer answers.  Private to this dataclass: a caller reads and writes
-    #: it only through :func:`score_on_financial_world`, never directly.
-    _cache: dict[tuple[str, tuple[Any, ...]], float] = field(default_factory=dict)
+    #: The per-run cache, keyed by ``(node_id, oos_dates, horizon)`` -- a
+    #: committed pick's out-of-sample cost-adjusted IR, the quantity this
+    #: module's scorer answers.  The horizon is part of the key because it is
+    #: part of the measurement: one node scored at two horizons is two
+    #: different readings, and a cache that keyed on the node and the grid
+    #: alone would hand the second horizon the first one's figure.  Private
+    #: to this dataclass: a caller reads and writes it only through
+    #: :func:`score_on_financial_world`, never directly.
+    _cache: dict[tuple[str, tuple[Any, ...], int], float] = field(default_factory=dict)
 
 
 class _FinancialObservation:
@@ -262,7 +521,8 @@ def score_on_financial_world(
     candidate that never commits answers :data:`replay.NON_COMMITTING_SCORE`
     with no pick, exactly as the bootstrap evaluator's own miss does; a
     committed node is scored by its out-of-sample cost-adjusted IR, read (and
-    cached) through ``context``.
+    cached) through ``context`` -- at the campaign row's own ``horizon``
+    when it records one (see :func:`_oos_ir`), at ``context``'s otherwise.
 
     Raises :class:`~orchestrator._policy.PolicyLoadError` naming the
     admission reason for a source :func:`policy_runtime.screen_policy`
@@ -318,7 +578,7 @@ def _dream_oracle(evaluation: EvaluationContext, dates: Any) -> Any:
 
 
 def _oos_ir(node_id: str, *, campaign_id: str, context: FinancialEvalContext) -> float:
-    """The committed node's out-of-sample cost-adjusted IR -- cached by ``(node_id, oos_dates)``.
+    """The committed node's out-of-sample cost-adjusted IR -- cached by ``(node_id, oos_dates, horizon)``.
 
     The one expensive act this module performs: reads the node's stored
     ``code.py`` artifact back and runs it through
@@ -326,9 +586,24 @@ def _oos_ir(node_id: str, *, campaign_id: str, context: FinancialEvalContext) ->
     ``context.evaluation.oos_dates``.  A second call naming a node this
     run has already scored answers the cached figure without touching the
     artifact store or the sandbox again.
+
+    **The node is scored at its own campaign's horizon.**  Before anything
+    else, the ``campaign`` row's ``horizon`` is read
+    (:func:`_campaign_horizon`) and, when it carries one, the evaluation runs
+    under ``dataclasses.replace(context.evaluation, horizon=that)`` -- the
+    horizon the pick was *selected for* is the horizon it is judged on, never
+    the dreaming context's own.  :func:`_dream_oracle` serves the requested
+    horizon out of the same snapshot's real forward returns, so the read stays
+    one oracle over one grid.  A campaign row with no ``horizon`` (or no row
+    at all) scores at ``context.evaluation.horizon`` exactly as before this
+    law existed.  The horizon is part of the cache key because it is part of
+    the measurement: the same node scored under two horizons is two figures.
     """
     evaluation = context.evaluation
-    key = (node_id, tuple(evaluation.oos_dates))
+    horizon = _campaign_horizon(evaluation.database_url, campaign_id)
+    if horizon is not None:
+        evaluation = dataclasses.replace(evaluation, horizon=horizon)
+    key = (node_id, tuple(evaluation.oos_dates), evaluation.horizon)
     cached = context._cache.get(key)
     if cached is not None:
         return cached
@@ -343,3 +618,30 @@ def _oos_ir(node_id: str, *, campaign_id: str, context: FinancialEvalContext) ->
     )
     context._cache[key] = cost_adjusted_ir
     return cost_adjusted_ir
+
+
+def _campaign_horizon(database_url: str, campaign_id: str) -> int | None:
+    """The campaign row's own ``horizon``, or ``None`` when it records none.
+
+    Read once per out-of-sample score (:func:`_oos_ir`) so a pick is judged at
+    the horizon its own campaign selected under -- ``0120_campaign_evaluation_grid``
+    column, present only on campaigns recorded since that migration, so a
+    missing row, a ``NULL`` column or a database whose chain has not reached
+    ``0120`` (:meth:`discovery.CampaignRecords._grid_select_list` substitutes
+    a literal ``NULL`` for the column) answers ``None``, and the caller scores
+    at the context's horizon, exactly as the pre-grid campaigns always were.
+
+    A database with no ``campaign`` table at all -- the pre-``0111`` shape --
+    answers ``None`` too, and only that: the refusal is caught by its own
+    text, so an unreachable or corrupt store still raises rather than being
+    mistaken for a campaign that merely records no horizon.
+    """
+    try:
+        record = discovery.CampaignRecords(database_url).get(campaign_id)
+    except sqlite3.OperationalError as error:
+        if "no such table" not in str(error):
+            raise
+        return None
+    if record is None:
+        return None
+    return record.horizon
