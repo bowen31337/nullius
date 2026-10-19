@@ -604,7 +604,7 @@ class EvaluationContext:
     snapshot: SnapshotMount
     #: ``{symbol: {bar date: close}}`` — step 4's ``closes`` argument, a
     #: lazy view over the mounted ``bars`` partitions as finite positive
-    #: floats, read and memoized one symbol-day at a time on first use
+    #: floats, read and memoized one symbol at a time on first use
     #: (see :class:`_LazyCloses`), so one context's evaluations all align
     #: over the same sealed bytes without paying for a partition no
     #: evaluation ever asks for.
@@ -1857,6 +1857,19 @@ _CLOSE_CACHE: dict[tuple[str, str, str, dt.date], float] = {}
 #: 139k closes were read about 8 times over).
 _CLOSE_LOCK = threading.Lock()
 
+#: One symbol's whole ``{day: close}`` map, keyed by the exact stream,
+#: snapshot and symbol it was read for — the one-pass counterpart to
+#: :data:`_CLOSE_CACHE`.  The lake stores a file per symbol-day, so the
+#: per-day :func:`_read_close` path paid one ``mount.select`` and one
+#: ``pyarrow.parquet.read_table`` *per day*: 331,369 reads for one
+#: snapshot's futures closes.  Reading every partition of a symbol in one
+#: call answers the identical mapping for one read per symbol.  Module-level
+#: and never cleared, like :data:`_CLOSE_CACHE`: a second evaluation over
+#: the same snapshot in the same process — even through a freshly loaded
+#: context — finds every close it already paid to read.
+_SERIES_CACHE: dict[tuple[str, str, str], dict[dt.date, float]] = {}
+_SERIES_LOCK = threading.Lock()
+
 #: ``{(stream, snapshot_hash, symbol): (dates, date set)}`` — each symbol's
 #: partition listing, read once per process.  A listing is not free: on the
 #: archive snapshot :meth:`SnapshotMount.dates` costs about 77 ms, and
@@ -1891,14 +1904,21 @@ def _listed_dates(
 
 
 class _LazySymbolCloses(Mapping[dt.date, float]):
-    """One symbol's closes — read and memoized one bar at a time.
+    """One symbol's closes — read and memoized in one pass per symbol.
 
     The dates this maps are a directory listing
     (:meth:`SnapshotMount.dates`, about 77 ms on the archive), fetched once
-    per process through :func:`_listed_dates`; the *prices* are read only when a date is actually looked
-    up, through :func:`_read_close` — which is where the poisoned-close
-    and duplicate-bar refusals a symbol's own partitions can still raise
-    now fire: at first use, not at load.
+    per process through :func:`_listed_dates`; the *prices* are read only
+    when a date is actually looked up, and then all of the symbol's
+    partitions at once, through :func:`_read_series` — which is where the
+    poisoned-close and duplicate-bar refusals a symbol's own partitions can
+    still raise now fire: at first use, not at load.  Reading the whole
+    symbol rather than one day at a time is the ``_context`` half of the
+    same fix ``_evaluate``'s panel cache makes: the lake stores one Parquet
+    file per symbol-day, so a per-day loop paid one ``mount.select`` and one
+    ``read_table`` per day — 331,369 reads for one snapshot's futures closes
+    alone.  Only the *reading* changed: the ``{day: close}`` mapping answered
+    is identical (see :meth:`_series`).
 
     Parametrized by ``stream``/``day_column``/``close_column`` so the perp
     instrument's ``fut_close`` (read from :data:`FUTBARS_STREAM`'s own
@@ -1945,28 +1965,44 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
     def __contains__(self, day: object) -> bool:
         return isinstance(day, dt.date) and day in self._listing()[1]
 
-    def __getitem__(self, day: dt.date) -> float:
-        if day not in self._listing()[1]:
-            raise KeyError(day)
-        cache_key = (self._stream, self._snapshot_hash, self._symbol, day)
-        try:
-            return _CLOSE_CACHE[cache_key]
-        except KeyError:
-            pass
-        with _CLOSE_LOCK:
-            cached = _CLOSE_CACHE.get(cache_key)
+    def _series(self) -> dict[dt.date, float]:
+        """This symbol's whole ``{day: close}`` map, read once per process.
+
+        The one-pass read this class's docstring promises: every one of the
+        symbol's partitions read together on first access, rather than one
+        ``mount.select`` plus one ``pyarrow.parquet.read_table`` per day.
+        The per-day shape answered is identical — the same keys, the same
+        parsed floats, the same poisoned-close and duplicate-row refusals —
+        it is the *reading* that stops being per-day.
+
+        Memoized in :data:`_SERIES_CACHE` under one entry per
+        (stream, snapshot, symbol), so a second context over the same
+        snapshot in the same process — every ``create_app()`` — finds the
+        whole map already read.
+        """
+        cache_key = (self._stream, self._snapshot_hash, self._symbol)
+        with _SERIES_LOCK:
+            cached = _SERIES_CACHE.get(cache_key)
             if cached is not None:
                 return cached
-            price = _read_close(
+            series = _read_series(
                 self._mount,
                 self._symbol,
-                day,
+                self._available(),
                 stream=self._stream,
                 day_column=self._day_column,
                 close_column=self._close_column,
             )
-            _CLOSE_CACHE[cache_key] = price
-            return price
+            _SERIES_CACHE[cache_key] = series
+            return series
+
+    def __getitem__(self, day: dt.date) -> float:
+        if day not in self._listing()[1]:
+            raise KeyError(day)
+        try:
+            return self._series()[day]
+        except KeyError:
+            raise KeyError(day) from None
 
     def __iter__(self) -> Iterator[dt.date]:
         return iter(self._available())
@@ -2065,43 +2101,111 @@ def _read_close(
     same function, the same rules, a different column spelling.
     """
     iso = day.isoformat()
-    series: dict[dt.date, float] = {}
-    for part in mount.select(stream, symbol, iso):
-        table = _read_part(part, symbol)
-        if day_column not in table.column_names:
-            raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                f"a snapshot whose {part!s} carries no "
-                f"{day_column!r} column; a close whose bar day cannot be "
-                "read is a close that cannot be keyed"
-            )
-        if close_column not in table.column_names:
-            raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
-                f"a snapshot whose {part!s} carries no {close_column!r} "
-                "column; the alignment's market grid is the closes of "
-                "the scored symbols, and a bar without one is a bar no "
-                "target can be measured from"
-            )
-        for row in table.select([day_column, close_column]).to_pylist():
-            moment = row[day_column]
-            row_day = (
-                moment.date() if isinstance(moment, dt.datetime) else moment
-            )
-            price = _close_price(row[close_column], symbol, row_day)
-            if row_day in series:
-                raise EvaluationConfigError(
-                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
-                    f"names a snapshot whose {stream} carry "
-                    f"{symbol!r} on {row_day.isoformat()} twice; one "
-                    "bar, one close — the aligner's grain, and "
-                    "a snapshot that carries two has a staging "
-                    "defect a silent merge would hide"
-                )
-            series[row_day] = price
+    series = _close_series(
+        mount.select(stream, symbol, iso),
+        mount,
+        symbol,
+        stream=stream,
+        day_column=day_column,
+        close_column=close_column,
+    )
     if day not in series:
         raise KeyError(day)
     return series[day]
+
+
+def _read_series(
+    mount: SnapshotMount,
+    symbol: str,
+    days: Sequence[dt.date],
+    *,
+    stream: str = BARS_STREAM,
+    day_column: str = "open_time",
+    close_column: str = "close",
+) -> dict[dt.date, float]:
+    """Every close of one symbol, read in one pass over all its partitions.
+
+    The one-pass counterpart to :func:`_read_close`: ``days`` is the
+    symbol's own partition listing (:func:`_listed_dates`), and every one
+    of those partitions is read together — one ``mount.select`` per day
+    (the directory listing the mount already provides) collected into one
+    :func:`_read_part` call, rather than one call per day.  The answered
+    mapping is identical to what a loop of :func:`_read_close` calls would
+    have built, because both go through :func:`_close_series`: the same
+    finite-positive validation, the same "one bar, one close" duplicate
+    refusal, the same row's-own-``day_column`` keying.
+    """
+    parts = [
+        part for day in days for part in mount.select(stream, symbol, day.isoformat())
+    ]
+    return _close_series(
+        parts,
+        mount,
+        symbol,
+        stream=stream,
+        day_column=day_column,
+        close_column=close_column,
+    )
+
+
+def _close_series(
+    parts: Sequence[object],
+    mount: SnapshotMount,
+    symbol: str,
+    *,
+    stream: str,
+    day_column: str,
+    close_column: str,
+) -> dict[dt.date, float]:
+    """Parse ``parts`` into ``{bar day: close}``, with every same refusal.
+
+    The content half shared by :func:`_read_close` and :func:`_read_series`:
+    the venue's string spelling of a close is parsed to the finite positive
+    float step 4 validates (a price that is not a positive finite number
+    poisons every forward return measured off it), keyed by the row's own
+    ``day_column`` date — the candle's day, not the partition's name, so a
+    partition holding a row of another day still lands where the bar says it
+    belongs.  A second row for one ``(symbol, day)`` is refused rather than
+    merged, the same "one bar, one close" law
+    :func:`_refuse_duplicate_partition_rows` already checked for free across
+    the whole snapshot — held here too, for the partitions that check could
+    not see into (an unknown row count).
+    """
+    parts = list(parts)
+    series: dict[dt.date, float] = {}
+    if not parts:
+        return series
+    table = _read_part(parts, symbol)
+    if day_column not in table.column_names:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+            f"a snapshot whose {parts[0]!s} carries no "
+            f"{day_column!r} column; a close whose bar day cannot be "
+            "read is a close that cannot be keyed"
+        )
+    if close_column not in table.column_names:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names "
+            f"a snapshot whose {parts[0]!s} carries no {close_column!r} "
+            "column; the alignment's market grid is the closes of "
+            "the scored symbols, and a bar without one is a bar no "
+            "target can be measured from"
+        )
+    for row in table.select([day_column, close_column]).to_pylist():
+        moment = row[day_column]
+        row_day = moment.date() if isinstance(moment, dt.datetime) else moment
+        price = _close_price(row[close_column], symbol, row_day)
+        if row_day in series:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount "
+                f"names a snapshot whose {stream} carry "
+                f"{symbol!r} on {row_day.isoformat()} twice; one "
+                "bar, one close — the aligner's grain, and "
+                "a snapshot that carries two has a staging "
+                "defect a silent merge would hide"
+            )
+        series[row_day] = price
+    return series
 
 
 # -- The funding carry: a lazy, memoized read beside the closes -----------------
@@ -2114,14 +2218,20 @@ def _read_close(
 _FUNDING_CACHE: dict[tuple[str, str, dt.date], float] = {}
 _FUNDING_LOCK = threading.Lock()
 
+#: One symbol's whole ``{ingest day: funding_rate_sum}`` map — the
+#: funding twin of :data:`_SERIES_CACHE`, keyed by snapshot and symbol.
+_FUNDING_SERIES_CACHE: dict[tuple[str, str], dict[dt.date, float]] = {}
+
 
 class _LazySymbolFunding(Mapping[dt.date, float]):
-    """One symbol's ``funding_rate_sum``, read and memoized one row at a time.
+    """One symbol's ``funding_rate_sum``, read and memoized one pass per symbol.
 
     The funding counterpart to :class:`_LazySymbolCloses`: the dates this
     maps are a directory listing (cached per process by
     :func:`_listed_dates`), and the values are read only when
-    a date is actually looked up.  Unlike a close, a funding rate may
+    a date is actually looked up — read then as all of the symbol's
+    partitions at once, through :func:`_read_funding_series`, the same
+    one-pass read the closes take.  Unlike a close, a funding rate may
     legitimately be negative (a short-pays-long settlement), so the
     validator only demands a finite number — see :func:`_funding_value`.
     """
@@ -2144,21 +2254,35 @@ class _LazySymbolFunding(Mapping[dt.date, float]):
     def __contains__(self, day: object) -> bool:
         return isinstance(day, dt.date) and day in self._listing()[1]
 
+    def _series(self) -> dict[dt.date, float]:
+        """Every ``funding_rate_sum`` of this symbol, read in one pass.
+
+        The funding twin of :class:`_LazySymbolCloses`' own one-pass read:
+        all of the symbol's partitions read together on first access
+        instead of one ``mount.select`` and one read per day, answering the
+        identical ``{ingest day: value}`` mapping under the identical
+        refusals (see :func:`_read_funding_series`).  Memoized per
+        (snapshot, symbol), so a second funding reader in the same process
+        reads nothing again.
+        """
+        cache_key = (self._snapshot_hash, self._symbol)
+        with _FUNDING_LOCK:
+            cached = _FUNDING_SERIES_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            series = _read_funding_series(
+                self._mount, self._symbol, self._available()
+            )
+            _FUNDING_SERIES_CACHE[cache_key] = series
+            return series
+
     def __getitem__(self, day: dt.date) -> float:
         if day not in self._listing()[1]:
             raise KeyError(day)
-        cache_key = (self._snapshot_hash, self._symbol, day)
         try:
-            return _FUNDING_CACHE[cache_key]
+            return self._series()[day]
         except KeyError:
-            pass
-        with _FUNDING_LOCK:
-            cached = _FUNDING_CACHE.get(cache_key)
-            if cached is not None:
-                return cached
-            value = _read_funding_rate_sum(self._mount, self._symbol, day)
-            _FUNDING_CACHE[cache_key] = value
-            return value
+            raise KeyError(day) from None
 
     def __iter__(self) -> Iterator[dt.date]:
         return iter(self._available())
@@ -2241,46 +2365,98 @@ def _read_funding_rate_sum(mount: SnapshotMount, symbol: str, day: dt.date) -> f
     duplicate refusal.
     """
     iso = day.isoformat()
-    series: dict[dt.date, float] = {}
-    for part in mount.select(FUNDING_STREAM, symbol, iso):
-        table = _read_part(part, symbol)
-        if "date" not in table.column_names:
-            raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
-                f"snapshot whose {part!s} carries no 'date' column; a "
-                "funding row whose own ingest day cannot be read is a "
-                "settlement that cannot be keyed"
-            )
-        if "funding_rate_sum" not in table.column_names:
-            raise EvaluationConfigError(
-                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
-                f"snapshot whose {part!s} carries no 'funding_rate_sum' "
-                "column; the funding carry sums this value over the "
-                "holding window, and a row without one is a row no carry "
-                "can be measured from"
-            )
-        for row in table.select(["date", "funding_rate_sum"]).to_pylist():
-            moment = row["date"]
-            row_day = (
-                moment.date() if isinstance(moment, dt.datetime) else moment
-            )
-            value = _funding_value(row["funding_rate_sum"], symbol, row_day)
-            if row_day in series:
-                raise EvaluationConfigError(
-                    f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
-                    f"snapshot whose funding carries {symbol!r} on "
-                    f"{row_day.isoformat()} twice; one settlement window, "
-                    "one funding_rate_sum — a snapshot that carries two "
-                    "has a staging defect a silent merge would hide"
-                )
-            series[row_day] = value
+    series = _funding_series(
+        mount.select(FUNDING_STREAM, symbol, iso), symbol, stream=FUNDING_STREAM
+    )
     if day not in series:
         raise KeyError(day)
     return series[day]
 
 
+def _read_funding_series(
+    mount: SnapshotMount, symbol: str, days: Sequence[dt.date]
+) -> dict[dt.date, float]:
+    """Every ``funding_rate_sum`` of one symbol, read in one pass.
+
+    The one-pass counterpart to :func:`_read_funding_rate_sum`: ``days`` is
+    the symbol's own funding partition listing, and every partition is read
+    together in one :func:`_read_part` call instead of one per day.  The
+    answered mapping is identical, because both go through
+    :func:`_funding_series` — the same finite-number validation and the same
+    "one settlement window, one value" duplicate refusal.
+    """
+    parts = [
+        part
+        for day in days
+        for part in mount.select(FUNDING_STREAM, symbol, day.isoformat())
+    ]
+    return _funding_series(parts, symbol, stream=FUNDING_STREAM)
+
+
+def _funding_series(
+    parts: Sequence[object], symbol: str, *, stream: str
+) -> dict[dt.date, float]:
+    """Parse ``parts`` into ``{ingest day: funding_rate_sum}``.
+
+    Keyed by the row's own ``date`` column (the ingest day
+    :mod:`nullius_ingest.derivs_backfill` already buckets settlements into),
+    with the same "one row, one value" duplicate refusal.
+    """
+    parts = list(parts)
+    series: dict[dt.date, float] = {}
+    if not parts:
+        return series
+    table = _read_part(parts, symbol)
+    if "date" not in table.column_names:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+            f"snapshot whose {parts[0]!s} carries no 'date' column; a "
+            "funding row whose own ingest day cannot be read is a "
+            "settlement that cannot be keyed"
+        )
+    if "funding_rate_sum" not in table.column_names:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+            f"snapshot whose {parts[0]!s} carries no 'funding_rate_sum' "
+            "column; the funding carry sums this value over the "
+            "holding window, and a row without one is a row no carry "
+            "can be measured from"
+        )
+    for row in table.select(["date", "funding_rate_sum"]).to_pylist():
+        moment = row["date"]
+        row_day = moment.date() if isinstance(moment, dt.datetime) else moment
+        value = _funding_value(row["funding_rate_sum"], symbol, row_day)
+        if row_day in series:
+            raise EvaluationConfigError(
+                f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a "
+                f"snapshot whose {stream} carries {symbol!r} on "
+                f"{row_day.isoformat()} twice; one settlement window, "
+                "one funding_rate_sum — a snapshot that carries two "
+                "has a staging defect a silent merge would hide"
+            )
+        series[row_day] = value
+    return series
+
+
 def _read_part(part: object, symbol: str) -> Any:
-    """Read one Parquet part through its read-only path.
+    """Read one Parquet part — or a whole symbol's parts — in a single call.
+
+    ``part`` may be a single read-only path (one day's part) or a sequence
+    of paths (every partition of one symbol).  A sequence goes to one
+    :func:`pyarrow.parquet.read_table` over the whole list, which is the
+    one-pass read the lazy readers take instead of one call per day: the
+    lake stores a file per symbol-day, so a per-day loop paid one call per
+    (symbol, day) — 331,369 of them for one snapshot's futures closes
+    alone.  The answered table is the concatenation of those files' rows,
+    in the order the paths were given.
+
+    ``partitioning=None`` is load-bearing: the lake's paths are Hive-shaped
+    (``symbol=…/date=…/part-0.parquet``), so pyarrow's dataset inference
+    would read the directory names as partition keys — and these files
+    already carry their own day/``symbol`` columns, so the inferred
+    dictionary-typed partition column collides with the file's own string
+    column and the read fails outright.  Disabling inference makes the call
+    a plain concatenation of the named files.
 
     Split out so an unreadable part is one refusal with one shape: the
     configuration named a snapshot whose bytes cannot be read, and the
@@ -2292,8 +2468,12 @@ def _read_part(part: object, symbol: str) -> Any:
     """
     import pyarrow.parquet as pq  # lazy: the evaluator's own reader idiom
 
+    if isinstance(part, (str, bytes)) or hasattr(part, "__fspath__"):
+        paths = [str(part)]
+    else:
+        paths = [str(one) for one in part]  # type: ignore[union-attr]
     try:
-        return pq.read_table(str(part))
+        return pq.read_table(paths, partitioning=None)
     except (OSError, ValueError) as exc:
         raise EvaluationConfigError(
             f"{EVALUATION_CONFIG_CODE}: snapshot_mount names a snapshot "

@@ -156,7 +156,6 @@ import json
 import logging
 import math
 import sqlite3
-import threading
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
@@ -447,22 +446,6 @@ class NodeEvaluation:
 # -- The materialize seam: reading the sealed mount for execute_signal ----------
 
 
-#: One panel per (mount, stream, symbol, admitted set), shared by every node
-#: and every rebalance date of a process. The window used to be rebuilt per
-#: date by looping over every partition of every symbol and concatenating
-#: one-row tables: about 37M Python iterations per node on the 2019-2026
-#: archive (about 50 min per node, GIL-bound, so threads did not help). A
-#: panel now grows only up to the decision date being materialized: each
-#: partition is read once, never ahead of the day it serves (the
-#: no-look-ahead read invariant), and each date takes a bisect slice of one
-#: contiguous table. The entry holds the mount itself, so a recycled id()
-#: can never serve another mount's rows. Generalized beyond bars
-#: (additions_spec_derivatives_inputs.xml, feature 3) so the funding,
-#: futbars and metrics streams share the identical cache rather than a
-#: second one keyed only by symbol.
-_PANELS: dict[tuple[int, str, str, int, str], dict[str, Any]] = {}
-_PANELS_LOCK = threading.Lock()
-
 #: The three derivative streams sliced beside bars (:data:`evaluator.SLICED_STREAMS`),
 #: named locally because this is the one module that reads each by name to
 #: build its own feature frame — not a shared constant another member needs.
@@ -493,62 +476,171 @@ _METRICS_FIELDS: Final[tuple[str, ...]] = (
 )
 
 
-def _symbol_panel(
-    mount: Any, resolution: Any, stream: str, symbol: str, decision_date: dt.date
-) -> tuple[list[dt.date], Any]:
-    """``(row dates, table)`` for one symbol's ``stream``, read up to ``decision_date``.
+def _panel_paths(
+    mount: Any, stream: str, symbol: str, days: Sequence[dt.date]
+) -> tuple[list[str], list[dt.date]]:
+    """One symbol's ``days`` partitions, as ``(part paths, day per path)``.
 
-    Covers every partition ``resolution`` admits for the symbol under
-    ``stream`` that is dated at or before ``decision_date``, oldest first.
-    The table is ``None`` when none is. Partitions are read on demand, so a
-    later date extends the panel rather than rereading it. Generalized from
-    bars alone (additions_spec_derivatives_inputs.xml, feature 3), so the
-    funding, futbars and metrics panels a window's derivative feature frames
-    are built from share this exact cache and no-look-ahead discipline.
+    One ``mount.select`` per (stream, symbol, day) — the directory listing
+    the mount already provides, never a fresh ``glob``.  A day whose
+    partition directory carries no ``.parquet`` part contributes nothing,
+    exactly as the per-partition loop skipped it.
+
+    The first part of the day's directory is the one taken, matching the
+    per-partition loop this replaces, which read ``paths[0]``: the lake
+    writes exactly one ``part-0.parquet`` per symbol-day
+    (``nullius_ingest.bars_backfill``), so the day's part is the first and
+    only one and the two agree; should a day ever carry several, the
+    previous path's own choice is kept rather than a new union of files the
+    frames have never seen.  Both lists are built together so the symbol's
+    whole partition table can be read in one pyarrow call while each file's
+    own ``date=`` day stays recoverable (see :class:`_PanelCache`).
     """
-    admitted = tuple(resolution.dates(stream, symbol))
-    # The admitted set is part of the key: a resolution at a later decision
-    # time admits more partitions and must not reuse a shorter panel. The
-    # stream is part of the key too: one symbol's bars and its funding rows
-    # are different panels and must never share a cache entry.
-    key = (id(mount), stream, symbol, len(admitted), max(admitted) if admitted else "")
-    with _PANELS_LOCK:
-        entry = _PANELS.get(key)
-        if entry is None or entry["mount"] is not mount:
-            entry = {
-                "mount": mount,
-                "pending": sorted(admitted),
-                "days": [],
-                "table": None,
-            }
-            _PANELS[key] = entry
-        pending: list[str] = entry["pending"]
-        due = 0
-        while due < len(pending) and dt.date.fromisoformat(pending[due]) <= decision_date:
-            due += 1
-        if due:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
+    paths: list[str] = []
+    path_days: list[dt.date] = []
+    for day in days:
+        parts = mount.select(stream, symbol, day.isoformat())
+        if parts:
+            paths.append(str(parts[0]))
+            path_days.append(day)
+    return paths, path_days
 
-            fresh: list[Any] = []
-            for iso in pending[:due]:
-                paths = list(mount.select(stream, symbol, iso))
-                if not paths:
-                    continue
-                table = pq.read_table(str(paths[0]))
-                if table.num_rows == 0:
-                    continue
-                entry["days"].extend([dt.date.fromisoformat(iso)] * table.num_rows)
-                fresh.append(table)
-            del pending[:due]
-            if fresh:
-                parts = ([entry["table"]] if entry["table"] is not None else []) + fresh
-                # One contiguous chunk per symbol: each partition is a
-                # one-row table, and a panel left as ~1,600 chunks made every
-                # later compute call pay per-chunk overhead (0.79 s for one
-                # 22k-row filter).
-                entry["table"] = pa.concat_tables(parts).combine_chunks()
-        return entry["days"], entry["table"]
+
+def _read_panel(
+    paths: Sequence[str], path_days: Sequence[dt.date]
+) -> tuple[Any, list[dt.date]]:
+    """One symbol's whole partition table, read in a single pyarrow call.
+
+    Answers ``(table, row days)``: every partition's rows in ``paths``
+    order, and one ``date=`` day per row — the identical ``days`` list the
+    per-partition loop built by extending ``[day] * table.num_rows`` for
+    each one-row partition.
+
+    The whole list of part paths goes to one
+    :func:`pyarrow.parquet.read_table`, which is the fix: the previous path
+    made one ``read_table`` call per (date, symbol, day) — 1,385,448 of them
+    on the 239-symbol wide snapshot.  pyarrow answers a multi-path read with
+    one chunk per file (verified: each file contributes exactly one chunk,
+    an empty file contributing a zero-length one), so the chunk lengths are
+    the per-file row counts and the row-day list follows without a second
+    read.  A file carrying several row groups would break that one-chunk-
+    per-file correspondence, so the chunk count is checked and a mismatch
+    falls back to reading the parts one at a time — the old behaviour,
+    kept as the correctness floor rather than assumed away.
+
+    ``partitioning=None`` is load-bearing.  The lake's paths are Hive-shaped
+    (``symbol=…/date=…/part-0.parquet``), so pyarrow's dataset inference
+    reads the directory names as partition keys — and the file already
+    carries its own ``symbol`` column, so the inferred dictionary-typed
+    partition column collides with the file's string column and the read
+    fails with *"Unable to merge: Field symbol has incompatible types"*.
+    Disabling inference makes the call a plain concatenation of the named
+    files: the file's own columns, nothing synthesised from the path.
+
+    ``(None, [])`` for a symbol with no partition at all.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if not paths:
+        return None, []
+
+    table = pq.read_table(list(paths), partitioning=None)
+    chunks = table.column(0).num_chunks if table.num_columns else 0
+    if chunks != len(paths):
+        # Not one chunk per file (a part with several row groups), so the
+        # chunk boundary no longer names a file.  Read each part on its
+        # own — the previous path — so the row days stay exact.
+        parts: list[Any] = []
+        days: list[dt.date] = []
+        for path, day in zip(paths, path_days):
+            one = pq.read_table(path, partitioning=None)
+            if one.num_rows == 0:
+                continue
+            parts.append(one)
+            days.extend([day] * one.num_rows)
+        if not parts:
+            return None, []
+        return pa.concat_tables(parts).combine_chunks(), days
+
+    days = []
+    for chunk, day in zip(table.column(0).chunks, path_days):
+        days.extend([day] * len(chunk))
+    return table, days
+
+
+class _PanelCache:
+    """One evaluation's per-(stream, symbol) partition tables, read once.
+
+    ``execute_signal`` calls ``materialize`` once per rebalance date and each
+    call asks for every symbol's trailing window under every sealed stream.
+    Adjacent dates share almost all of those files, so a per-date read is the
+    same bytes paid for again: on the 239-symbol wide snapshot one 60-date
+    out-of-sample evaluation made 1,385,448 ``read_table`` calls and took
+    3.5-27 minutes, essentially all of it outside the sandbox.
+
+    This cache reads each ``(stream, symbol)`` pair's whole partition table
+    **once** — a single ``read_table`` over every part path the mount's own
+    ``select`` names — and answers each date's window as a bisect slice of
+    it, exactly the slice the per-partition loop used to assemble.  The row
+    order, columns, dtypes, truncation and renaming that reach the sandbox
+    are therefore byte-identical to the previous path.
+
+    The cache lives on the call — one :func:`_materialize_from_context` (one
+    ``evaluate_node``/``evaluate_on_dates``) owns one instance, and it is
+    dropped when that call returns.  It is deliberately never at module
+    level: a module-level cache would be shared by concurrent evaluations
+    and would pin a whole snapshot's tables in memory for the process's
+    lifetime.
+
+    ``resolution`` is the resolution the evaluation resolved once; the
+    admitted dates it names are the panel's own dates, so the no-look-ahead
+    invariant is unchanged — the panel holds partitions dated at or before
+    the resolution's own decision date, and every per-date slice is cut at
+    that date's own ``earliest_date``/``decision_date`` boundary.
+    """
+
+    __slots__ = ("_days", "_mount", "_resolution", "_tables")
+
+    def __init__(self, mount: Any, resolution: Any) -> None:
+        self._mount = mount
+        self._resolution = resolution
+        self._tables: dict[tuple[str, str], Any] = {}
+        self._days: dict[tuple[str, str], list[dt.date]] = {}
+
+    def _panel(self, stream: str, symbol: str) -> tuple[Any, list[dt.date]]:
+        """The symbol's whole ``stream`` panel, read once and kept."""
+        key = (stream, symbol)
+        table = self._tables.get(key)
+        days = self._days.get(key)
+        if days is None:
+            admitted = tuple(
+                dt.date.fromisoformat(iso)
+                for iso in self._resolution.dates(stream, symbol)
+            )
+            paths, path_days = _panel_paths(self._mount, stream, symbol, admitted)
+            table, days = _read_panel(paths, path_days)
+            self._tables[key] = table
+            self._days[key] = days
+        return table, days
+
+    def window(
+        self, stream: str, symbol: str, earliest_date: dt.date, decision_date: dt.date
+    ) -> Any:
+        """One symbol's window under ``stream``, sliced in memory.
+
+        Covers the panel rows dated in ``(earliest_date, decision_date]`` —
+        the identical range, in the identical order, the per-partition loop
+        selected.  ``None`` when the panel is absent or the slice is empty.
+        """
+        table, days = self._panel(stream, symbol)
+        if table is None:
+            return None
+        lo = bisect.bisect_right(days, earliest_date)
+        hi = bisect.bisect_right(days, decision_date)
+        if hi <= lo:
+            return None
+        return table.slice(lo, hi - lo)
 
 
 def _materialize_from_context(context: EvaluationContext) -> Any:
@@ -604,6 +696,14 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
     # mean "no cap beyond this suite's own tiny history", which the default
     # depth already is for them.
     max_history_days = getattr(context, "max_history_days", DEFAULT_MAX_HISTORY_DAYS)
+    # One panel cache per resolution, owned by this call and dropped when
+    # it returns.  Keyed by the resolution because the admitted partitions
+    # are the resolution's own: a later resolution admits more, so it must
+    # never reuse an earlier one's shorter panel.  A module-level cache
+    # would be shared across concurrent evaluations and would pin every
+    # snapshot's tables for the process's lifetime, so the cache lives here
+    # and nowhere else.
+    panels_by_resolution: dict[Any, _PanelCache] = {}
 
     def materialize(resolution: Any, decision_time: dt.datetime) -> Any:
         import pyarrow as pa
@@ -616,16 +716,19 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
         earliest_date = decision_date - dt.timedelta(days=max_history_days)
         universe = pit_universe(resolution, decision_date)
         decision_scalar = pa.scalar(decision_time, type=pa.timestamp("us", tz="UTC"))
+        panels = panels_by_resolution.get(resolution)
+        if panels is None:
+            panels = _PanelCache(mount, resolution)
+            panels_by_resolution[resolution] = panels
 
         def _window_slice(stream: str, symbol: str) -> Any:
-            days, table = _symbol_panel(mount, resolution, stream, symbol, decision_date)
-            if table is None:
-                return None
-            # Rows dated in (earliest_date, decision_date], the same
-            # partitions the per-partition loop used to select.
-            lo = bisect.bisect_right(days, earliest_date)
-            hi = bisect.bisect_right(days, decision_date)
-            return table.slice(lo, hi - lo) if hi > lo else None
+            # One cached panel per (stream, symbol) for the whole
+            # evaluation: the first date reads the symbol's partitions in
+            # one pass and every later date takes a slice of the same
+            # table, so the read count is O(symbols x streams), never
+            # O(dates x symbols x window).  The slice is exactly what the
+            # per-partition loop used to assemble.
+            return panels.window(stream, symbol, earliest_date, decision_date)
 
         def _truncate(table: Any) -> Any:
             if table.num_rows == 0:
