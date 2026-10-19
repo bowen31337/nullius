@@ -1,0 +1,53 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — a tail-decile research book: long the top decile, short the bottom decile, equal-weight within legs</project_name>
+  <addition_summary>
+    docs/preregistration/2026-10-19-h5-repricing.RESULT.md found that the
+    horizon-5 reversal picks rank the cross-section out of sample (portfolio
+    rank IC t +2.45 on 239 names) while neither the z-weighted nor the
+    inverse-volatility dollar-neutral book earns anything gross. An in-sample
+    decile diagnostic on the wide snapshot (scratchpad/decile_diag.py, six
+    picks, 61 weekly dates) shows why: the forward-return gradient sits in the
+    bottom decile (−63 to −73 bp per 5-day period for the volatility and
+    borrow-proxy constructs) while deciles 2–10 are flat and non-monotone; the
+    top-minus-bottom spread is +126 to +136 bp (t 2.0–2.4) where the
+    proportional book earns +6 to +27 bp. A book proportional to score spreads
+    its gross over eight deciles that carry no gradient.
+
+    This addition gives the research book a third weighting, "tail_decile":
+    each date's book is long the top decile of scores and short the bottom
+    decile, equal-weight within each leg, dollar-neutral, gross 1, with the
+    existing beta-neutral rescale applied after. It sits at the same seam as
+    inverse_vol and leaves every default untouched; the nightly evaluation
+    canary enforces that the default path still reproduces its frozen score.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest.</stack>
+    <test_baseline>main at 90e73dd1: evaluator 649, orchestrator 910 (5 skipped, -n 2), root tests/ 1668, all passing.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams: packages/evaluator/src/evaluator/_metrics.py book_weights(scores, betas=None, *, vols=None) (feature 1 of additions_spec_engine_edge_recovery.xml, commit 66b7a98e; frozen-vol drop 0cf60fc1) and compute_node_metrics(returns, scores, *, cost_per_unit_traded, betas, vols) with NodeMetrics.vol_dropped; packages/orchestrator/src/orchestrator/_context.py BookConfig (weighting: "z" | "inverse_vol", vol_window_days) parsed from the config's "book" object with a closed-vocabulary refusal (2d2f9c48), INVERSE_VOL_WEIGHTING constant; packages/orchestrator/src/orchestrator/_evaluate.py evaluate_node (~:1590) and evaluate_on_dates (~:1875) compute vols when weighting == INVERSE_VOL_WEIGHTING and pass them to compute_node_metrics. deploy/shadow and orchestrator.shadow call book_weights(scores, betas) positionally; that call shape must keep working unchanged.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/src/contract/** or src/app/** (gVisor runtime root).
+      - Never edit deploy/shadow/**, deploy/systemd/**, packages/router/**, orchestrator/shadow.py or shadow_eval.py, docs/preregistration/** or docs/user-journeys/**.
+      - Defaults unchanged: with weighting "z" or "inverse_vol" every number is identical to today (1e-12); the evaluation canary's frozen node (campaign c6990362-aba1-4786-aeeb-142f17a92d88, node d7bb84d9-e2d9-5e61-98bf-386d07175c98, score 0.0012316714031509238 under evaluation-config-archive-perp-bn.json with binance_usdm.yaml) is the reference.
+      - book_weights keeps its positional (scores, betas) contract; new inputs are keyword-only.
+      - No stored row is rewritten.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Research Book">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py"
+               creates="packages/evaluator/tests/test_book_weights_tail_decile.py,packages/orchestrator/tests/test_book_weighting_tail_decile.py">
+        System lets the evaluation config set book.weighting to "tail_decile", under which each date's research book is long the top decile of scores and short the bottom decile, equal-weight within each leg, dollar-neutral and gross 1, with the beta-neutral rescale applied after, so that a ranking whose return gradient lives in its tails is traded where the gradient is (the dream cycle summary displays the weighting in force, and a cross-section too small for two non-empty deciles is refused for that date with an error message naming the date and the count).
+        <steps>
+          - book_weights gains a keyword-only weighting: str = "z" (closed vocabulary {"z", "inverse_vol", "tail_decile"}; "inverse_vol" is what vols= not None means today and the two must agree or be refused by name). For "tail_decile": sort the scored symbols by score ascending with ties broken by symbol name; the bottom decile is the first floor(n/10) names and the top decile the last floor(n/10), each needing at least 2 names (else refuse with EvaluatorMetricsError naming the date's count); long leg weights +0.5/k_top each, short leg −0.5/k_bottom each, every other name 0.0; then the existing beta-neutral rescale when betas is given. vols is ignored under "tail_decile". With weighting "z" the function is byte-for-byte today's behaviour.
+          - compute_node_metrics gains the same keyword-only weighting and passes it through per date; the rank IC is unchanged (still over the full joined cross-section). NodeMetrics gains tail_k: Mapping[date, int] (default empty) recording k per date under tail_decile.
+          - BookConfig's weighting vocabulary gains "tail_decile" (TAIL_DECILE_WEIGHTING constant); both evaluation chains pass weighting=context.book.weighting to compute_node_metrics (and compute vols only for inverse_vol, as today). The dream cycle summary already displays the weighting (2d2f9c48); confirm it shows "tail_decile".
+          - Tests (new files): a 20-name fixture gives exactly 2 longs at +0.25 and 2 shorts at −0.25 with gross 1 and net 0, with ties broken by name; a 50-name fixture gives 5 and 5 at ±0.1; a 15-name cross-section (floor 1.5 = 1 per leg) is refused naming the count; betas compose after the legs are formed (compare with _beta_neutral_weights applied to the tail weights); weighting "z" reproduces an existing fixture's weights and compute_node_metrics output to 1e-12; "inverse_vol" with vols reproduces the existing inverse-vol test expectations; the config parses "tail_decile", refuses an unknown value, and the evaluation chain under "tail_decile" produces per-date books equal to book_weights(scores, betas, weighting="tail_decile") on a fixture. The evaluator and orchestrator tests touched pass.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
