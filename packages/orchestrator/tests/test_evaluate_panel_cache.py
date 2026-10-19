@@ -10,16 +10,26 @@ the sandbox.  ``_context._LazySymbolCloses._read_close`` read one file per day
 on top of that — 331,369 reads for one snapshot's futures closes — and the
 funding reader beside it did the same.
 
-The fix reads each ``(stream, symbol)``'s whole partition table **once**:
+The fix reads each ``(stream, symbol)``'s partition table **once**, growing
+it forward as the grid advances:
 
 * ``_evaluate``'s ``_PanelCache`` — one instance per evaluation call, never at
-  module level, dropped when the call returns — reads every partition of a
-  symbol in a single ``read_table`` and answers each date's window as a
-  bisect slice of that table.  The frame handed onward is byte-identical to
-  the previous per-file path's, so the sandbox sees exactly what it saw.
+  module level, dropped when the call returns — keeps one table per
+  ``(stream, symbol)`` and appends to it the partitions each day owes whose
+  ``date=`` is at or before the day being materialized, reading them through
+  the same per-partition ``mount.select`` calls the pre-cache path made and
+  taking each date's window as a bisect slice of the grown table.  The frame
+  handed onward is byte-identical to the previous per-file path's, so the
+  sandbox sees exactly what it saw.
 * ``_context._LazySymbolCloses`` (and ``_LazySymbolFunding``) read all of a
   symbol's partitions in one pass on first access, answering the identical
-  ``{day: close}`` mapping.
+  ``{day: close}`` mapping.  Unlike the panel cache, that reader is not
+  point-in-time scoped: its callers are the label side (``align_targets``
+  reaches *forward* to ``d + h``) and the trailing beta/vol windows, so the
+  symbol's whole series is exactly what they are allowed to see.  The panel
+  cache is different — it feeds the sandbox's feature frames for one
+  rebalance date, and reading ahead of that date would leak future bars into
+  the signal — which is why only *it* grows forward.
 
 One test per claim the fix makes:
 
@@ -28,8 +38,13 @@ One test per claim the fix makes:
   :func:`_previous_per_file_window`, swapped in for the cache — for every date
   of the grid, including a date whose window starts before a symbol's first
   partition and a symbol missing on some days;
-* **the read count is O(symbols), not O(dates x symbols x window)** — asserted
-  with a counting wrapper over ``pyarrow.parquet.read_table``;
+* **the read count is O(symbols x window_days + dates), not O(dates x symbols
+  x window)** — asserted with a counting wrapper over
+  ``pyarrow.parquet.read_table``;
+* **no partition is read twice or ahead of its day, and the mount is never
+  asked for a listing** — the PIT-1 assertions
+  (``test_pit_universe_per_date.py``) restated through this file's own
+  materialize seam, over the same listing-and-delisting fixture;
 * **``_LazySymbolCloses`` answers the same mapping** a per-day reader produces
   for a fixture symbol, reading each symbol once;
 * **the cache never survives the call** — a second evaluation over the same
@@ -380,10 +395,112 @@ def test_a_symbol_missing_on_some_days_keeps_its_own_range(
             assert gone_days == [], day
 
 
+# -- No partition read twice, ahead of its day, or via a directory listing -----
+
+
+class _CountingMount:
+    """A real mount with its read surface counted — the PIT suite's own proxy.
+
+    Forwards every call to the sealed mount (so the bytes are the genuine
+    ones) while recording each ``select``, the day it was made for and the
+    counts of the two listing calls the no-look-ahead rule forbids.  A copy
+    of ``test_pit_universe_per_date``'s own proxy rather than an import, so
+    this file stays a self-contained regression test; the assertions below
+    are that suite's four, restated through *this* file's materialize seam
+    and its own listing-and-delisting world.
+    """
+
+    def __init__(self, mount: Any) -> None:
+        self._mount = mount
+        self.current_day: dt.date | None = None
+        self.calls: list[tuple[dt.date, str, str, str]] = []
+        self.partitions_calls = 0
+        self.dates_calls = 0
+
+    @property
+    def name(self) -> str:
+        return self._mount.name
+
+    def partitions(self, stream: str) -> Any:
+        self.partitions_calls += 1
+        return self._mount.partitions(stream)
+
+    def dates(self, stream: str, symbol: str) -> Any:
+        self.dates_calls += 1
+        return self._mount.dates(stream, symbol)
+
+    def select(self, stream: str, symbol: str, date: str) -> Any:
+        assert self.current_day is not None, "set current_day before materializing"
+        self.calls.append((self.current_day, stream, symbol, date))
+        return self._mount.select(stream, symbol, date)
+
+
+def test_the_materializer_reads_no_partition_twice_or_ahead_of_its_day(
+    world: tuple[Any, dict], resolution: Any
+) -> None:
+    # The PIT-1 contract (test_pit_universe_per_date.py), through the public
+    # materialize seam over a grid that crosses a listing and a delisting.
+    # The forward-growing panel cache broke this once by reading each
+    # symbol's whole table on first access; this is what catches that
+    # regression in the suite that owns the cache.
+    mount, _ = world
+    counting = _CountingMount(mount)
+    materialize = _materialize(counting)
+
+    for day in GRID:
+        counting.current_day = day
+        _frame(materialize, resolution, day)
+
+    # (a) No look-ahead: every select names a partition dated at or before
+    #     the day it was read for.
+    for day, _stream, _symbol, iso in counting.calls:
+        assert dt.date.fromisoformat(iso) <= day, (day, iso)
+
+    # (b) No re-read: no (stream, symbol, partition) triple is fetched twice
+    #     across the whole grid.
+    triples = [(stream, symbol, iso) for _, stream, symbol, iso in counting.calls]
+    assert len(triples) == len(set(triples)), "a partition was read twice"
+
+    # (c) A symbol is never read before its first listed day or after its
+    #     last — the cache holds no partition its own bars do not cover.
+    gone_last = SYMBOL_DAYS["GONE"][-1]
+    late_first = SYMBOL_DAYS["LATE"][0]
+    for day, _stream, symbol, iso in counting.calls:
+        read_day = dt.date.fromisoformat(iso)
+        if symbol == "GONE":
+            assert read_day <= gone_last, (symbol, read_day)
+        if symbol == "LATE":
+            assert read_day >= late_first, (symbol, read_day)
+        assert read_day in SYMBOL_DAYS[symbol], (symbol, read_day)
+
+    # (d) No directory-wide listing: the per-date question is answered from
+    #     the resolution already in hand, never by re-listing a stream's
+    #     partitions or a symbol's dates.
+    assert counting.partitions_calls == 0
+    assert counting.dates_calls == 0
+
+
 # -- The read count is O(symbols), not O(dates x symbols x window) -------------
 
 
-def test_one_evaluation_makes_o_of_symbols_parquet_reads(
+def _symbol_days_the_windows_need() -> int:
+    """Every ``(symbol, day)`` pair the whole grid's windows reach for.
+
+    The union of ``(grid_date - MAX_HISTORY_DAYS, grid_date]`` over the grid
+    is ``(GRID[0] - MAX_HISTORY_DAYS, GRID[-1]]``, so the days a symbol
+    costs are the ones of its own range inside that span — the same set the
+    forward-growing cache ends up reading, each exactly once.  Counted here
+    from the fixture rather than asserted as a magic number, so the bound
+    below stays a statement about the algorithm and not about this world.
+    """
+    start = GRID[0] - dt.timedelta(days=MAX_HISTORY_DAYS)
+    end = GRID[-1]
+    return sum(
+        1 for days in SYMBOL_DAYS.values() for day in days if start < day <= end
+    )
+
+
+def test_one_evaluation_makes_o_of_symbols_x_window_plus_dates_parquet_reads(
     world: tuple[Any, dict], resolution: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mount, _ = world
@@ -393,15 +510,25 @@ def test_one_evaluation_makes_o_of_symbols_parquet_reads(
     for day in GRID:
         _frame(materialize, resolution, day)
 
-    # One read per (stream, symbol) actually asked for — never one per date,
-    # per symbol and per day of the window.  The materializer reads two
-    # streams (bars and funding), so the bound is symbols x streams, a number
-    # that does not move with the grid; the previous path made
-    # ``dates x symbols x window`` reads.
-    bound = len(SYMBOL_DAYS) * 2
+    # Each `(symbol, day)` partition the grid's windows reach is read once
+    # and at most once, one read per ``(stream, symbol)`` per date that owes
+    # partitions — so ``symbols x window_days + dates``, a count that grows
+    # with the window's depth and the grid's length and not with their
+    # product.  The materializer reads two streams (bars and funding) off the
+    # same per-(stream, symbol) panel cache, hence the factor of two.
+    bound = _symbol_days_the_windows_need() * 2
+    per_file = (
+        len(GRID) * len(SYMBOL_DAYS) * MAX_HISTORY_DAYS
+    )  # what the previous path paid, as an order of magnitude
     assert counter.count <= bound, (
         f"{counter.count} reads for {len(GRID)} dates over "
-        f"{len(SYMBOL_DAYS)} symbols — the per-(date, symbol, day) path is back"
+        f"{len(SYMBOL_DAYS)} symbols — more than the {bound} partitions the "
+        "windows actually need; the per-(date, symbol, day) path is back"
+    )
+    assert counter.count < per_file // 2, (
+        f"{counter.count} reads is not clearly below the {per_file} the "
+        "per-(date, symbol, day) path made — the cache is not sharing reads "
+        "across dates"
     )
     # And the count does not grow with a longer grid: a second pass over the
     # same dates, against the same call's cache, reads nothing at all.

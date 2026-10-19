@@ -1979,6 +1979,24 @@ class _LazySymbolCloses(Mapping[dt.date, float]):
         (stream, snapshot, symbol), so a second context over the same
         snapshot in the same process — every ``create_app()`` — finds the
         whole map already read.
+
+        **Why this reader may keep its one-pass read when the panel cache
+        may not.**  Reading a symbol's whole series is only a defect when
+        it reads a date the caller is not allowed to see.  Nothing that
+        reaches this mapping is point-in-time bounded by a single
+        rebalance date: ``align_targets`` needs the *forward* return
+        ``close[d+h] / close[d] − 1`` — a bar demonstrably after the
+        rebalance date, which is the label, not a leak — and the
+        beta/volatility windows step *backward* from ``D`` through
+        :func:`_beta_window_dates`, taking only the trailing dates they
+        name.  The signal never sees ``closes``; the sandbox is handed the
+        materialized feature frames instead, and those are bounded by
+        :class:`orchestrator._evaluate._PanelCache`'s forward-growing read.
+        So the symbol's own sealed series is exactly what every caller here
+        is allowed to see, and reading it in one pass is safe.  A future
+        caller that indexed ``closes`` from *inside* a per-date signal
+        feature would change that answer, and would have to grow forward
+        the way the panel cache does.
         """
         cache_key = (self._stream, self._snapshot_hash, self._symbol)
         with _SERIES_LOCK:
