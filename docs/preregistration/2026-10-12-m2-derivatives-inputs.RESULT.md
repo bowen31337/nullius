@@ -18,3 +18,5 @@ Pre-registration: `2026-10-12-m2-derivatives-inputs.md` (sha256 `4b15973d32746c7
 - The derivative-feature signals the agent authored carry no edge, and are often of the wrong sign.
 - The bars-only signals in this batch were also weaker than archB's. The likely cause is the enlarged prompt (feature documentation plus a funding example) steering designs. This is not proven, and LLM variance is also possible.
 - Per §2.3, the pre-registered next lever is hypothesis-space breadth. This is the fourth failed look at one OOS window. NG4 and §9 make the choice of space a human decision, so this result is brought to the owner before any paid trial.
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

@@ -24,3 +24,5 @@ Non-VOID: 10. Commits: 2, both positive. Median `oos_ir` with misses counted as 
 - At 2-weekly cadence, the rare cost-surviving nodes held up out of sample: 2 of 2 positive, one at OOS IC t +2.05. That is too few to claim anything.
 - The binding constraint is breadth: 8 of 10 campaigns found no cost-surviving node at all.
 - Per §2.3, the next pivot is inputs: the free data streams (funding, perp–spot basis, intraday, order flow).
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

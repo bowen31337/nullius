@@ -22,3 +22,5 @@ Non-VOID: 4. Positive: 1 of 4. Median `oos_ir` with misses counted as 0: −0.00
 **Reading:**
 1. At weekly cadence, in this hypothesis space, almost no node survives costs (0–1 post-cost discoveries per campaign, against 8–14 by IC), and the survivors fail out of sample. §2.3's named next pivot is rebalance cadence.
 2. The VOID rate rose from 0/25 to 6/10 with nulls unchanged (root IC sd 0.0098 → 0.0095) and real roots stronger (mean IC +0.020 → +0.030). The root-nonsig KS gate therefore penalises genuine weak edge. Fixed for future campaigns by `bug_spec_ks_null_calibration_gate.xml`: gate on null self-calibration (null t ~ N(0,1)) and on agent behaviour. VOID verdicts here stand.
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

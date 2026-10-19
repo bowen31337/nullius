@@ -54,3 +54,5 @@ Correlation of IC t with gross IR t across nodes: 0.63.
   - **a short-window (10-day) volatility target**, for funding (0.61 to 1.34)
 - Neither result is a discovery. It is in-sample, it comes from five signals and several constructions, and no fold or OOS check backs it.
 - **The case for the research book:** it should be beta-neutral and risk-targeted, as the live book member already is (volatility target, F303). The rank-z dollar-neutral book is the wrong yardstick for these signals.
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

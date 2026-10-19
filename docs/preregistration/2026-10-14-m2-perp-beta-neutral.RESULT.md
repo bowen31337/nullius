@@ -60,3 +60,5 @@ Not measured separately:
 ## Next (author's decision, per the standing order and PRD §2.3)
 1. **The forward VST shadow** (additions_spec_forward_shadow.xml and additions_spec_derivs_rest.xml, merged and verified end to end on 2026-10-15). The best in-sample candidates from this series trade on the BingX VST perp venue on fresh data. That is the one test the reused window cannot contaminate, and no capital is at risk. Its own pre-registration (nodes, horizon and criteria) is committed before its first book is traded.
 2. A **paid-data trial**, pre-registered and time-boxed. It is deferred until the shadow is running.
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

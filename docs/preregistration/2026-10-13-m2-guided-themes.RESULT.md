@@ -38,3 +38,5 @@ The pre-registered order is the perp instrument (funding and basis as carry), th
 - **The verdict stands.** The rule's figures were gross, and costs can only lower them, so a FAIL on gross is a FAIL on net.
 - **The reading "costs erase standalone signals" above is wrong.** The gap between IC t and IR t is a gap between rank IC and the z-weighted book return, measured before any cost. The likely causes are fat-tailed single-coin moves dominating the book, and rank correlation not translating into return. Costs have not yet been measured at all.
 - The next test (the multi-theme composite) is held until COST-1 lands, so that its pre-registered figure is net.
+
+**Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.

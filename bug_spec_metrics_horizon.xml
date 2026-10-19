@@ -1,0 +1,71 @@
+<bug_spec>
+  <!-- HORIZON-1. Found 2026-10-20 03:50 AEDT while auditing campaign 870d4594,
+       the first campaign of the M2-wide-h5 series (docs/preregistration/
+       2026-10-19-m2-wide-h5.md, Addendum 2 records the stop). Every node
+       metric the system has ever stored — ic_mean, ic_tstat, ir_standalone,
+       ir_tstat, cost_adjusted_ir, ic_series.parquet, the tripwire panel, the
+       m2-fixed replay_score rows and every portfolio-oos reading — is
+       computed at horizon 1, whatever the evaluation config's "horizon" says.
+       evaluator._metrics._metrics_horizon picks the SHORTEST horizon the
+       priced panel covers; both chains align all of HORIZONS (1, 2, 5, 10,
+       20) and both oracles answer every aligned horizon, so the shortest is
+       always 1. The configured horizon reaches nothing on the metrics path:
+       _targets.snapshot_forward_returns falls back to it only for a request
+       that names no horizon, which the gate never sends. additions_spec_
+       engine_edge_recovery.xml feature 5 ("native-horizon OOS scoring",
+       a5c5a7bf) therefore re-horizoned the context to no effect.
+       Numeric proof, node 886a711a (campaign 870d4594, horizon 5, weekly
+       grid): the Spearman of its normalized scores against the 1-day forward
+       return reproduces its stored ic_series with correlation 0.9998 (the
+       residual is the post-cost adjustment); against the 5-day return the
+       correlation is 0.49 and the mean flips sign (+0.0073 vs -0.0279).
+       Every pre-registration since 2026-10-17 describes its metrics as
+       "at horizon 5" or "at horizon 10"; they were one-day figures with a
+       full rebalance fee charged per weekly date. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/evaluator/src/evaluator/_metrics.py"
+       creates="packages/evaluator/tests/test_metrics_horizon_keyword.py">
+    <title>compute_node_metrics always scores the shortest horizon the panel covers and gives a caller no way to name the horizon the evaluation was configured for</title>
+    <symptoms>A priced panel aligned at horizons 1, 2, 5, 10 and 20 for a campaign whose evaluation config says "horizon": 5 yields NodeMetrics.horizon == 1 and an ic_series that is the 1-day Spearman; there is no argument through which the orchestrator could ask for 5. The stored ic_series.parquet of node 886a711a (campaign 870d4594) matches a horizon-1 recomputation to 0.9998 and a horizon-5 recomputation to 0.49.</symptoms>
+    <reproduction_steps>
+      Build a PostCostReturns fixture covering horizons 1 and 5 on three rebalance dates with scores whose rank correlation is +1 against the horizon-1 returns and -1 against the horizon-5 returns. Call compute_node_metrics(returns, scores): NodeMetrics.horizon is 1 and ic_mean is +1. There is no keyword that makes it 5 / -1.
+    </reproduction_steps>
+    <expected>
+      - compute_node_metrics gains a keyword-only `horizon: int | None = None`. With None every number is byte-for-byte today's (the shortest covered horizon, _metrics_horizon unchanged). With an int, the four scalars, ic_series, book_returns, turnover and NodeMetrics.horizon are measured over that horizon's series; a horizon the spec's HORIZONS does not name, or one the priced panel covers with no rebalance date, is refused with EvaluatorMetricsError naming the horizon asked for and the horizons covered (never silently falling back to the shortest).
+      - Tests (new file): the fixture above measures +1 at the default and -1 under horizon=5, with NodeMetrics.horizon reporting 1 and 5 respectively; horizon=10 on a panel covering only 1 and 5 is refused naming 10 and "1, 5"; horizon=3 (not in HORIZONS) is refused; horizon=None reproduces an existing fixture's full NodeMetrics to 1e-12 (reuse an existing compute_node_metrics test fixture). The evaluator tests pass.
+    </expected>
+    <actual>Root cause: feature 80 defined the metrics horizon as "the shortest the panel covers" so that two deployments report the same four numbers for one node, and no later feature (the horizon-5 weekly configs, native-horizon OOS) gave the function a horizon argument; the config's horizon never reaches _metrics.py.</actual>
+    <constraints>
+      Only the listed files change
+      Defaults unchanged: compute_node_metrics(returns, scores, ...) without horizon= is byte-identical to today; the evaluation canary's frozen score (campaign c6990362-aba1-4786-aeeb-142f17a92d88, node d7bb84d9-e2d9-5e61-98bf-386d07175c98, 0.0012316714031509238 under evaluation-config-archive-perp-bn.json with binance_usdm.yaml) is the reference and must not move
+      book_weights and the positional (returns, scores) contract are untouched; the new input is keyword-only
+      No stored row or artifact is rewritten
+      Do not edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/** (baked into the gVisor runtime root)
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="critical" depends_on="1"
+       touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py,packages/orchestrator/src/orchestrator/_financial_eval.py"
+       creates="packages/orchestrator/tests/test_metrics_horizon_config.py">
+    <title>The evaluation config's horizon reaches neither evaluation chain, so a "horizon 5" campaign selects, tripwires, closes out and is scored out of sample at horizon 1</title>
+    <symptoms>Campaign 870d4594 was created under evaluation-config-wide-h5-tail.json ("horizon": 5) and its row records horizon 5, yet all 39 of its nodes carry horizon-1 metrics (ic_series matches the 1-day Spearman at 0.9998) and its m2-fixed replay_score row (-0.001348) is a horizon-1 out-of-sample reading: evaluate_on_dates under _dream_oracle aligns and gates all five horizons, so compute_node_metrics scores the shortest. _oos_ir's dataclasses.replace(evaluation, horizon=campaign horizon) changes only the cache key.</symptoms>
+    <reproduction_steps>
+      With a fixture EvaluationContext whose config says "horizon": 5 and closes covering both 1-day and 5-day forward returns, evaluate a fixture node through evaluate_on_dates with an oracle that answers every requested horizon from those closes: the returned NodeMetrics.horizon is 1. Repeat through evaluate_node with a stub null oracle: 1 again. Narrow the oracle by hand to answer only horizon 5 and the reading changes.
+    </reproduction_steps>
+    <expected>
+      - The evaluation config gains an optional top-level key "metrics_horizon" with the closed vocabulary {"shortest", "configured"} (constants METRICS_HORIZON_KEY, METRICS_HORIZON_SHORTEST, METRICS_HORIZON_CONFIGURED, DEFAULT_METRICS_HORIZON = "shortest"); any other value is refused by name at load, the way "book"."weighting" is. EvaluationContext gains `metrics_horizon: str` (the mode) and a derived read-only `metrics_horizon_value: int | None` — None under "shortest", `self.horizon` under "configured" — so dataclasses.replace(context, horizon=h) under "configured" re-resolves to h (this is what makes _oos_ir's re-horizoning real).
+      - evaluate_node, evaluate_on_dates and _gross_ir_tstat pass horizon=context.metrics_horizon_value to every compute_node_metrics call (the gross diagnostic over the same horizon as the net figure). Nothing else changes: the alignment, the gate, apply_costs and the tripwires (which already take the metrics horizon from the record) are untouched; the tripwire panel therefore follows. The cycle/evaluation log line that names the weighting also names the metrics horizon mode and value.
+      - _oos_ir and portfolio_oos keep re-horizoning through dataclasses.replace(evaluation, horizon=campaign horizon); under "configured" that now scores at the campaign's own horizon, under "shortest" exactly as today.
+      - Tests (new file): the config parses both modes and refuses "native"; a context under "shortest" has metrics_horizon_value None and under "configured" with horizon 5 has 5; dataclasses.replace(ctx, horizon=10) under "configured" yields 10; evaluate_on_dates on a fixture under "configured"/5 returns NodeMetrics.horizon 5 and an ic_series equal to the per-date Spearman of the scores against the 5-day series (the stub oracle's own), while under "shortest" it returns horizon 1 and today's numbers to 1e-12; evaluate_node under "configured" stamps the same; the evaluation canary's default path is covered by the existing canary tests, which must still pass unchanged. The orchestrator tests touched pass.
+    </expected>
+    <actual>Root cause: the configured horizon was wired into the forward-return oracle's fallback (_targets.snapshot_forward_returns, used only when a request names no horizon — never, because the gate asks once per covered horizon) and into the campaign row, but never into compute_node_metrics, which had no horizon argument (bug 1). Feature 5 of additions_spec_engine_edge_recovery.xml replaced context.horizon on the OOS path believing the oracle served it; the oracle serves the request's own horizon, so the replacement reached only the cache key.</actual>
+    <constraints>
+      Only the listed files change
+      Defaults unchanged: a config without "metrics_horizon" behaves byte-for-byte as today; the evaluation canary's frozen reference (above) must not move
+      Never rewrite or delete existing node rows, replay_score rows or artifacts; the horizon-1 numbers already stored keep their meaning and are described in the pre-registration addendum, not corrected in place
+      Do not edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/** (gVisor runtime root)
+      Do not edit docs/preregistration/**, docs/user-journeys/**, deploy/**, packages/router/**, packages/canary/**, orchestrator/shadow.py or shadow_eval.py
+    </constraints>
+  </bug>
+</bug_spec>
