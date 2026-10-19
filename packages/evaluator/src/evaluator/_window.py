@@ -95,6 +95,8 @@ image would break the laziness composition depends on (see ``_service``).
 from __future__ import annotations
 
 import datetime as dt
+import os
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -305,6 +307,85 @@ def _stream_layout(
         if days:
             layout[symbol] = days
     return layout
+
+
+#: One stream's layout, per sealed snapshot, for the life of this process.
+#:
+#: Keyed on the snapshot's own identity rather than on the mount object that
+#: happened to resolve it: ``resolve_window`` is called once per
+#: ``evaluate_node``/``evaluate_on_dates``, and the host mounts the *same*
+#: sealed snapshot afresh for every node of a campaign (a new
+#: ``SnapshotMount`` from the same ``SnapshotService.mount(name)``), so a
+#: cache keyed by object identity would never hit. A sealed snapshot's bytes
+#: never change once named (``_naming``, §4.2), so the layout this derives —
+#: which symbols, which dates, under one stream — is a pure function of that
+#: identity and is safe to reuse for as long as the process runs.
+_STREAM_LAYOUT_CACHE: dict[tuple[str, str, str, str], dict[str, Tuple[dt.date, ...]]] = {}
+_STREAM_LAYOUT_CACHE_LOCK = threading.Lock()
+
+
+def _stream_layout_cache_key(
+    snapshot: Any, name: str, stream: str
+) -> Optional[tuple[str, str, str, str]]:
+    """The cache key for ``snapshot``'s ``stream`` layout, or ``None`` to skip it.
+
+    Built from ``name`` (the canonical ``<sealed_at>_<hash prefix>``
+    spelling already validated by :func:`_mount_queries`), the mount's own
+    ``hash_prefix`` and ``path`` where the structural surface offers them,
+    and ``stream``. ``hash_prefix`` is in practice a substring of ``name``
+    (``_naming.parse_snapshot_name``), so it adds no entropy over a real
+    mount — what ``path`` adds is the guarantee that two mounts which only
+    *happen* to share a name (a hand-built test double, a fixture that pins
+    an explicit hash across two different temporary lakes) are never
+    conflated, since a real sealed snapshot has exactly one directory.
+
+    A structural stand-in that carries neither attribute — the hand-written
+    test doubles this module's own suite builds to pin a refusal without a
+    filesystem — is never cached: caching one is pure risk (nothing backs
+    its "immutable" assumption) for an object no production caller ever
+    passes. Any attribute access that itself raises is treated the same way:
+    a resolution must never fail *because caching was attempted*.
+    """
+    try:
+        hash_prefix = getattr(snapshot, "hash_prefix", None)
+        if not isinstance(hash_prefix, str) or not hash_prefix:
+            return None
+        location = getattr(snapshot, "path", None)
+        location_key = os.fspath(location) if location is not None else ""
+    except Exception:  # noqa: BLE001 - a stand-in's property misbehaving must not fail the resolution, only skip its cache
+        return None
+    return (name, hash_prefix, location_key, stream)
+
+
+def _cached_stream_layout(
+    snapshot: Any, name: str, partitions: Any, dates: Any, stream: str
+) -> dict[str, Tuple[dt.date, ...]]:
+    """:func:`_stream_layout`, reused across calls for the same sealed snapshot.
+
+    The expensive part of a resolution is this walk — one ``partitions``
+    listing plus one ``dates`` listing per symbol, repeated for every
+    symbol-partitioned stream (:data:`SLICED_STREAMS`, and
+    :data:`ROSTER_STREAM` again since ``"bars"`` is also one of them). A
+    campaign evaluates many nodes over one sealed snapshot, and every node's
+    ``resolve_window`` repeated that whole walk — the filesystem calls this
+    module exists to avoid for every later step (see the module docstring)
+    were, until this cache, still made once per node for step 1 itself. The
+    layout cannot change for a cache hit to go stale: the snapshot named by
+    ``name``/``hash_prefix`` is sealed, so a second call either returns the
+    first call's answer or, for an object this module cannot vouch for
+    (:func:`_stream_layout_cache_key` returning ``None``), recomputes it —
+    never a stale one.
+    """
+    key = _stream_layout_cache_key(snapshot, name, stream)
+    if key is None:
+        return _stream_layout(partitions, dates, stream)
+    with _STREAM_LAYOUT_CACHE_LOCK:
+        cached = _STREAM_LAYOUT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    layout = _stream_layout(partitions, dates, stream)
+    with _STREAM_LAYOUT_CACHE_LOCK:
+        return _STREAM_LAYOUT_CACHE.setdefault(key, layout)
 
 
 # -- The resolution ----------------------------------------------------------
@@ -541,7 +622,7 @@ def resolve_window(
     moment = _as_utc(t)
     decision = moment.date()
 
-    roster = _stream_layout(partitions, dates, ROSTER_STREAM)
+    roster = _cached_stream_layout(snapshot, name, partitions, dates, ROSTER_STREAM)
     if not roster:
         raise EvaluatorWindowError(
             f"sealed snapshot {name!r} carries no {ROSTER_STREAM} "
@@ -571,7 +652,7 @@ def resolve_window(
 
     slices: dict[str, Mapping[str, Tuple[str, ...]]] = {}
     for stream in SLICED_STREAMS:
-        layout = _stream_layout(partitions, dates, stream)
+        layout = _cached_stream_layout(snapshot, name, partitions, dates, stream)
         kept: dict[str, Tuple[str, ...]] = {}
         for symbol, days in layout.items():
             surviving = tuple(

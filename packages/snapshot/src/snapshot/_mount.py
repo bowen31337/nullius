@@ -493,15 +493,24 @@ class ReadOnlyPath:
         the caller built by hand. A symlink is listed — hiding it would make
         the mount's view of the tree a lie — but every read of it is refused,
         so listing one is all a caller can do with it.
+
+        Listed with ``os.scandir`` rather than ``Path.iterdir()``: the
+        directory read itself costs the same either way, but ``scandir``
+        is what lets a caller that also needs an entry's type (see
+        :func:`_partition_keys`) read it from the ``DirEntry`` the kernel
+        already returned instead of re-``stat``ing the path this method
+        hands back.
         """
         if self.path.is_symlink():
             raise self._refuse_symlink()
-        if not self.path.is_dir():
-            raise NotADirectoryError(errno.ENOTDIR, "not a directory", str(self.path))
-        return tuple(
-            self / entry.name
-            for entry in sorted(self.path.iterdir(), key=_by_name)
-        )
+        try:
+            with os.scandir(self.path) as scanned:
+                names = sorted(entry.name for entry in scanned)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            raise NotADirectoryError(
+                errno.ENOTDIR, "not a directory", str(self.path)
+            ) from exc
+        return tuple(self / name for name in names)
 
     def glob(self, pattern: str) -> tuple["ReadOnlyPath", ...]:
         """Match ``pattern`` under this directory, returning read-only paths.
@@ -927,17 +936,39 @@ def _partition_keys(base: ReadOnlyPath, key: str) -> tuple[str, ...]:
     no ``borrow/`` stream has no borrow partitions, and saying so plainly is
     more useful than raising. Values are compared as strings, which is
     correct for the symbols and ISO dates the layout carries.
+
+    **The walk is ``os.scandir``, not ``base.children()`` plus a per-entry
+    ``is_dir()``.** The previous form listed the directory once but then
+    asked each returned :class:`ReadOnlyPath` whether it was a directory —
+    ``is_symlink()`` plus ``is_dir()``, two ``stat``-family syscalls per
+    entry — to filter out the occasional file or symlink beside the
+    ``key=value`` directories. ``resolve_window`` calls this once per symbol
+    per stream, so on the 239-symbol wide snapshot that was 3.6M ``stat``
+    and 1.9M ``is_symlink`` calls across one evaluation, 81.5 s of a 114 s
+    profile. ``DirEntry.is_symlink()`` and ``DirEntry.is_dir(follow_symlinks=False)``
+    answer the same two questions from the ``d_type`` the directory read
+    already returned — no extra syscall — in the same order
+    :func:`materialize_read_only` already walks a tree: a symlinked entry is
+    skipped outright (a sealed tree has none, but a planted one must still
+    be refused rather than followed, exactly as the old ``is_symlink()``-gated
+    check refused it), and only what is left is asked whether it is a
+    directory. The result is the identical sorted tuple of values.
     """
-    if not base.is_dir():
+    if base.path.is_symlink():
         return ()
     prefix = f"{key}="
-    return tuple(
-        sorted(
-            entry.name[len(prefix) :]
-            for entry in base.children()
-            if entry.is_dir() and entry.name.startswith(prefix)
-        )
-    )
+    try:
+        with os.scandir(base.path) as entries:
+            names = [
+                entry.name[len(prefix) :]
+                for entry in entries
+                if not entry.is_symlink()
+                and entry.name.startswith(prefix)
+                and entry.is_dir(follow_symlinks=False)
+            ]
+    except (FileNotFoundError, NotADirectoryError):
+        return ()
+    return tuple(sorted(names))
 
 
 def materialize_read_only(

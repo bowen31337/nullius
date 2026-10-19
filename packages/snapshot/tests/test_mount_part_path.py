@@ -158,6 +158,81 @@ class TestPartPathNeverLists:
         assert root is not None
 
 
+class TestPartitionKeysDoNotRestatEachEntry:
+    """``partitions()``/``dates()`` must not ask each entry's type by stat.
+
+    ``_partition_keys`` used to list a directory through ``children()`` and
+    then ask each returned :class:`ReadOnlyPath` "is this a directory?" —
+    ``is_symlink()`` plus ``is_dir()``, two ``stat``-family syscalls per
+    entry, to filter the ``key=value`` directories from anything else beside
+    them. On the 239-symbol wide snapshot that was 3.6M ``stat`` and 1.9M
+    ``is_symlink`` calls across one ``evaluator.resolve_window`` call — 81.5 s
+    of a 114 s profile, almost all of it inside this one filter. The fix
+    reads each entry's type from the ``DirEntry`` ``os.scandir`` already
+    returned (``is_dir(follow_symlinks=False)``, no extra syscall), so
+    ``ReadOnlyPath.is_dir`` — the method that did the restating — must never
+    be called while answering a partition-keys query, however many entries
+    the directory holds.
+    """
+
+    def test_dates_does_not_restat_fifty_partitions(
+        self, service: SnapshotService, lake_root: Path
+    ) -> None:
+        staging = lake_root / "staging-many-dates"
+        bars_symbol = staging / "bars" / "symbol=BTCUSDT"
+        dates = tuple(f"2026-01-{day:02d}" for day in range(1, 51))
+        for date in dates:
+            partition = bars_symbol / f"date={date}"
+            partition.mkdir(parents=True)
+            (partition / "part-0.parquet").write_bytes(b"x")
+        sealed = service.seal(staging, sealed_at=AT, snapshot_hash="d" * 64)
+        mount = service.mount(sealed.name)
+
+        calls: list[str] = []
+        real_is_dir = ReadOnlyPath.is_dir
+
+        def counting(self: ReadOnlyPath) -> bool:
+            calls.append(self.relative)
+            return real_is_dir(self)
+
+        ReadOnlyPath.is_dir = counting  # type: ignore[method-assign]
+        try:
+            answered = mount.dates("bars", "BTCUSDT")
+        finally:
+            ReadOnlyPath.is_dir = real_is_dir  # type: ignore[method-assign]
+        assert answered == dates
+        assert calls == [], f"dates() restated {len(calls)} entries via ReadOnlyPath.is_dir"
+
+    def test_partitions_does_not_restat_fifty_symbols(
+        self, service: SnapshotService, lake_root: Path
+    ) -> None:
+        staging = lake_root / "staging-many-symbols"
+        symbols = tuple(f"SYM{i:03d}USDT" for i in range(50))
+        for symbol in symbols:
+            partition = staging / "bars" / f"symbol={symbol}" / "date=2026-09-01"
+            partition.mkdir(parents=True)
+            (partition / "part-0.parquet").write_bytes(b"x")
+        sealed = service.seal(staging, sealed_at=AT, snapshot_hash="e" * 64)
+        mount = service.mount(sealed.name)
+
+        calls: list[str] = []
+        real_is_dir = ReadOnlyPath.is_dir
+
+        def counting(self: ReadOnlyPath) -> bool:
+            calls.append(self.relative)
+            return real_is_dir(self)
+
+        ReadOnlyPath.is_dir = counting  # type: ignore[method-assign]
+        try:
+            answered = mount.partitions("bars")
+        finally:
+            ReadOnlyPath.is_dir = real_is_dir  # type: ignore[method-assign]
+        assert answered == tuple(sorted(symbols))
+        assert calls == [], (
+            f"partitions() restated {len(calls)} entries via ReadOnlyPath.is_dir"
+        )
+
+
 class TestPartPathKeepsTheMountsRefusals:
     def test_a_symlinked_component_is_refused_not_followed(
         self, service: SnapshotService, lake_root: Path, sealed_path: Path
