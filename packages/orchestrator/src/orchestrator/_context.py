@@ -217,6 +217,7 @@ __all__ = [
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
     "SPOT_INSTRUMENT",
+    "TAIL_DECILE_WEIGHTING",
     "TEST_STUB_SANDBOX_ENV",
     "Z_WEIGHTING",
     "BookConfig",
@@ -466,18 +467,27 @@ DEFAULT_BETA_WINDOW_DAYS: Final[int] = 60
 #: every other symbol's returns on, when the document omits the key.
 DEFAULT_BETA_BENCHMARK: Final[str] = "BTCUSDT"
 
-#: The two weightings :data:`BOOK_KEY`'s ``weighting`` inner key accepts —
+#: The three weightings :data:`BOOK_KEY`'s ``weighting`` inner key accepts —
 #: closed, the same stance :data:`INSTRUMENTS` takes toward its own
 #: two-member set: ``"z"`` is today's score-proportional book, unchanged;
 #: ``"inverse_vol"`` divides each score by its own symbol's point-in-time
 #: realised volatility before the book is normalized (see
-#: :func:`compute_vols`).  A third spelling is refused by name rather than
-#: guessed, because a weighting is the whole book's construction — running
-#: one a document never named is measuring a different portfolio than the
-#: one the campaign configured.
+#: :func:`compute_vols`); ``"tail_decile"`` ignores the score's magnitude
+#: entirely and goes long the top decile of the day's ranking, short the
+#: bottom decile, equal-weight within each leg, for a ranking whose return
+#: gradient lives in its tails rather than across the whole cross-section.
+#: A fourth spelling is refused by name rather than guessed, because a
+#: weighting is the whole book's construction — running one a document
+#: never named is measuring a different portfolio than the one the campaign
+#: configured.
 Z_WEIGHTING: Final[str] = "z"
 INVERSE_VOL_WEIGHTING: Final[str] = "inverse_vol"
-BOOK_WEIGHTINGS: Final[tuple[str, str]] = (Z_WEIGHTING, INVERSE_VOL_WEIGHTING)
+TAIL_DECILE_WEIGHTING: Final[str] = "tail_decile"
+BOOK_WEIGHTINGS: Final[tuple[str, ...]] = (
+    Z_WEIGHTING,
+    INVERSE_VOL_WEIGHTING,
+    TAIL_DECILE_WEIGHTING,
+)
 
 #: ``weighting``'s default when the document omits it — today's book,
 #: unchanged, the same stance :data:`DEFAULT_INSTRUMENT` takes toward its own
@@ -552,7 +562,14 @@ class BookConfig:
     for this evaluation's point-in-time volatilities and hand those to the
     same call, which divides each score by its own symbol's vol before the
     book is normalized — one key in the evaluation config switches the whole
-    engine to volatility-scaled books, and no other change is needed.
+    engine to volatility-scaled books, and no other change is needed.  With
+    ``weighting="tail_decile"`` the chains pass that string through instead
+    and compute no side panel at all: the book is a function of each date's
+    scores alone — long the top decile of the ranking, short the bottom,
+    equal-weight within each leg — for a ranking whose return gradient lives
+    in its tails rather than across the whole cross-section.  Each of the
+    three weightings composes independently with ``beta_neutral``, which
+    rescales the legs the weighting chose.
     """
 
     #: Whether the book is rescaled to be benchmark-beta-neutral.
@@ -564,10 +581,13 @@ class BookConfig:
     #: :data:`DEFAULT_BETA_BENCHMARK` when the document omits it.
     beta_benchmark: str = DEFAULT_BETA_BENCHMARK
     #: Which weighting each date's book is built under —
-    #: :data:`Z_WEIGHTING` (score-proportional, today's book) or
+    #: :data:`Z_WEIGHTING` (score-proportional, today's book),
     #: :data:`INVERSE_VOL_WEIGHTING` (each score divided by its own symbol's
-    #: point-in-time realised volatility before normalization).
-    #: :data:`DEFAULT_BOOK_WEIGHTING` when the document omits it.
+    #: point-in-time realised volatility before normalization), or
+    #: :data:`TAIL_DECILE_WEIGHTING` (long the top decile of the day's
+    #: ranking, short the bottom decile, equal-weight within each leg, the
+    #: score's magnitude unused).  :data:`DEFAULT_BOOK_WEIGHTING` when the
+    #: document omits it.
     weighting: str = DEFAULT_BOOK_WEIGHTING
     #: How many trailing daily returns a point-in-time volatility is measured
     #: over — :data:`DEFAULT_VOL_WINDOW_DAYS` when the document omits it,
@@ -1223,10 +1243,12 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
             f"got {weighting_raw!r}; the weighting is the whole book's "
             "construction — 'z' weights each name by its own score, "
             f"'{INVERSE_VOL_WEIGHTING}' divides each score by its own "
-            "symbol's realised volatility first — and a value outside that "
-            "closed set is refused rather than guessed, because running a "
-            "weighting the document never named would measure a portfolio "
-            "the campaign did not configure"
+            "symbol's realised volatility first, "
+            f"'{TAIL_DECILE_WEIGHTING}' goes long each date's top score "
+            "decile and short its bottom decile at equal weight within each "
+            "leg — and a value outside that closed set is refused rather "
+            "than guessed, because running a weighting the document never "
+            "named would measure a portfolio the campaign did not configure"
         )
     vol_window_raw = raw.get(
         _BOOK_VOL_WINDOW_DAYS_KEY, DEFAULT_VOL_WINDOW_DAYS

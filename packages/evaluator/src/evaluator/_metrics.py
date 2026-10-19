@@ -200,6 +200,39 @@ weights that will actually be traded.  The default, ``vols=None``, scales
 nothing and reproduces every figure this module computed before the parameter
 existed.
 
+**A third weighting trades the tails instead of the whole cross-section.**
+Both books above weight every scored name in proportion to its own score,
+so a ranking whose *ordering* is right everywhere but whose return *gradient*
+lives only at the extremes — the middle deciles carrying no relationship to
+forward return at all — spreads its gross over the names that carry no
+gradient and monetises little of the one it has.  :func:`book_weights` and
+:func:`compute_node_metrics` therefore accept a keyword-only ``weighting``,
+a closed vocabulary (:data:`WEIGHTINGS`: :data:`Z_WEIGHTING`,
+:data:`INVERSE_VOL_WEIGHTING`, :data:`TAIL_DECILE_WEIGHTING`), and under
+:data:`TAIL_DECILE_WEIGHTING` each date's book is built from that date's
+ranking alone.  The symbols are sorted by score ascending with ties broken by
+symbol name — the one deterministic tie-break this workspace uses wherever a
+ranking has to be total, since two equal scores are not evidence for one name
+over another and an unstable sort would make the book a function of a dict's
+insertion order.  The bottom decile is the first ``floor(n/10)`` names and
+the top decile the last ``floor(n/10)``; the long leg carries ``+0.5/k`` per
+name and the short leg ``-0.5/k``, and every name between them is held at
+exactly ``0.0``.  The book is therefore equal-weight within each leg, gross 1
+and net 0 **by construction** — no centering of the scores is needed, and the
+score's *magnitude* is unused: the book is a function of the ranking.  A
+cross-section too thin to hold two non-empty deciles is refused rather than
+traded: ``k`` below :data:`TAIL_DECILE_MIN_LEG` names a leg of one name (or
+none), which is a directional bet dressed as a cross-sectional one, so
+:func:`_tail_decile_weights` raises :class:`EvaluatorMetricsError` naming the
+count, and :func:`compute_node_metrics` — the per-date caller — restates it
+with the rebalance date the count belongs to.  A ``vols`` panel handed
+beside this weighting is ignored, because the two weightings disagree about
+what a volatility would even mean here; the beta-neutral leg rescale, when
+``betas`` is given, applies *after* the legs are formed, exactly as it does
+for the other weightings.  :attr:`NodeMetrics.tail_k` records ``k`` per date.
+Every figure this module computed before the parameter existed is unchanged
+under the default, :data:`Z_WEIGHTING`.
+
 **Beta-neutral legs are an optional rescale of the same weights.**  The
 dollar-neutral book (``w_i = z_i / Σ|z_j|``) is net-zero but not benchmark
 beta-neutral: a book tilted toward low-beta names on the long side and
@@ -277,12 +310,57 @@ from ._decay import _rank_correlation
 from ._errors import EvaluatorMetricsError
 
 __all__ = [
+    "INVERSE_VOL_WEIGHTING",
     "METRICS_HORIZON",
     "METRICS_STEP",
     "NodeMetrics",
+    "TAIL_DECILE_MIN_LEG",
+    "TAIL_DECILE_WEIGHTING",
+    "WEIGHTINGS",
+    "Z_WEIGHTING",
     "book_weights",
     "compute_node_metrics",
 ]
+
+#: The weightings :func:`book_weights` and :func:`compute_node_metrics` build a
+#: date's book under — closed, the same stance :data:`HORIZONS` takes toward
+#: its own five-member set, because a weighting is the *whole* book's
+#: construction: running one a caller never named is measuring a different
+#: portfolio than the one asked for.
+#:
+#: * :data:`Z_WEIGHTING` — ``w_i = z_i / Σ|z_j|``, the score-proportional
+#:   dollar-neutral book this module has always built, and the default.  It is
+#:   also the *permissive* spelling: with ``vols`` given it means the
+#:   inverse-volatility book, exactly as it did before this parameter existed,
+#:   so every caller that predates the parameter keeps its byte-for-byte
+#:   behaviour.
+#: * :data:`INVERSE_VOL_WEIGHTING` — each score divided by its own symbol's
+#:   volatility, then normalized (see the module docstring).  It is what
+#:   ``vols=<a panel>`` means, so the two must agree: naming this weighting
+#:   while handing ``vols=None`` is refused **by name**, rather than quietly
+#:   building the z book under an inverse-vol label.
+#: * :data:`TAIL_DECILE_WEIGHTING` — long the top decile of the day's scores
+#:   and short the bottom decile, equal-weight within each leg (see
+#:   :func:`_tail_decile_weights`), for a ranking whose return gradient lives
+#:   in its tails.  ``vols`` is ignored under it.
+Z_WEIGHTING: str = "z"
+INVERSE_VOL_WEIGHTING: str = "inverse_vol"
+TAIL_DECILE_WEIGHTING: str = "tail_decile"
+WEIGHTINGS: tuple[str, str, str] = (
+    Z_WEIGHTING,
+    INVERSE_VOL_WEIGHTING,
+    TAIL_DECILE_WEIGHTING,
+)
+
+#: The fewest names either leg of a tail-decile book may hold — two, the floor
+#: :mod:`orchestrator._shadow` already applies to a dollar-neutral book's legs
+#: ("a dollar-neutral book needs real diversification on both sides, not one
+#: name per leg"), restated here because it is now this module's own refusal:
+#: a leg of one name *is* that name, so the "decile" would be a directional bet
+#: dressed as a cross-sectional one.  Each leg holds ``floor(n/10)`` names, so
+#: this floor is met exactly when the date's cross-section carries at least
+#: ``10 × TAIL_DECILE_MIN_LEG`` = 20 scored symbols.
+TAIL_DECILE_MIN_LEG: int = 2
 
 #: The pipeline-step name, in §6.1's own spelling.  Step 8 is the metrics
 #: step — ``compute_metrics    IC series, IR, turnover, decay, capacity,
@@ -445,6 +523,28 @@ class NodeMetrics:
     #: the three proxy fields it names, and a fourth proxy would reach the
     #: pickler as an unpicklable ``mappingproxy``.
     vol_dropped: Mapping[dt.date, int] = field(default_factory=dict, compare=False)
+    #: How many names each leg of each rebalance date's tail-decile book held —
+    #: ``floor(n/10)`` for that date's joined cross-section of ``n`` scored
+    #: symbols, where the long leg holds the top ``k`` and the short leg the
+    #: bottom ``k``, each name at ``±0.5/k``.  Carried for the reason
+    #: :attr:`vol_dropped` is: the weights alone say a tail-decile book was
+    #: equal-weight within its legs but not how many names shared the gross, so
+    #: a reader cannot tell a two-name leg from a fifty-name one without it,
+    #: and that count is the figure a capacity or concentration read needs.
+    #: Every measured date carries an entry under
+    #: ``weighting="tail_decile"``; empty under every other weighting (the z
+    #: and inverse-vol books hold every symbol, so there is no ``k`` to
+    #: record) and on a record rebuilt from the metrics store, which persists
+    #: neither this field nor :attr:`book_returns` nor
+    #: :attr:`turnover_series`.  Excluded from equality (``compare=False``)
+    #: for the same reason those three are: a record rebuilt from the store is
+    #: still the same measurement as the one that produced it. Carried as a
+    #: plain ``dict`` rather than a ``MappingProxyType`` — unlike its three
+    #: proxy siblings — for the reason :attr:`vol_dropped` is:
+    #: :mod:`orchestrator._process_pool`'s ``NodeMetrics`` reducer unwraps only
+    #: the three proxy fields it names, and a fourth proxy would reach the
+    #: pickler as an unpicklable ``mappingproxy``.
+    tail_k: Mapping[dt.date, int] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
         # object.__setattr__ where the constructor normalizes; this record
@@ -608,6 +708,30 @@ class NodeMetrics:
                 )
             captured_dropped[day] = value
         object.__setattr__(self, "vol_dropped", captured_dropped)
+        captured_tail: dict[dt.date, int] = {}
+        for day, value in self.tail_k.items():
+            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+                raise EvaluatorMetricsError(
+                    "a node metrics' tail_k must be keyed by calendar dates, "
+                    f"got {day!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise EvaluatorMetricsError(
+                    f"the tail_k count on {day.isoformat()} must be an "
+                    f"integer, got {value!r}; the field counts the names one "
+                    "leg of the date's tail-decile book held, and a fractional "
+                    "one would name a book that traded part of a symbol"
+                )
+            if value < TAIL_DECILE_MIN_LEG:
+                raise EvaluatorMetricsError(
+                    f"the tail_k count on {day.isoformat()} is {value!r}, "
+                    f"below the {TAIL_DECILE_MIN_LEG} names a leg of a "
+                    "tail-decile book must hold; a leg of fewer names is not "
+                    "a decile, and a record claiming one was never built by "
+                    "this module's arithmetic"
+                )
+            captured_tail[day] = value
+        object.__setattr__(self, "tail_k", captured_tail)
 
     def __hash__(self) -> int:
         # The mapping is not hashable until it collapses to tuples; the fold
@@ -825,11 +949,105 @@ def _inverse_vol_scores(
     return scaled
 
 
+def _tail_decile_weights(
+    scores: Mapping[str, float], *, day: dt.date | None = None
+) -> dict[str, float]:
+    """The tail-decile book for one date — long the top decile, short the bottom.
+
+    ``scores`` is one date's already-validated cross-section.  The symbols are
+    sorted by score ascending, ties broken by symbol name (the one
+    deterministic tie-break this workspace uses wherever a ranking has to be
+    total — an unstable sort would make the book a function of dict insertion
+    order, and two equal scores are not evidence for one name over another).
+    The bottom decile is then the first ``floor(n/10)`` names and the top
+    decile the last ``floor(n/10)``; the long leg's names each carry
+    ``+0.5 / k`` and the short leg's each ``-0.5 / k``, every other name
+    ``0.0``.  The book is therefore equal-weight within each leg, gross 1
+    (``k · 0.5/k + k · 0.5/k``) and net 0 (the two legs' identical gross sums
+    cancel) by construction, whatever the scores' own scale or centering — the
+    whole point of the weighting, since a ranking whose return gradient lives
+    in its tails is traded where the gradient is rather than spread
+    proportionally over deciles that carry none.
+
+    A cross-section too small for two non-empty deciles is refused: ``k``
+    below :data:`TAIL_DECILE_MIN_LEG` names a leg of one name (or none), and a
+    "decile" holding a single symbol is a directional bet dressed as a
+    cross-sectional one.  ``day``, when the caller has one, is named in the
+    refusal beside the count, so a per-date caller's message says *which*
+    rebalance date's cross-section was too thin; :func:`book_weights` has no
+    date to name and omits it.
+    """
+    ordered = sorted(scores, key=lambda symbol: (scores[symbol], symbol))
+    count = len(ordered)
+    leg = count // 10
+    where = f" on {day.isoformat()}" if day is not None else ""
+    if leg < TAIL_DECILE_MIN_LEG:
+        raise EvaluatorMetricsError(
+            f"the cross-section{where} carries {count} scored symbols, so its "
+            f"top and bottom deciles would hold floor({count}/10) = {leg} "
+            f"name(s) each; a tail-decile book needs at least "
+            f"{TAIL_DECILE_MIN_LEG} names per leg (a leg of one name is a "
+            "directional bet, not a cross-sectional one), which needs at least "
+            f"{10 * TAIL_DECILE_MIN_LEG} scored symbols — refusing rather than "
+            "trading a decile that is not one"
+        )
+    weight = 0.5 / leg
+    weights = dict.fromkeys(ordered, 0.0)
+    for symbol in ordered[:leg]:
+        weights[symbol] = -weight
+    for symbol in ordered[count - leg:]:
+        weights[symbol] = weight
+    return weights
+
+
+def _resolve_weighting(weighting: object, vols: object) -> str:
+    """Settle which book the caller asked for — and refuse a contradiction.
+
+    ``weighting`` is the caller's spelling, one of :data:`WEIGHTINGS`; ``vols``
+    is the panel it handed beside it (or ``None``).  Two of the three
+    weightings are named by the panel rather than only by the string, so the
+    two must agree:
+
+    * :data:`Z_WEIGHTING` with a ``vols`` panel is the inverse-volatility book
+      — that is what ``vols`` has meant to every caller since the parameter
+      existed, and it stays that way, so an old caller's call is unchanged.
+    * :data:`INVERSE_VOL_WEIGHTING` with ``vols=None`` is a contradiction: the
+      caller named a book whose whole construction is the division by a
+      volatility and supplied no volatility, so it is refused **by name**
+      rather than quietly built as the z book the caller did not ask for.
+    * :data:`TAIL_DECILE_WEIGHTING` is a function of the scores alone; a
+      ``vols`` panel handed with it is ignored, exactly as the spec's own
+      sentence says, because the two weightings disagree about what a
+      volatility would even mean here.
+    """
+    if not isinstance(weighting, str) or weighting not in WEIGHTINGS:
+        raise EvaluatorMetricsError(
+            "book_weights' weighting must be one of "
+            f"{', '.join(repr(name) for name in WEIGHTINGS)}, got "
+            f"{weighting!r}; the weighting is the whole book's construction, "
+            "and a value outside that closed set is refused rather than "
+            "guessed — building one the caller never named would trade a "
+            "different portfolio than the one asked for"
+        )
+    if weighting == INVERSE_VOL_WEIGHTING and vols is None:
+        raise EvaluatorMetricsError(
+            f"book_weights was asked for the {INVERSE_VOL_WEIGHTING!r} book "
+            "but carries no vols; the weighting divides every score by its "
+            "own symbol's volatility, so a vols of None leaves nothing to "
+            "divide by — supply the panel or ask for "
+            f"{Z_WEIGHTING!r}, which weights each name by its own score"
+        )
+    if weighting == Z_WEIGHTING and vols is not None:
+        return INVERSE_VOL_WEIGHTING
+    return weighting
+
+
 def book_weights(
     scores: Mapping[str, float],
     betas: Mapping[str, float] | None = None,
     *,
     vols: Mapping[str, float] | None = None,
+    weighting: str = Z_WEIGHTING,
 ) -> dict[str, float]:
     """The research book's weights for one date — the public spelling of step 8's book.
 
@@ -848,7 +1066,17 @@ def book_weights(
     describes, gross 1 and dollar-neutral whenever the scaled row stays
     centered.  When both are given the beta-neutral
     rescale is applied *after* the vol scaling, to the vol-scaled weights.
-    This is the one place those rules are spelled out;
+    ``weighting`` (keyword-only, default :data:`Z_WEIGHTING`), one of
+    :data:`WEIGHTINGS`, names which of the three books to build; the default
+    and ``vols=None`` together are exactly this function's behaviour before
+    the parameter existed.  ``vols`` and ``weighting`` must agree — see
+    :func:`_resolve_weighting`: ``vols=<a panel>`` *is* the
+    ``"inverse_vol"`` weighting, and ``weighting="inverse_vol"`` with no panel
+    is refused by name.  Under ``weighting="tail_decile"`` the book is the
+    tail-decile one (:func:`_tail_decile_weights`): long the top decile of
+    scores, short the bottom, equal-weight within each leg, ``vols`` ignored;
+    the beta-neutral rescale is still applied after the legs are formed.  This
+    is the one place those rules are spelled out;
     :func:`compute_node_metrics` calls this function for its own per-date
     weights, so the two cannot drift, and a forward shadow that calls this
     function with the same scores, betas and vols an evaluation scored trades
@@ -857,10 +1085,14 @@ def book_weights(
     Raises :class:`~evaluator.EvaluatorMetricsError` when ``scores`` is empty,
     carries a non-finite value, or sums to zero gross exposure (``Σ|s| = 0``,
     the weights would be a division by zero); when ``betas`` is supplied but is
-    malformed or carries a non-finite value; and when ``vols`` is supplied but
+    malformed or carries a non-finite value; when ``vols`` is supplied but
     is malformed, carries a non-finite value, or is missing a scored symbol or
     gives it a non-positive volatility — each refused by name, never silently
-    defaulted, because a vol is a positive scale rather than a direction.
+    defaulted, because a vol is a positive scale rather than a direction; when
+    ``weighting`` is outside :data:`WEIGHTINGS`, or names
+    ``"inverse_vol"`` with no ``vols``; and, under ``"tail_decile"``, when the
+    cross-section is too small for two non-empty deciles (fewer than
+    ``10 × TAIL_DECILE_MIN_LEG`` scored symbols), the refusal naming the count.
     """
     if not isinstance(scores, Mapping):
         raise EvaluatorMetricsError(
@@ -891,18 +1123,29 @@ def book_weights(
             "book_weights needs at least one scored symbol; an empty date "
             "has no dollar-neutral book to weight"
         )
-    if vols is not None:
-        validated_scores = _inverse_vol_scores(validated_scores, vols)
-    gross = math.fsum(abs(value) for value in validated_scores.values())
-    if gross == 0.0:
-        raise EvaluatorMetricsError(
-            "book_weights' scores sum to zero gross exposure (every score is "
-            "exactly 0), so the dollar-neutral weights z_s / Σ|z| are "
-            "undefined; refusing rather than dividing by zero"
-        )
-    weights = {
-        symbol: value / gross for symbol, value in validated_scores.items()
-    }
+    # The weighting is settled *before* the book is built, so a contradiction
+    # between the spelling and the panel is refused rather than half-honoured:
+    # `z` with vols is the inverse-vol book (every caller since the parameter
+    # existed means that), and a name that disagrees with the panel is
+    # refused by name.
+    book = _resolve_weighting(weighting, vols)
+    if book == TAIL_DECILE_WEIGHTING:
+        # A function of the scores alone: a decile is a count of names, not a
+        # share of gross, so a volatility has nothing to divide here.
+        weights = _tail_decile_weights(validated_scores)
+    else:
+        if vols is not None:
+            validated_scores = _inverse_vol_scores(validated_scores, vols)
+        gross = math.fsum(abs(value) for value in validated_scores.values())
+        if gross == 0.0:
+            raise EvaluatorMetricsError(
+                "book_weights' scores sum to zero gross exposure (every score "
+                "is exactly 0), so the dollar-neutral weights z_s / Σ|z| are "
+                "undefined; refusing rather than dividing by zero"
+            )
+        weights = {
+            symbol: value / gross for symbol, value in validated_scores.items()
+        }
     if betas is None:
         return weights
     if not isinstance(betas, Mapping):
@@ -939,6 +1182,7 @@ def compute_node_metrics(
     cost_per_unit_traded: float = 0.0,
     betas: Mapping[dt.date, Mapping[str, float]] | None = None,
     vols: Mapping[dt.date, Mapping[str, float]] | None = None,
+    weighting: str = Z_WEIGHTING,
 ) -> NodeMetrics:
     """Compute the four node scalars — ic_mean, ic_tstat, ir_standalone, turnover.
 
@@ -1013,6 +1257,27 @@ def compute_node_metrics(
     nothing, and every number this function returns is identical to the one it
     returned before the parameter existed.
 
+    ``weighting`` (keyword-only, default :data:`Z_WEIGHTING`) names which of
+    :data:`WEIGHTINGS`' three books each date's weights are built under, and is
+    passed straight to :func:`book_weights` per date; with ``"z"`` it composes
+    with ``vols`` exactly as the previous paragraph describes (``vols`` given
+    *is* the inverse-volatility weighting).  Under ``"tail_decile"`` each
+    date's book is the tail-decile one — long the top decile of that date's
+    scores, short the bottom, equal-weight within each leg, gross 1 and net 0 —
+    and **the rank coefficient is unchanged**: ``ic_mean`` and ``ic_tstat`` are
+    still measured over the full joined cross-section, since the book's
+    membership is not what the ranking is measured on.  What changes is the
+    weights, and so :attr:`NodeMetrics.book_returns`,
+    :attr:`NodeMetrics.ir_standalone`, the turnover and the turnover cost
+    charge — which is the whole point: a ranking whose return gradient lives in
+    its tails is traded where the gradient is.  Each measured date's leg count
+    ``k`` is recorded in :attr:`NodeMetrics.tail_k`.  ``vols`` is ignored under
+    ``"tail_decile"`` (a decile is a count of names, not a share of gross, so a
+    volatility has nothing to divide here); a date whose joined cross-section
+    is too small for two non-empty deciles (fewer than
+    ``10 × TAIL_DECILE_MIN_LEG`` scored symbols) is refused **by name, naming
+    that date and its count** rather than trading a decile of one name.
+
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
     mapping that is malformed, empty, or carries a non-finite value; a
@@ -1053,6 +1318,20 @@ def compute_node_metrics(
             "the post-cost returns, and the gross series alone cannot say which "
             "schedule priced them"
         )
+    # The weighting is settled once, up front, against the panel the caller
+    # handed: `z` with vols is the inverse-vol book (unchanged for every
+    # caller that predates the parameter), and a name that disagrees with the
+    # panel is refused before a single date is measured.
+    book = _resolve_weighting(weighting, vols)
+    if book == TAIL_DECILE_WEIGHTING:
+        # A decile is a count of names, not a share of gross, so a volatility
+        # has nothing to divide here; the spec's own sentence says a vols
+        # handed under this weighting is ignored, and dropping it here (rather
+        # than at each use below) is what keeps that from becoming a special
+        # case in the per-date loop — no vol is validated, none is dropped,
+        # and NodeMetrics.vol_dropped stays empty exactly as it does when vols
+        # is absent.
+        vols = None
     if not isinstance(scores, Mapping):
         raise EvaluatorMetricsError(
             "the normalized scores must map rebalance date to {symbol: "
@@ -1143,6 +1422,7 @@ def compute_node_metrics(
     per_date_return: dict[dt.date, float] = {}
     per_date_weights: dict[dt.date, Mapping[str, float]] = {}
     vol_dropped: dict[dt.date, int] = {}
+    tail_k: dict[dt.date, int] = {}
     for day in series.dates():
         score_row = validated.get(day)
         if score_row is None:
@@ -1209,8 +1489,20 @@ def compute_node_metrics(
             vol_dropped[day] = len(book_symbols) - len(weighted_symbols)
         row_scores = {symbol: score_row[symbol] for symbol in weighted_symbols}
         try:
-            weights = book_weights(row_scores, row_betas, vols=row_vols)
+            weights = book_weights(
+                row_scores, row_betas, vols=row_vols, weighting=book
+            )
         except EvaluatorMetricsError as exc:
+            if book == TAIL_DECILE_WEIGHTING:
+                # The tail-decile book refuses a cross-section too small for
+                # two non-empty deciles; the refusal above names the count,
+                # and this is the per-date caller, so it is restated with the
+                # date the count belongs to — "which rebalance date was too
+                # thin" is the one thing a reader cannot recover from the
+                # count alone.
+                raise EvaluatorMetricsError(
+                    f"horizon {horizon} on {day.isoformat()}: {exc}"
+                ) from exc
             # _rank_correlation above already required the joined symbols'
             # scores to have nonzero rank spread, so they cannot all be
             # exactly zero; unreachable in practice, refused rather than
@@ -1222,6 +1514,14 @@ def compute_node_metrics(
                 "rather than dividing by zero"
             ) from exc
         per_date_weights[day] = weights
+        if book == TAIL_DECILE_WEIGHTING:
+            # The count of names each leg actually held on this date — the
+            # figure that makes the recorded book checkable, since the weights
+            # alone say the legs were equal-weight but not how many names
+            # carried that weight.  ``floor(len/10)`` is the same expression
+            # :func:`_tail_decile_weights` used to build the weights above, so
+            # the two cannot disagree.
+            tail_k[day] = len(weighted_symbols) // 10
         per_date_return[day] = math.fsum(
             weights[symbol] * returns_row[symbol] for symbol in weighted_symbols
         )
@@ -1344,4 +1644,5 @@ def compute_node_metrics(
         book_returns=per_date_return,
         turnover_series=per_date_turnover,
         vol_dropped=vol_dropped,
+        tail_k=tail_k,
     )
