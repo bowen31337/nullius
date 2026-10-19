@@ -783,12 +783,45 @@ def _materialize_from_context(context: EvaluationContext) -> Any:
 # -- The cost seam: the context's own schedule, transported not re-implemented --
 
 
+def _fee_per_unit_traded(context: EvaluationContext) -> float:
+    """The fee this evaluation charges per unit of notional turned over.
+
+    ``context.execution`` picks the side, quoted off the context's own
+    resolved :class:`~cost_model.FeeSchedule` — never re-derived — so this
+    is the one place either of the two cost seams below (and the two
+    orchestrator call sites that hand it to ``compute_node_metrics``)
+    reads the fee a signal was actually priced at.
+
+    :data:`cost_model.TAKER` (the default) quotes the schedule's taker
+    rate alone — unchanged from every evaluation run before this key
+    existed. :data:`cost_model.MAKER` quotes the maker rate *plus* the
+    schedule's :attr:`~cost_model.FeeSchedule.passive_penalty_fraction`
+    (cost_model feature 64's queue-position penalty), so a signal priced
+    as executed passively pays what a resting fill actually costs: the fee
+    it would be charged, and the adverse-selection cost it would not avoid
+    by resting instead of crossing.  ``load_evaluation_context`` refuses a
+    ``"maker"`` configuration whose cost model resolves no passive penalty
+    before a context is ever built, so a context reaching this function
+    with ``execution == MAKER`` always carries a non-``None`` penalty.
+
+    Read with ``getattr``/default taker, the same courtesy the context's
+    other optional attributes (``instrument``, ``max_history_days``) extend
+    to a bare duck-typed test context that carries only ``cost_schedule``.
+    """
+    from cost_model import MAKER, TAKER
+
+    schedule = context.cost_schedule
+    if getattr(context, "execution", TAKER) == MAKER:
+        return schedule.fee_fraction(MAKER) + schedule.passive_penalty_fraction
+    return schedule.fee_fraction(TAKER)
+
+
 def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     """The injected ``CostSchedule`` :func:`evaluator.apply_costs` charges through.
 
     The context already resolved the venue's :class:`~cost_model.FeeSchedule`
-    (feature 5); this closure quotes its taker rate on exactly the support
-    ``apply_costs`` asks about, the same transport
+    (feature 5); this closure quotes :func:`_fee_per_unit_traded`'s rate on
+    exactly the support ``apply_costs`` asks about, the same transport
     ``tests/e2e/test_momentum_signal_positive_ic.py`` builds over the shared
     library and for the same reason feature 69 forbids a second one: the fee
     arithmetic is the library's, never re-implemented here.
@@ -827,10 +860,9 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     turnover charge remains the binding *fee* cost; this only adds the
     carry a perpetual position was never subject to on the spot default.
     """
-    from cost_model import TAKER
     from evaluator import CostQuote
 
-    fee = context.cost_schedule.fee_fraction(TAKER)
+    fee = _fee_per_unit_traded(context)
     # getattr, not context.instrument: a test may hand this function a bare
     # duck-typed context carrying only cost_schedule (the same courtesy
     # _materialize_from_context extends max_history_days), and those callers
@@ -880,19 +912,18 @@ def _funding_carry(
 
 
 def _turnover_fee_from_context(context: EvaluationContext) -> float:
-    """The taker fee charged on this node's own book's traded notional.
+    """The fee charged on this node's own book's traded notional.
 
     The same rate :func:`_cost_schedule_from_context` quotes to
-    ``apply_costs`` per symbol — read off the context's own resolved
-    :class:`~cost_model.FeeSchedule` rather than re-derived, so the two
-    seams can never quote two different numbers for the one fee the venue
-    configured — but handed to :func:`evaluator.compute_node_metrics`
-    instead, as ``cost_per_unit_traded``: that is the charge which actually
-    prices a dollar-neutral book, where the per-symbol charge above cancels.
+    ``apply_costs`` per symbol — :func:`_fee_per_unit_traded`, read off the
+    context's own resolved :class:`~cost_model.FeeSchedule` rather than
+    re-derived, so the two seams can never quote two different numbers for
+    the one fee the configured execution mode charges — but handed to
+    :func:`evaluator.compute_node_metrics` instead, as
+    ``cost_per_unit_traded``: that is the charge which actually prices a
+    dollar-neutral book, where the per-symbol charge above cancels.
     """
-    from cost_model import TAKER
-
-    return context.cost_schedule.fee_fraction(TAKER)
+    return _fee_per_unit_traded(context)
 
 
 def _gross_ir_tstat(

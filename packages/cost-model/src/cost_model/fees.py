@@ -106,6 +106,8 @@ from dataclasses import dataclass
 
 from .config import read_cost_model_document
 from .errors import CostModelConfigError, CostModelFillError
+from .passive_fill import FILL_MODEL_KEY, PASSIVE_KEY
+from .queue_penalty import QUEUE_POSITION_PENALTY_KEY
 
 __all__ = [
     "FEES_KEY",
@@ -403,16 +405,39 @@ class FeeSchedule:
     and an evaluator and a live engine holding the same schedule deduct the
     same fee from the same return the same way, which is the §6.2 invariant
     (``β₄`` penalizes divergence) made structural rather than aspirational.
+
+    **The passive queue-position penalty, carried for the maker side.**
+    :attr:`passive_penalty_fraction` is the document's own
+    ``fill_model.passive.queue_position_penalty_bps`` (feature 64), as a
+    fraction of the notional rather than basis points — the same unit
+    :meth:`fee_fraction` already answers in, so a caller pricing a maker
+    fill adds the two with one sum.  It is resolved here, beside the fee
+    rates, because an execution mode that prices a signal as passively
+    filled (the evaluation config's ``execution: "maker"``) must state the
+    adverse-selection cost that fill would pay, not merely the maker fee —
+    a zero-maker venue is not a free one.  ``None`` when the document names
+    no passive fill model at all: that is a fact about the document (a
+    venue this schedule prices with no passive side), not a malformed
+    rate, so it is answered rather than refused here — the refusal belongs
+    to whichever caller actually prices a maker fill against it.
     """
 
     venue: str
     taker_bps: float
     maker_bps: float
+    passive_penalty_fraction: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "venue", _non_blank_venue(self.venue))
         object.__setattr__(self, "taker_bps", _configured_fee_bps(self.taker_bps))
         object.__setattr__(self, "maker_bps", _configured_fee_bps(self.maker_bps))
+        if self.passive_penalty_fraction is not None:
+            object.__setattr__(
+                self,
+                "passive_penalty_fraction",
+                _configured_fee_bps(self.passive_penalty_fraction * _BPS_PER_UNIT)
+                / _BPS_PER_UNIT,
+            )
 
     def rate(self, side: str) -> float:
         """The basis points ``side`` pays — the taker rate or the maker rate.
@@ -470,6 +495,7 @@ class FeeSchedule:
             "maker_bps": self.maker_bps,
             "taker_fraction": self.taker_bps / _BPS_PER_UNIT,
             "maker_fraction": self.maker_bps / _BPS_PER_UNIT,
+            "passive_penalty_fraction": self.passive_penalty_fraction,
         }
 
 
@@ -550,4 +576,36 @@ def resolve_fee_schedule(model: Mapping[str, object] | None = None) -> FeeSchedu
         venue=_non_blank_venue(model["venue"]),
         taker_bps=_configured_fee_bps(fees[TAKER_BPS_KEY]),  # type: ignore[arg-type]
         maker_bps=_configured_fee_bps(fees[MAKER_BPS_KEY]),  # type: ignore[arg-type]
+        passive_penalty_fraction=_passive_penalty_fraction(model),
     )
+
+
+def _passive_penalty_fraction(model: Mapping[str, object]) -> float | None:
+    """The document's passive queue-position penalty, as a fraction — or ``None``.
+
+    Reads §6.2's ``fill_model.passive.queue_position_penalty_bps`` (feature
+    64's own field) off the same parsed document :func:`resolve_fee_schedule`
+    already has in hand, rather than a second read — so a schedule's
+    passive penalty and its fee rates can never disagree about which
+    document was loaded.
+
+    Absence is answered, not refused: a document with no ``fill_model``, a
+    ``fill_model`` with no ``passive`` half, or a ``passive`` half with no
+    ``queue_position_penalty_bps`` all mean this venue's schedule carries no
+    passive fill model, which is a fact a maker-execution caller refuses on
+    its own terms (see :mod:`orchestrator._context`) rather than one this
+    resolver invents an error for — :func:`resolve_fee_schedule` prices the
+    two fee sides unconditionally, with or without a passive half.  A
+    *present* rate that is not a non-negative finite real is still refused,
+    because that is a malformed document rather than an absent feature.
+    """
+    fill_model = model.get(FILL_MODEL_KEY)
+    if not isinstance(fill_model, Mapping):
+        return None
+    passive = fill_model.get(PASSIVE_KEY)
+    if not isinstance(passive, Mapping):
+        return None
+    if QUEUE_POSITION_PENALTY_KEY not in passive:
+        return None
+    bps = _configured_fee_bps(passive[QUEUE_POSITION_PENALTY_KEY])
+    return bps / _BPS_PER_UNIT

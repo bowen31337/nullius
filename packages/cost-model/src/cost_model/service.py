@@ -443,6 +443,15 @@ class CostModelService:
         discounted charge itself reduces this schedule through
         :meth:`FeeDiscount.reduce` and applies *that*.
 
+        The returned schedule also carries
+        :attr:`~cost_model.fees.FeeSchedule.passive_penalty_fraction` — the
+        document's ``fill_model.passive.queue_position_penalty_bps``, as a
+        fraction, or ``None`` when the document names no passive fill model
+        at all.  A caller pricing a passively-executed signal (the
+        evaluation config's ``execution: "maker"``) adds this beside the
+        maker rate, so the fee it quotes states the adverse-selection cost a
+        resting fill actually pays rather than the maker fee alone.
+
         Raises :class:`~cost_model.errors.CostModelConfigError` when the
         document names no ``fees`` block, or names one whose taker or maker
         rate is absent or not a non-negative finite real, or whose venue is

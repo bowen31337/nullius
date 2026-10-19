@@ -152,6 +152,8 @@ from pathlib import Path
 from typing import Any, Final
 
 from cost_model import (
+    MAKER,
+    TAKER,
     CostModelConfig,
     CostModelError,
     CostModelService,
@@ -185,6 +187,7 @@ __all__ = [
     "DEFAULT_BOOK_WEIGHTING",
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
+    "DEFAULT_EXECUTION",
     "DEFAULT_INSTRUMENT",
     "DEFAULT_MAX_HISTORY_DAYS",
     "DEFAULT_VOL_WINDOW_DAYS",
@@ -193,6 +196,8 @@ __all__ = [
     "EVALUATION_MODES",
     "EVALUATION_MODE_KEY",
     "EVALUATION_WORKERS_KEY",
+    "EXECUTIONS",
+    "EXECUTION_KEY",
     "FUNDING_STREAM",
     "FUTBARS_STREAM",
     "GVISOR_RUNTIME",
@@ -396,6 +401,32 @@ EVALUATION_MODES: Final[tuple[str, str]] = ("process", "thread")
 #: :data:`EVALUATION_MODE_KEY`'s default when the document omits it — the
 #: spec's own words, ``evaluation_mode: "process" (the default)``.
 DEFAULT_EVALUATION_MODE: Final[str] = "process"
+
+#: The optional key choosing the side a node's turnover is priced as —
+#: today's default is a crossing order, priced at the venue's taker fee; a
+#: signal that trades passively instead rests a quote, pays the maker fee,
+#: and bears the queue-position penalty a resting order pays for the
+#: adverse selection of its own fill (cost_model feature 64). Optional, the
+#: same stance :data:`EVALUATION_MODE_KEY` and :data:`INSTRUMENT_KEY` take
+#: toward their own two-member sets: a document that omits it gets
+#: :data:`DEFAULT_EXECUTION` rather than a refusal, since "today's taker
+#: behaviour" is what every evaluation config written before this key
+#: existed already means.
+EXECUTION_KEY: Final[str] = "execution"
+
+#: :data:`EXECUTION_KEY`'s two values — :data:`cost_model.TAKER` and
+#: :data:`cost_model.MAKER`, the same two spellings
+#: :class:`cost_model.FeeSchedule` itself prices a fill under, so an
+#: execution mode is never a third vocabulary the fee schedule does not
+#: already speak.  Closed, like :data:`EVALUATION_MODES` and
+#: :data:`INSTRUMENTS`: a third spelling is refused by name rather than
+#: guessed.
+EXECUTIONS: Final[tuple[str, str]] = (TAKER, MAKER)
+
+#: :data:`EXECUTION_KEY`'s default when the document omits it — today's
+#: taker behaviour, unchanged, the same stance :data:`DEFAULT_INSTRUMENT`
+#: and :data:`DEFAULT_EVALUATION_MODE` take toward their own optional keys.
+DEFAULT_EXECUTION: Final[str] = TAKER
 
 #: The optional key naming the out-of-sample evaluation grid —
 #: additions_spec_m2_baseline_financial_worlds.xml feature 1.  Absent means
@@ -685,6 +716,24 @@ class EvaluationContext:
     #: refusing — a missing row is absence, not an error, the same stance
     #: every other optional derivative stream in this package takes.
     funding: Mapping[str, Mapping[dt.date, float]] | None = None
+    #: Which side this evaluation's turnover is priced as —
+    #: :data:`cost_model.TAKER` (the default) or :data:`cost_model.MAKER` —
+    #: read from the optional :data:`EXECUTION_KEY`.  With the default,
+    #: :func:`orchestrator._evaluate._turnover_fee_from_context` and
+    #: :func:`~orchestrator._evaluate._cost_schedule_from_context` quote
+    #: exactly :attr:`cost_schedule`'s taker rate, unchanged from before this
+    #: key existed.  With ``"maker"``, both seams quote the maker rate plus
+    #: :attr:`cost_schedule`'s own
+    #: :attr:`~cost_model.FeeSchedule.passive_penalty_fraction`, so a signal
+    #: priced as passively filled is charged the fee it would actually pay
+    #: resting — its adverse-selection cost stated beside the fee, never
+    #: zero because the maker rate happens to be low.  A ``"maker"``
+    #: configuration whose cost model resolves no passive penalty is refused
+    #: at load (see :func:`load_evaluation_context`), so a context that
+    #: exists with ``execution == MAKER`` always carries a schedule whose
+    #: :attr:`~cost_model.FeeSchedule.passive_penalty_fraction` is not
+    #: ``None``.
+    execution: str = DEFAULT_EXECUTION
 
 
 def load_evaluation_context(
@@ -739,6 +788,7 @@ def load_evaluation_context(
     oos_dates = _oos_dates(document, named, dates, horizon)
     book = _book_config(document, named)
     instrument = _instrument(document, named)
+    execution = _execution(document, named)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -777,6 +827,17 @@ def load_evaluation_context(
             f"configuring a {PERP_INSTRUMENT!r} book, or set {INSTRUMENT_KEY} "
             f"to {SPOT_INSTRUMENT!r}"
         )
+    if execution == MAKER and cost_schedule.passive_penalty_fraction is None:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {EXECUTION_KEY} is {MAKER!r}, but "
+            f"the cost model document {cost_model.source!r} names no "
+            "fill_model.passive queue-position penalty; a maker execution "
+            "prices a signal at the fee it would pay executed passively, "
+            "with its adverse-selection cost stated rather than ignored, "
+            "and a document with no passive fill model cannot state it — "
+            "add fill_model.passive.queue_position_penalty_bps to the "
+            f"document, or set {EXECUTION_KEY} to {TAKER!r}"
+        )
     evaluator_hash = _evaluator_hash(source)
 
     return EvaluationContext(
@@ -805,6 +866,7 @@ def load_evaluation_context(
         book=book,
         instrument=instrument,
         funding=funding,
+        execution=execution,
     )
 
 
@@ -875,6 +937,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             OOS_DATES_KEY,
             BOOK_KEY,
             INSTRUMENT_KEY,
+            EXECUTION_KEY,
         )
     )
     for key in document:
@@ -888,7 +951,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"{GVISOR_STATE_ROOT_KEY!r} and {LAKE_ROOTS_KEY!r} when it "
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
                 f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r}, "
-                f"{OOS_DATES_KEY!r}, {BOOK_KEY!r} and {INSTRUMENT_KEY!r}); "
+                f"{OOS_DATES_KEY!r}, {BOOK_KEY!r}, {INSTRUMENT_KEY!r} and "
+                f"{EXECUTION_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -1210,6 +1274,34 @@ def _instrument(document: Mapping[str, Any], named: str) -> str:
             "this evaluation prices either the spot default or a USD-M "
             "perpetual book, and a third spelling is refused rather than "
             "guessed"
+        )
+    return raw
+
+
+def _execution(document: Mapping[str, Any], named: str) -> str:
+    """Which side this evaluation's turnover is priced as — :data:`DEFAULT_EXECUTION`
+    when :data:`EXECUTION_KEY` is absent.
+
+    *"the evaluation config gains an optional top-level key, execution,
+    with values 'taker' (default when absent) or 'maker'."*  A present
+    value outside :data:`EXECUTIONS` is refused by name, the same
+    closed-vocabulary stance :func:`_instrument` and :func:`_evaluation_mode`
+    already take toward their own two-member sets.  A ``"maker"`` value
+    whose cost model resolves no passive fill model is refused later, once
+    the cost model has loaded (see :func:`load_evaluation_context`), naming
+    the document rather than this key — the key itself is well-formed.
+    """
+    if EXECUTION_KEY not in document:
+        return DEFAULT_EXECUTION
+    raw = document[EXECUTION_KEY]
+    if not isinstance(raw, str) or raw not in EXECUTIONS:
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {EXECUTION_KEY} must be one of "
+            f"{', '.join(repr(name) for name in EXECUTIONS)}, got {raw!r}; "
+            "this chooses the side a node's turnover is priced as — a "
+            "crossing order at the venue's taker fee, or a resting order "
+            "at the maker fee plus its queue-position penalty — and a "
+            "third spelling is refused rather than guessed"
         )
     return raw
 
