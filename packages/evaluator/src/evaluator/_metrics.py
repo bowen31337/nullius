@@ -412,6 +412,52 @@ def _metrics_horizon(returns: PostCostReturns) -> int:
     )
 
 
+def _resolve_metrics_horizon(
+    returns: PostCostReturns, horizon: int | None
+) -> int:
+    """Settle the horizon :func:`compute_node_metrics` reduces over.
+
+    ``None`` — the default — is :func:`_metrics_horizon`'s own policy
+    unchanged: the shortest horizon :data:`HORIZONS` names that the priced
+    panel covers.  An explicit ``horizon`` instead names the one the caller's
+    evaluation was configured for (the config's horizon, a weekly horizon-5
+    campaign, native-horizon OOS replay), and is refused rather than quietly
+    resolved to the shortest covered when it cannot be honoured: a value
+    outside :data:`HORIZONS` (the spec's own closed set) is not a horizon at
+    all, and a value the spec does name but the priced panel carries no
+    rebalance date for is *absent*, not a reason to fall back — the caller
+    asked for a specific horizon's evidence, and silently substituting
+    another horizon's would answer a different question than the one asked.
+    Both refusals name the horizon asked for; the coverage refusal also names
+    the horizons the panel actually covers, so a caller sees exactly what is
+    available instead of guessing.
+    """
+    if horizon is None:
+        return _metrics_horizon(returns)
+    if isinstance(horizon, bool) or not isinstance(horizon, int):
+        raise EvaluatorMetricsError(
+            "compute_node_metrics' horizon must be an integer period count "
+            f"or None, got {horizon!r}"
+        )
+    if horizon not in HORIZONS:
+        raise EvaluatorMetricsError(
+            f"horizon {horizon} is not one of the horizons the spec names "
+            f"({', '.join(str(h) for h in HORIZONS)}); the metrics are "
+            "computed over one pinned horizon, and that horizon is one the "
+            "spec covers"
+        )
+    if not returns.series[horizon].dates():
+        covered = [h for h in HORIZONS if returns.series[h].dates()]
+        covered_text = ", ".join(str(h) for h in covered) if covered else "none"
+        raise EvaluatorMetricsError(
+            f"horizon {horizon} was asked for, but the priced panel covers "
+            f"no rebalance date at it; the panel covers {covered_text} — pass "
+            "one of those, or leave horizon out to measure the shortest one "
+            "covered"
+        )
+    return horizon
+
+
 @dataclass(frozen=True)
 class NodeMetrics:
     """Step 8's four scalar answers — ic_mean, ic_tstat, ir_standalone, turnover.
@@ -1183,6 +1229,7 @@ def compute_node_metrics(
     betas: Mapping[dt.date, Mapping[str, float]] | None = None,
     vols: Mapping[dt.date, Mapping[str, float]] | None = None,
     weighting: str = Z_WEIGHTING,
+    horizon: int | None = None,
 ) -> NodeMetrics:
     """Compute the four node scalars — ic_mean, ic_tstat, ir_standalone, turnover.
 
@@ -1278,13 +1325,27 @@ def compute_node_metrics(
     ``10 × TAIL_DECILE_MIN_LEG`` scored symbols) is refused **by name, naming
     that date and its count** rather than trading a decile of one name.
 
+    ``horizon`` (keyword-only, default ``None``) names the horizon the four
+    scalars are measured over, overriding :data:`METRICS_HORIZON`'s "shortest
+    the panel covers" policy with the one the caller's evaluation was
+    configured for. The default, ``None``, is that policy unchanged — every
+    figure this function returns is identical to the one it returned before
+    this parameter existed. An explicit ``horizon`` must be one of
+    :data:`HORIZONS` and one the priced panel carries at least one rebalance
+    date for; either failure is refused by
+    :class:`~evaluator.EvaluatorMetricsError` naming the horizon asked for
+    (and, when the panel simply does not cover it, the horizons the panel
+    does cover) rather than silently falling back to the shortest covered.
+
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
     mapping that is malformed, empty, or carries a non-finite value; a
     ``cost_per_unit_traded`` that is negative or not finite; a ``betas``
     mapping that is malformed or carries a non-finite value; a ``vols``
     mapping that is malformed, carries a non-finite value, or gives any
-    symbol a non-positive volatility; a panel that
+    symbol a non-positive volatility; a ``horizon`` that is not one of
+    :data:`HORIZONS`, or one the priced panel carries no rebalance date for;
+    a panel that
     covers no horizon at all (nothing measured); a horizon with fewer than
     two dates (a t-statistic over one date names a zero standard error and a
     fabricated infinity); and — via the record — a hand-built metrics whose
@@ -1416,7 +1477,7 @@ def compute_node_metrics(
                         "the name rather than weight it"
                     )
 
-    horizon = _metrics_horizon(returns)
+    horizon = _resolve_metrics_horizon(returns, horizon)
     series = returns.series[horizon]
     per_date_ic: dict[dt.date, float] = {}
     per_date_return: dict[dt.date, float] = {}
