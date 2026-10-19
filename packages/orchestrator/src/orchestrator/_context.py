@@ -2516,8 +2516,9 @@ def compute_betas(
 #: at all — half the window, compared as ``count * 2 >= vol_window_days``
 #: rather than a float ratio so the threshold is exact for odd window
 #: lengths.  A symbol under it gets *no* volatility (it is simply absent
-#: from that date's row), which the consumer refuses by name — see
-#: :func:`compute_vols`.
+#: from that date's row) — one of the two "no vol" outcomes
+#: :func:`compute_vols` documents; a measured volatility that is not finite
+#: or not strictly positive is the other.
 _VOL_COVERAGE_DENOMINATOR: Final[int] = 2
 
 
@@ -2545,12 +2546,26 @@ def _vols_for_date(
     ``day`` (never a return after it), a symbol ``context.closes`` does not
     carry is skipped, and the returns are :func:`_close_to_close_returns`'s
     own — a date both closes must be present for, gaps contributing nothing.
-    A symbol with fewer than half the window's returns is *absent from the
-    answer* rather than given a default vol: the inverse-volatility book
-    refuses a scored symbol its date's vols row does not name
-    (:func:`evaluator.book_weights`'s by-name refusal), so a thin history
-    stops the evaluation naming the name, instead of trading it at a
-    volatility nobody measured.
+    A symbol whose volatility cannot be measured is *absent from the answer*
+    rather than given a default vol, and there are two such cases — the same
+    "no vol" outcome, so a consumer sees one rule rather than two:
+
+    * fewer than half the window's returns exist (the coverage rule above —
+      a thin history, or a symbol that only starts trading mid-window); and
+    * the window's returns measure a volatility that is not finite or not
+      strictly positive.  A complete window of *identical* closes — a
+      perpetual delisted in place, its archived ``fut_close`` frozen — gives a
+      population standard deviation of exactly ``0.0``, and a volatility of
+      zero is not a positive scale: dividing a score by it would drop the name
+      or hand it an infinite weight, which is why
+      :func:`evaluator.book_weights` refuses one by name.  Emitting it from
+      here would make the whole day's book refuse over one untradeable name;
+      leaving it out lets :func:`evaluator.compute_node_metrics` drop that
+      name from the day's book and renormalise the rest.
+
+    What the omission means to a consumer is stated once, at
+    :func:`compute_vols`: this function answers "whose volatility could be
+    measured", never "a volatility for every symbol asked about".
     """
     window_days = context.book.vol_window_days
     window = _beta_window_dates(day, window_days)
@@ -2561,7 +2576,10 @@ def _vols_for_date(
         returns = _close_to_close_returns(context.closes[symbol], window)
         if len(returns) * _VOL_COVERAGE_DENOMINATOR < window_days:
             continue
-        vols[symbol] = _population_std(returns.values())
+        vol = _population_std(returns.values())
+        if not math.isfinite(vol) or vol <= 0.0:
+            continue
+        vols[symbol] = vol
     return vols
 
 
@@ -2579,10 +2597,27 @@ def compute_vols(
     ``fut_close``) is what every vol is measured against, and never a row
     after ``D`` (see :func:`_beta_window_dates`).  A date with no scored
     symbol is skipped, the same stance :func:`compute_betas` takes: there is
-    no book on it for a vol to scale.  A symbol with fewer than half the
-    window's returns gets no vol (see :func:`_vols_for_date`) — the
-    downstream book refuses it by name rather than this function inventing
-    a default.
+    no book on it for a vol to scale.
+
+    A symbol whose volatility this function cannot measure is **absent from
+    that date's row**, and the consumer's rule is one rule with one spelling:
+
+    * fewer than half the window's returns exist — a thin history, or a
+      symbol only listed part of the window; and
+    * the window's returns measure a volatility that is not finite or not
+      strictly positive — a complete window of identical closes, which is
+      what a perpetual delisted in place looks like, gives a population
+      standard deviation of exactly ``0.0``.
+
+    Both are "no vol", and the row is the answer to "whose volatility could be
+    measured", never "a volatility for every symbol asked about".
+    :func:`evaluator.compute_node_metrics` drops a name the row does not carry
+    from that date's book and renormalises the survivors (recording the count
+    in ``NodeMetrics.vol_dropped``), so one frozen perp costs the book one
+    name rather than the whole evaluation; :func:`evaluator.book_weights`,
+    called directly with a row like this one, still refuses a scored symbol
+    the row does not name, because a caller who assembled an incomplete row by
+    hand has made an error worth naming.
 
     Like :func:`compute_betas`, this is a pure read of ``context`` and
     ``scores``; it does not consult ``context.book.weighting`` —

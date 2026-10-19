@@ -321,14 +321,150 @@ def test_compute_node_metrics_refuses_a_missing_date_row_by_name():
         compute_node_metrics(priced, _SCORES_BY_DATE, vols={_D0: _VOLS})
 
 
-def test_compute_node_metrics_refuses_a_missing_symbol_by_name():
+# -- 6b. A name a date's vols row does not carry is dropped from that book ----
+#
+# The spec's own case: a perpetual delisted in place (FTTUSDT) has a constant
+# archived close, so its trailing window measures a volatility of exactly 0.0
+# and the row computed from that window does not name it.  Refusing the whole
+# evaluation over one untradeable name would discard every other name's
+# measurement with it, so that name is dropped from the date's book and the
+# survivors renormalised to gross 1 — with the drop counted in vol_dropped.
+# The rank IC for the date is still measured over the *full* joined
+# cross-section (a frozen name has a score and a return of 0, and the ranking
+# is not measured on the book's membership).
+
+#: A is the frozen name: absent from the vols row, present in the scores and
+#: the priced panel.
+_D0_VOLS_WITHOUT_A = {"B": 2.0, "C": 1.0, "D": 0.25}
+_FULL_VOLS_BY_DATE = {_D0: _VOLS, _D1: _VOLS}
+_DROPPING_VOLS_BY_DATE = {_D0: _D0_VOLS_WITHOUT_A, _D1: _VOLS}
+
+
+def test_a_symbol_with_no_vol_is_dropped_from_that_dates_book():
+    """The frozen name is absent from the book; the rest are renormalised."""
     priced = _hand_priced(_RETURNS_BY_DATE)
-    partial = {_D0: {"A": 1.0, "B": 1.0}, _D1: _VOLS}
-    with pytest.raises(EvaluatorMetricsError, match="'C'") as excinfo:
-        compute_node_metrics(priced, _SCORES_BY_DATE, vols=partial)
-    # Refused as a missing vol, not mislabelled as the all-zero-score case.
-    assert "no volatility for 'C'" in str(excinfo.value)
-    assert "2026-09-01" in str(excinfo.value)
+
+    metrics = compute_node_metrics(
+        priced, _SCORES_BY_DATE, vols=_DROPPING_VOLS_BY_DATE
+    )
+
+    survivors = {symbol: _SCORES[symbol] for symbol in ("B", "C", "D")}
+    expected = book_weights(survivors, None, vols=_D0_VOLS_WITHOUT_A)
+    expected_return = math.fsum(
+        expected[symbol] * _D0_RETURNS[symbol] for symbol in survivors
+    )
+    # The dropped name contributes nothing, so the book return is the
+    # survivors' weighted return alone.
+    assert metrics.book_returns[_D0] == pytest.approx(expected_return)
+    # The date it was dropped from is the one the panel thinned; every other
+    # date measured a complete book.
+    assert metrics.vol_dropped[_D0] == 1
+    assert metrics.vol_dropped[_D1] == 0
+    assert set(metrics.vol_dropped) == {_D0, _D1}
+    # And the drop genuinely moved the book — it is not the full book's return.
+    full = compute_node_metrics(priced, _SCORES_BY_DATE, vols=_FULL_VOLS_BY_DATE)
+    assert metrics.book_returns[_D0] != pytest.approx(full.book_returns[_D0])
+
+
+def test_the_thinned_book_still_grosses_one_and_nets_zero():
+    """Renormalising through book_weights keeps the book's size and neutrality.
+
+    A dedicated three-name fixture, because the surviving row must itself be a
+    centered, symmetric pair for the *scaled* row to stay centered (the caveat
+    :func:`test_an_asymmetric_vols_panel_grosses_one_even_though_net_need_not_be_zero`
+    documents) — with the frozen name present the full book is a different,
+    wider cross-section.
+    """
+    # Two dates, because ic_tstat is refused over a single measured date.
+    returns = {
+        _D0: {"FROZEN": 0.0, "LONG": 0.04, "SHORT": -0.04},
+        _D1: {"FROZEN": 0.0, "LONG": -0.03, "SHORT": 0.05},
+    }
+    scores = {
+        _D0: {"FROZEN": 2.0, "LONG": 1.0, "SHORT": -1.0},
+        _D1: {"FROZEN": -2.0, "LONG": 1.0, "SHORT": -1.0},
+    }
+    survivor_vols = {"LONG": 0.5, "SHORT": 0.5}
+    priced = _hand_priced(returns)
+
+    metrics = compute_node_metrics(
+        priced,
+        scores,
+        # FROZEN has no vol on either date: a flat window.
+        vols={_D0: survivor_vols, _D1: survivor_vols},
+    )
+
+    weights = book_weights({"LONG": 1.0, "SHORT": -1.0}, None, vols=survivor_vols)
+    assert math.fsum(abs(w) for w in weights.values()) == pytest.approx(
+        1.0, abs=1e-12
+    )
+    assert "FROZEN" not in weights
+    # Equal scores under equal vols: the thinned book is gross 1 and net 0.
+    assert weights["LONG"] == pytest.approx(0.5)
+    assert weights["SHORT"] == pytest.approx(-0.5)
+    assert math.fsum(weights.values()) == pytest.approx(0.0, abs=1e-12)
+    assert metrics.vol_dropped == {_D0: 1, _D1: 1}
+    for day in (_D0, _D1):
+        expected = math.fsum(
+            weights[s] * returns[day][s] for s in ("LONG", "SHORT")
+        )
+        assert metrics.book_returns[day] == pytest.approx(expected)
+
+
+def test_the_ic_is_unchanged_by_dropping_a_name_from_the_book():
+    """The coefficient is measured on the full joined cross-section, not the book."""
+    priced = _hand_priced(_RETURNS_BY_DATE)
+
+    full = compute_node_metrics(priced, _SCORES_BY_DATE, vols=_FULL_VOLS_BY_DATE)
+    dropped = compute_node_metrics(
+        priced, _SCORES_BY_DATE, vols=_DROPPING_VOLS_BY_DATE
+    )
+
+    assert dropped.ic_series == full.ic_series
+    assert dropped.ic_mean == pytest.approx(full.ic_mean)
+    assert dropped.ic_tstat == pytest.approx(full.ic_tstat)
+
+
+def test_vol_dropped_is_empty_when_vols_is_not_given():
+    """A z-weighted book never drops a name, so its record carries no drops."""
+    priced = _hand_priced(_RETURNS_BY_DATE)
+
+    metrics = compute_node_metrics(priced, _SCORES_BY_DATE)
+
+    assert dict(metrics.vol_dropped) == {}
+    assert compute_node_metrics(
+        priced, _SCORES_BY_DATE, vols=_FULL_VOLS_BY_DATE
+    ).vol_dropped == {_D0: 0, _D1: 0}
+
+
+def test_a_zero_vol_a_caller_hands_in_is_still_refused_by_the_panel_check():
+    """The drop rule is for a name the row omits, not for a row that carries 0.0.
+
+    A vol of exactly 0.0 in the panel is a caller's arithmetic error — the row
+    computed from a window never carries one, since ``compute_vols`` omits
+    such a symbol — and it is refused by name rather than read as a drop.
+    """
+    priced = _hand_priced(_RETURNS_BY_DATE)
+    bad = {_D0: {"A": 0.0, "B": 1.0, "C": 1.0, "D": 1.0}, _D1: _VOLS}
+    with pytest.raises(EvaluatorMetricsError, match="not positive") as excinfo:
+        compute_node_metrics(priced, _SCORES_BY_DATE, vols=bad)
+    assert "FTT" not in str(excinfo.value)  # names the symbol it was given
+    assert "'A'" in str(excinfo.value)
+
+
+def test_book_weights_called_directly_still_refuses_a_zero_vol():
+    """``book_weights`` is unchanged: an incomplete or bad row is refused."""
+    survivors = {"B": _SCORES["B"], "C": _SCORES["C"], "D": _SCORES["D"]}
+    with pytest.raises(EvaluatorMetricsError, match="not positive") as excinfo:
+        book_weights(
+            {"A": _SCORES["A"], **survivors},
+            None,
+            vols={**_D0_VOLS_WITHOUT_A, "A": 0.0},
+        )
+    assert "'A'" in str(excinfo.value)
+    # And a scored symbol the row simply omits is still refused by name too.
+    with pytest.raises(EvaluatorMetricsError, match="missing from book_weights' vols"):
+        book_weights({"A": _SCORES["A"], **survivors}, None, vols=_D0_VOLS_WITHOUT_A)
 
 
 def test_compute_node_metrics_refuses_a_non_positive_vol():

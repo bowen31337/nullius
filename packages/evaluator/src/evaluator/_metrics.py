@@ -177,12 +177,22 @@ pair of scores carry the same volatility — in particular for any all-equal
 symbol by its own positive scale is not a no-op on the *sum*, so an
 inverse-vol book is dollar-neutral by construction of the scores rather than
 by construction of the scaling.  The volatility is a positive scale,
-not a direction, so a symbol missing from ``vols``, or carrying a non-finite
-or non-positive one, is refused **by name** rather than silently defaulted:
-defaulting it would either drop the name from the book or hand it a weight the
-signal did not ask for, and both are a different book than the one the caller
-named.  The beta-neutral leg rescale, when ``betas`` is also given, applies
-*after* the vol scaling, to the vol-scaled weights — the two transforms
+not a direction, so a vol that is non-finite or non-positive is refused
+**by name** rather than silently defaulted: defaulting it would hand the name a
+weight the signal did not ask for, which is a different book than the one the
+caller named.  A symbol a date's ``vols`` row simply does not name is not the
+same case — that row is the answer to "whose volatility could be measured over
+the trailing window", and a name absent from it (too few returns, or a flat
+window: a perp delisted in place measures exactly ``0.0``) is **dropped from
+that date's book** and the survivors renormalised, with the drop counted in
+:attr:`NodeMetrics.vol_dropped`.  That is the one place the two conventions
+differ deliberately: :func:`book_weights` still refuses a scored symbol its
+``vols`` does not name, because a direct caller handing it an incomplete row
+has made an error worth naming, while :func:`compute_node_metrics` — which
+*computes* the row from the window — treats a name the window could not measure
+as untradeable and leaves it out, rather than discarding every other name's
+measurement with it.  The beta-neutral leg rescale, when ``betas`` is also
+given, applies *after* the vol scaling, to the vol-scaled weights — the two transforms
 compose in the order the sentence names ("proportional to z_i / vol_i, then
 applies the existing beta-neutral rescale"), so a book can be both
 volatility-scaled and beta-neutral and the beta split is computed on the
@@ -412,6 +422,29 @@ class NodeMetrics:
     turnover_series: Mapping[dt.date, float] = field(
         default_factory=lambda: MappingProxyType({}), compare=False
     )
+    #: How many names each rebalance date's inverse-volatility book dropped for
+    #: want of a volatility — the diagnostic that keeps the drop *recorded*
+    #: rather than silent. A symbol whose window is flat (a perp delisted in
+    #: place, its archived close constant) has a realised volatility of exactly
+    #: 0, which is not a positive scale to divide a score by; rather than
+    #: refusing the whole evaluation over one untradeable name, the date's book
+    #: is restricted to the joined symbols that *do* carry a volatility and the
+    #: rest are renormalised to gross 1 through the same
+    #: :func:`book_weights` call (see :func:`compute_node_metrics`). Every date
+    #: the horizon measured carries an entry — ``0`` where nothing was dropped
+    #: — so a reader can tell a clean book from a thinned one. Empty with
+    #: ``vols=None`` (nothing is ever dropped from a z-weighted book, which
+    #: keeps such a name at a zero return as it always has) and empty on a
+    #: record rebuilt from the metrics store, which persists neither this field
+    #: nor :attr:`book_returns` nor :attr:`turnover_series`. Excluded from
+    #: equality (``compare=False``) for the same reason those two are: a
+    #: record rebuilt from the store is still the same measurement as the one
+    #: that produced it. Carried as a plain ``dict`` rather than a
+    #: ``MappingProxyType`` — unlike its siblings — because
+    #: :mod:`orchestrator._process_pool`'s ``NodeMetrics`` reducer unwraps only
+    #: the three proxy fields it names, and a fourth proxy would reach the
+    #: pickler as an unpicklable ``mappingproxy``.
+    vol_dropped: Mapping[dt.date, int] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
         # object.__setattr__ where the constructor normalizes; this record
@@ -553,6 +586,28 @@ class NodeMetrics:
         object.__setattr__(
             self, "turnover_series", MappingProxyType(captured_turnover)
         )
+        captured_dropped: dict[dt.date, int] = {}
+        for day, value in self.vol_dropped.items():
+            if not isinstance(day, dt.date) or isinstance(day, dt.datetime):
+                raise EvaluatorMetricsError(
+                    "a node metrics' vol_dropped must be keyed by calendar "
+                    f"dates, got {day!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise EvaluatorMetricsError(
+                    f"the vol_dropped count on {day.isoformat()} must be an "
+                    f"integer, got {value!r}; the field counts names, and a "
+                    "fractional one would name a book that traded part of a "
+                    "symbol"
+                )
+            if value < 0:
+                raise EvaluatorMetricsError(
+                    f"the vol_dropped count on {day.isoformat()} is negative "
+                    f"({value!r}); a drop count is a count of names removed "
+                    "from the book"
+                )
+            captured_dropped[day] = value
+        object.__setattr__(self, "vol_dropped", captured_dropped)
 
     def __hash__(self) -> int:
         # The mapping is not hashable until it collapses to tuples; the fold
@@ -927,27 +982,44 @@ def compute_node_metrics(
 
     ``vols`` (keyword-only, default ``None``) is ``{date: {symbol: vol}}``,
     validated exactly like ``betas`` (the same shape, the same refusals) and
-    with one constraint of its own: a volatility is a positive scale, so a
-    symbol missing from the day's row, or carrying a non-finite or
-    non-positive vol, is refused by name rather than silently defaulted. When
-    given, each date's cross-section is handed to :func:`book_weights` with
-    its own day's vols, so the day's book is proportional to ``z_i / vol_i`` —
-    gross 1 and dollar-neutral whenever the scaled row stays centered — and,
-    when ``betas`` is also given, the
+    with one constraint of its own: a volatility is a positive scale, so a vol
+    that is non-finite or non-positive is refused by name rather than silently
+    defaulted — the panel's own values are still checked, because a caller who
+    hands this function a vol of ``0.0`` has made an arithmetic error this
+    function should name rather than quietly reinterpret.  A symbol the day's
+    row simply *does not name* is a different case: the row is the answer to
+    "whose volatility could be measured over the trailing window", and a name
+    that is absent from it was left out by whoever computed it (too few
+    returns, or a flat window — a perp delisted in place measures exactly
+    ``0.0``).  Such a name is **dropped from that date's book** rather than
+    refusing the whole evaluation: it is untradeable at a volatility nobody
+    measured, so it belongs outside that date's cross-section by the same
+    missing-input rule that neutralises a symbol with no stream.  The
+    surviving symbols are handed to :func:`book_weights` with the day's vols,
+    so the thinned book is renormalised to gross 1 and net 0 exactly as the
+    full one was, and the number of names dropped is recorded per date in
+    :attr:`NodeMetrics.vol_dropped` (every measured date carries an entry,
+    ``0`` where nothing was dropped).  The rank coefficient for the date is
+    still measured over the **full** joined cross-section — a frozen name has
+    a score and a return of 0, and the book's membership is not what the
+    ranking is measured on — so ``ic_mean`` and ``ic_tstat`` are unchanged by
+    the drop.  When given, each date's cross-section is handed to
+    :func:`book_weights` with its own day's vols, so the day's book is
+    proportional to ``z_i / vol_i`` — gross 1 and dollar-neutral whenever the
+    scaled row stays centered — and, when ``betas`` is also given, the
     beta-neutral rescale composes after the vol scaling. The rescaled weights
     feed the book return, the turnover and the turnover cost charge exactly as
-    the unscaled ones did; ``ic_mean`` and ``ic_tstat`` are unaffected, since
-    the coefficient is rank-based on the scores themselves. The default,
-    ``None``, scales nothing and every number this function returns is
-    identical to the one it returned before the parameter existed.
+    the unscaled ones did. The default, ``None``, scales nothing, drops
+    nothing, and every number this function returns is identical to the one it
+    returned before the parameter existed.
 
     Raises :class:`~evaluator.EvaluatorMetricsError`, each with its reason (see
     ``_errors``): a ``returns`` that is not step 7's own result; a ``scores``
     mapping that is malformed, empty, or carries a non-finite value; a
     ``cost_per_unit_traded`` that is negative or not finite; a ``betas``
     mapping that is malformed or carries a non-finite value; a ``vols``
-    mapping that is malformed, carries a non-finite value, or omits a scored
-    symbol or gives it a non-positive volatility; a panel that
+    mapping that is malformed, carries a non-finite value, or gives any
+    symbol a non-positive volatility; a panel that
     covers no horizon at all (nothing measured); a horizon with fewer than
     two dates (a t-statistic over one date names a zero standard error and a
     fabricated infinity); and — via the record — a hand-built metrics whose
@@ -1070,6 +1142,7 @@ def compute_node_metrics(
     per_date_ic: dict[dt.date, float] = {}
     per_date_return: dict[dt.date, float] = {}
     per_date_weights: dict[dt.date, Mapping[str, float]] = {}
+    vol_dropped: dict[dt.date, int] = {}
     for day in series.dates():
         score_row = validated.get(day)
         if score_row is None:
@@ -1090,17 +1163,18 @@ def compute_node_metrics(
         # function's own book cannot drift from the one that function hands a
         # forward shadow.
         book_symbols = sorted(set(score_row) & set(returns_row))
-        row_scores = {symbol: score_row[symbol] for symbol in book_symbols}
         row_betas = validated_betas.get(day) if betas is not None else None
         row_vols: Mapping[str, float] | None = None
-        if vols is not None:
+        if vols is None:
+            weighted_symbols = book_symbols
+        else:
             row_vols = validated_vols.get(day)
             if row_vols is None:
                 # Scaling some dates and not others would be a book half
                 # inverse-vol and half z-weighted — an inconsistency the
                 # caller never asked for, and one that would read as a
                 # measurement.  A date the scores carry must be scaled or
-                # refused by name, the same stance a missing symbol takes.
+                # refused by name.
                 raise EvaluatorMetricsError(
                     f"vols carries no row for {day.isoformat()}, a rebalance "
                     "date the normalized scores and the priced panel share; "
@@ -1108,26 +1182,36 @@ def compute_node_metrics(
                     "name it weights, on every date it weights them — supply "
                     "the date's vols or leave vols out"
                 )
-            # Every symbol in the joined cross-section must carry a vol, and
-            # the row is checked here rather than left to :func:`book_weights`
-            # so the refusal names the symbol AND the date — the panel is
-            # already known finite and positive, so this is the only vol
-            # refusal left, and letting it fall to the wrap below would relabel
-            # it as the all-zero-score case.
-            for symbol in book_symbols:
-                if symbol not in row_vols:
-                    raise EvaluatorMetricsError(
-                        f"vols carries no volatility for {symbol!r} on "
-                        f"{day.isoformat()}, a symbol the normalized scores "
-                        "and the priced panel share; the inverse-volatility "
-                        "book needs a volatility for every name it weights, "
-                        "on every date it weights them — supply it or leave "
-                        "vols out"
-                    )
+            # A symbol this date's row carries no volatility for is *dropped
+            # from this date's book*, not refused: the row already names whose
+            # volatility could be measured over the trailing window (a symbol
+            # with too few returns was left out by whoever computed it, and a
+            # flat window — a perp delisted in place — measures exactly 0.0,
+            # which is no positive scale to divide a score by).  Such a name is
+            # untradeable at that volatility, so it belongs outside the date's
+            # cross-section by the same missing-input rule that neutralises a
+            # symbol with no stream; refusing the whole evaluation over one
+            # frozen perp would discard every other name's measurement with it.
+            # The rank coefficient above was still measured over the *full*
+            # joined cross-section — the book's membership is not what the
+            # ranking is measured on, and a frozen name carries a return of 0
+            # and a score, so dropping it from the book does not change the
+            # cross-section the IC is taken over.  The drops are counted per
+            # date and the surviving weights go through the same
+            # :func:`book_weights` call, so the thinned book is renormalised to
+            # gross 1 exactly as the full one was.
+            weighted_symbols = [
+                symbol for symbol in book_symbols if symbol in row_vols
+            ]
+            # Every measured date carries an entry, ``0`` where nothing was
+            # dropped, so a reader can tell a clean book from a thinned one
+            # without inferring it from the row's own membership.
+            vol_dropped[day] = len(book_symbols) - len(weighted_symbols)
+        row_scores = {symbol: score_row[symbol] for symbol in weighted_symbols}
         try:
             weights = book_weights(row_scores, row_betas, vols=row_vols)
         except EvaluatorMetricsError as exc:
-            # _rank_correlation above already required these same symbols'
+            # _rank_correlation above already required the joined symbols'
             # scores to have nonzero rank spread, so they cannot all be
             # exactly zero; unreachable in practice, refused rather than
             # producing a NaN book if that invariant is ever broken.
@@ -1139,7 +1223,7 @@ def compute_node_metrics(
             ) from exc
         per_date_weights[day] = weights
         per_date_return[day] = math.fsum(
-            weights[symbol] * returns_row[symbol] for symbol in book_symbols
+            weights[symbol] * returns_row[symbol] for symbol in weighted_symbols
         )
     if not per_date_ic:
         raise EvaluatorMetricsError(
@@ -1259,4 +1343,5 @@ def compute_node_metrics(
         ic_series=per_date_ic,
         book_returns=per_date_return,
         turnover_series=per_date_turnover,
+        vol_dropped=vol_dropped,
     )

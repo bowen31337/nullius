@@ -547,6 +547,50 @@ def test_thin_symbol_is_refused_downstream_by_name(
     assert "THIN" in str(record.value)
 
 
+def test_compute_vols_omits_a_constant_price_symbol(
+    vol_snapshot: Any, tmp_path: Path
+) -> None:
+    """A flat window measures exactly 0.0, which is *no vol*, not a vol of 0.
+
+    The spec's own case: a perpetual delisted in place keeps its last close,
+    so a full window of identical prices has a population standard deviation
+    of exactly 0.0.  That is not a positive scale to divide a score by, so it
+    takes the *same* "no vol" outcome as too few returns — the symbol is
+    simply absent from the date's row — rather than being emitted and making
+    the whole day's book refuse.
+    """
+    window_days = 10
+    first = dt.date(2026, 5, 1)
+    days = tuple(first + dt.timedelta(days=i) for i in range(window_days + 1))
+    scored = days[-1]
+
+    normal = _closes_from_returns(
+        days[0],
+        [0.01, -0.02, 0.015, 0.03, -0.01, 0.005, -0.025, 0.02, -0.008, 0.012],
+        100.0,
+    )
+    # A complete window of identical closes: every return is exactly 0.0, so
+    # the population standard deviation is exactly 0.0.
+    frozen = {day: 42.0 for day in days}
+    closes = {"NORMAL": normal, "FROZEN": frozen}
+    book = BookConfig(
+        beta_neutral=False,
+        weighting=INVERSE_VOL_WEIGHTING,
+        vol_window_days=window_days,
+    )
+    context = _minimal_context(
+        vol_snapshot, closes, book=book, tmp_path=tmp_path, name="constant-price"
+    )
+
+    scores = {scored: {"NORMAL": 1.0, "FROZEN": -1.0}}
+    vols = compute_vols(context, scores)
+
+    # The normal symbol carries a vol; the frozen one is absent, not 0.0.
+    assert set(vols[scored]) == {"NORMAL"}
+    assert vols[scored]["NORMAL"] > 0.0
+    assert "FROZEN" not in vols[scored]
+
+
 # == Part C: the wiring, through evaluate_node ==================================
 
 NODE_TABLE_MIGRATIONS = ("0118_node_table", "0114_node_metrics")
@@ -627,8 +671,16 @@ def _plant_root(database_url: str, *, node_id: str, campaign_id: str) -> None:
         )
 
 
+#: The frozen symbol :func:`_seal_the_world` optionally plants: a perpetual
+#: delisted in place, its archived close constant through the whole window, so
+#: its trailing realised volatility is exactly 0.0 on every scored date.
+FROZEN_SYMBOL = "FTTUSDT"
+
+
 def _seal_the_world(
     workdir: Path,
+    *,
+    frozen: bool = False,
 ) -> tuple[Any, dict[str, dict[dt.date, float]]]:
     lake_root = workdir / "lake"
     (lake_root / "snapshots").mkdir(parents=True)
@@ -650,6 +702,10 @@ def _seal_the_world(
 
     sigmas = {"AAA": 0.004, "BBB": 0.006, "CCC": 0.02, BENCHMARK: 0.01}
     closes = {symbol: _path(sigma) for symbol, sigma in sigmas.items()}
+    if frozen:
+        # A complete window of identical closes: every close-to-close return
+        # is exactly 0.0, so the population standard deviation is exactly 0.0.
+        closes[FROZEN_SYMBOL] = {day: 42.0 for day in PART_C_BAR_DAYS}
 
     for symbol, series in closes.items():
         for day in PART_C_BAR_DAYS:
@@ -712,6 +768,15 @@ def sealed_world(
 ) -> tuple[Any, dict[str, dict[dt.date, float]]]:
     workdir = tmp_path_factory.mktemp("book-weighting-wiring-world")
     return _seal_the_world(workdir)
+
+
+@pytest.fixture(scope="module")
+def sealed_world_with_frozen(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Any, dict[str, dict[dt.date, float]]]:
+    """The same world plus one frozen perp — the delisted-in-place case."""
+    workdir = tmp_path_factory.mktemp("book-weighting-wiring-frozen-world")
+    return _seal_the_world(workdir, frozen=True)
 
 
 def _build_context(
@@ -993,6 +1058,80 @@ def test_inverse_vol_composes_with_beta_neutral(
             {symbol: score_row[symbol] for symbol in book_symbols},
             betas[day],
             vols=vols[day],
+        )
+        expected = math.fsum(
+            weights[symbol] * returns_row[symbol] for symbol in book_symbols
+        )
+        assert metrics.book_returns[day] == pytest.approx(
+            expected, rel=1e-12, abs=1e-15
+        )
+        checked += 1
+    assert checked >= 20
+
+
+def test_inverse_vol_drops_a_frozen_perp_instead_of_refusing_the_evaluation(
+    sealed_world_with_frozen: tuple[Any, dict[str, dict[dt.date, float]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported defect: a delisted-in-place perp must not kill the run.
+
+    Under ``weighting: inverse_vol`` on a wide universe, a perpetual whose
+    archived close is frozen (FTTUSDT) measures a volatility of exactly 0.0
+    on every scored date.  Before the fix that reached
+    :func:`compute_node_metrics` as a non-positive vol and refused the whole
+    evaluation; now it is dropped from each date's book, counted in
+    ``vol_dropped``, and the evaluation completes.
+    """
+    answer, _context, calls = _capturing_evaluate(
+        tmp_path,
+        sealed_world_with_frozen,
+        book=BookConfig(
+            beta_neutral=False,
+            weighting=INVERSE_VOL_WEIGHTING,
+            vol_window_days=VOL_WIRING_WINDOW_DAYS,
+        ),
+        monkeypatch=monkeypatch,
+    )
+
+    # The evaluation did not fail — that is the bug being fixed.
+    assert answer.fail_class is None, answer.fail_detail
+    metrics = answer.metrics
+    assert metrics is not None
+
+    net_call = calls[0]
+    scores, vols = net_call["scores"], net_call["vols"]
+    assert vols is not None
+
+    # compute_vols left the frozen symbol out of every date's row ...
+    scored_days = [day for day in sorted(scores) if scores[day]]
+    assert scored_days
+    for day in scored_days:
+        assert FROZEN_SYMBOL in scores[day]
+        assert FROZEN_SYMBOL not in vols[day]
+    # ... so every measured date recorded exactly one dropped name.
+    assert metrics.vol_dropped == {day: 1 for day in metrics.ic_series}
+    assert all(count == 1 for count in metrics.vol_dropped.values())
+
+    # The book that was actually traded is the survivors' inverse-vol book:
+    # renormalised through the same book_weights call, so gross 1.
+    series = net_call["returns"].series[metrics.horizon]
+    checked = 0
+    for day in series.dates():
+        score_row = scores.get(day)
+        if not score_row:
+            continue
+        returns_row = series.at(day)
+        book_symbols = sorted(
+            (set(score_row) & set(returns_row)) - {FROZEN_SYMBOL}
+        )
+        weights = book_weights(
+            {symbol: score_row[symbol] for symbol in book_symbols},
+            None,
+            vols=vols[day],
+        )
+        assert math.fsum(abs(w) for w in weights.values()) == pytest.approx(
+            1.0, rel=1e-12
         )
         expected = math.fsum(
             weights[symbol] * returns_row[symbol] for symbol in book_symbols
