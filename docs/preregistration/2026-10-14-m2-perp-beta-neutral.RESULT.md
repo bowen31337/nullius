@@ -62,3 +62,5 @@ Not measured separately:
 2. A **paid-data trial**, pre-registered and time-boxed. It is deferred until the shadow is running.
 
 **Erratum (2026-10-20):** every in-sample and out-of-sample metric in this file is a horizon-1 (one-day-forward) figure, not the horizon-5 or horizon-10 figure its labels say; the engine scores the shortest aligned horizon regardless of the config (`2026-10-19-m2-wide-h5.ADDENDUM.md`, Addendum 2; `bug_spec_metrics_horizon.xml`). The numbers stand; the horizon labels do not.
+
+**Erratum (2026-10-21, see `2026-10-20-m2-wide-h5-v2.RESULT.md`, "The null defect"):** under the perpetual instrument the planted nulls kept each symbol's real funding carry while permuting only its price return, so every null-calibration figure in this file (KS gate p, FDR_deploy, sensitivity, specificity, null t means) compared real nodes against a null biased upward for funding- and basis-driven signals. Real nodes' own scores stand; the calibration verdicts do not. Nothing is recomputed and no stored row is rewritten.
