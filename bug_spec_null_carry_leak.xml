@@ -1,0 +1,93 @@
+<bug_spec>
+  <!-- NULL-CARRY-1. Found 2026-10-21 09:00 AEDT at the verdict of the
+       M2-wide-h5-v2 series (docs/preregistration/2026-10-20-m2-wide-h5-v2
+       .RESULT.md, "The null defect"). Under instrument "perp" (c0e3c1b5,
+       2026-10-14) the per-(date, symbol) return the metrics reduce is
+       price_return - fee - funding_carry, the carry read from the REAL
+       symbol over D+1..D+h in orchestrator._evaluate._cost_schedule_from_
+       context's charges() closure. The null branch (nulloracle.blockpermute
+       .block_permute_cross_section, applied by the TargetEndpoint to the
+       series _targets.snapshot_forward_returns serves) permutes only the
+       price return across symbols within a date; the carry stays on its
+       own symbol. A signal that is a function of funding or basis therefore
+       correlates with its own unpermuted carry, and the planted null for
+       those themes is biased upward. Measured read-only on 100 fresh
+       derangements over 61 in-sample dates for three funding-driven nodes:
+       permuted price only (the clean construction) gives null IC t centred
+       at -0.05, sd 1.0, 2-4 % above 1.96; the chain's actual construction
+       gives +1.78 / +1.15 / +1.42 with 39 % / 19 % / 31 % above 1.96. In
+       the series 11 of 55 planted nulls reached IC t >= 2 (expected about
+       1), all but one in funding-crowding or basis-premium; low-volatility,
+       momentum and attention nulls were unaffected. Two of the series' six
+       committed picks were null branches, because closeout._commit_top_node
+       ranks every evaluated node by ir_tstat and never consults the null
+       labels the close-out has already read for the KS split; FDR_deploy
+       read 0.98 and 0.96 on those two campaigns. Standing architectural
+       constraint, unchanged by this spec: the orchestrator's evaluation
+       path never reads is_null; null-ness crosses only through the oracle
+       (charges_budget). The fix therefore moves the carry INTO the target
+       the oracle serves, so the one permutation covers both. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/orchestrator/src/orchestrator/_targets.py,packages/orchestrator/src/orchestrator/_evaluate.py"
+       creates="packages/orchestrator/tests/test_null_carry_target.py">
+    <title>Under the perp instrument the null branch permutes the price return but leaves each symbol's real funding carry in place, so planted nulls for funding- and basis-driven signals are biased upward</title>
+    <symptoms>A planted-null node whose signal ranks symbols by trailing funding scores IC t of +3.6 to +4.2 in sample against the permuted target (campaigns 46db5446, 6717ee2b, e508430b of the M2-wide-h5-v2 series), while the same code scored against a clean derangement of the price panel is centred at 0 with sd 1. The null IC t distribution for such a signal under the chain's own target construction has mean +1.2 to +1.8 on 61 dates (scratchpad script null_carry_sweep.py, 100 seeds); P(t > 1.96) is 19-39 % instead of 2.5 %.</symptoms>
+    <reproduction_steps>
+      Build an EvaluationContext with instrument "perp", two rebalance dates, four symbols whose closes give distinct forward returns, and a funding map where symbols A and B carry +0.002 per day and C and D carry -0.002. Serve targets through _targets.snapshot_forward_returns(context) and permute them with block_permute_cross_section under a seed whose derangement maps A->C, B->D, C->A, D->B. Price the permuted panel through _cost_schedule_from_context(context) and apply_costs. Today the post-cost return served for A equals (price return of C) - fee - (carry of A); a signal equal to -funding then has rank correlation +1 with the permuted post-cost panel on every date. Expected after the fix: the post-cost return served for A equals (price return of C) - (carry of C) - fee, i.e. exactly C's own post-cost return, and the signal's rank correlation with the permuted panel is the clean derangement's.
+    </reproduction_steps>
+    <expected>
+      - _targets.snapshot_forward_returns(context) serves, for a context whose instrument is "perp", the FUNDED forward return per (date, symbol): close-to-close price return over the request's horizon minus the funding carry over D+1..D+h, the carry computed by the same rule _evaluate._funding_carry states today (sum of funding_rate_sum over the holding days, a missing day counting 0.0). For any other instrument the served value is byte-for-byte today's price return. The function's docstring states that under perp the target is the funded return and why (a permutation of this series permutes the carry with the price).
+      - _evaluate._cost_schedule_from_context's charges() quotes, under perp, the uniform fee alone (the same `fee` it quotes today for the spot default); the carry is no longer added there, and _funding_carry stays as the one definition of the carry, called from the target seam. The docstring that today says the carry is added beside the fee is rewritten to say where it now lives.
+      - Both chains (evaluate_node, evaluate_on_dates) and closeout's out-of-sample endpoint (_oos_target_endpoint, which wraps snapshot_forward_returns) are fixed by construction, since every one of them reads targets through this seam and costs through this schedule; no call site changes. grid_forward_returns, which wraps snapshot_forward_returns, needs no change.
+      - For a REAL node the post-cost return per (date, symbol) is mathematically unchanged, (r - carry) - fee instead of r - (fee + carry); it may differ in the last floating-point bit. Nothing else about real-node evaluation changes.
+      - For a planted-null node the post-cost return served for symbol s on date d is exactly the real post-cost return of its donor symbol on that date: the null target is now a derangement of real post-cost returns.
+      - The orchestrator still reads no is_null value anywhere on the evaluation path.
+      - Tests (new file): (1) the four-symbol fixture above: after permutation and pricing, A's post-cost value equals C's unpermuted post-cost value to 1e-15 for every date and horizon requested; (2) for a real node on the same fixture the post-cost panel equals r - fee - carry within 1e-12 per cell; (3) for a non-perp context snapshot_forward_returns returns byte-identical values to a direct close-to-close computation (reuse the existing _targets test fixture if one exists); (4) the signal -funding has mean rank correlation within 0.05 of 0.0 against the permuted post-cost panel over 200 seeds on a 20-symbol, 12-date fixture with carries of alternating sign, and within 0.05 of +1 before the fix would have been expected (assert only the post-fix value); (5) charges() under perp quotes fee only, equal to the spot quote for the same request. The orchestrator member suite passes.
+    </expected>
+    <actual>Root cause: additions_spec_research_book_v2's perp feature added the carry to the cost quote (keyed by the request's own symbols) because the fee already lived there, while the null permutation operates on the target seam upstream of pricing; the two were never reconciled, so the carry became the one component of the post-cost return a null could not permute. deploy/campaign/null_power_check.py only ever tested bare price panels, so the bias was invisible to the null-validity check.</actual>
+    <constraints>
+      Only the listed files change; packages/evaluator/**, packages/nulloracle/**, packages/contract/** and orchestrator/_sandbox_child.py are untouched. The orchestrator must not read is_null or any sidecar assignment on the evaluation path. No stored row, artifact or replay_score is rewritten. _funding_carry keeps its signature and semantics. Lint only the touched files.
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/orchestrator/src/orchestrator/closeout.py"
+       creates="packages/orchestrator/tests/test_closeout_commit_skips_nulls.py">
+    <title>The close-out's M2 commit ranks planted-null nodes beside real ones and can commit a null branch as the campaign's pick</title>
+    <symptoms>Campaigns 46db5446 and 6717ee2b (M2-wide-h5-v2) committed nodes 1e00d94c and f3896a87, both planted-null branches (charges_budget false in their node_evaluated events), writing m2-fixed replay_score rows of +62.3 and -24.5 bp read on the permuted branch. The two are the only null commits among the 42 m2-fixed rows ever written. FDR_deploy for those campaigns read 0.98 and 0.96.</symptoms>
+    <reproduction_steps>
+      Run closeout on a campaign fixture with two evaluated nodes: a null root with ir_tstat 2.5 and ic_tstat 3.0, and a real root with ir_tstat 1.5. Today _commit_top_node commits the null root; the close-out JSON reports it as committed_pick with an oos_ir read on the permuted branch.
+    </reproduction_steps>
+    <expected>
+      - _commit_top_node (or its caller at step 9) considers only nodes whose root the sidecar labels real, using the per-node labels the close-out already resolved for the KS split in the same run (sidecar.assignment(root) for every evaluated node; nothing new is read and no label is persisted). A campaign whose only bar-clearing nodes are null branches abstains exactly as a campaign with no bar-clearing node does: committed_pick null, replay_score NON_COMMITTING_SCORE, exit code unchanged.
+      - The close-out JSON gains one integer field, null_discoveries: the count of null-branch nodes that cleared the discovery bar (_is_discovery) and were therefore skipped. It is 0 for a clean campaign.
+      - The policy_runtime.episode_commit seam (_ClosingQuestion over the evaluated node ids) still validates the commit; only the eligible set shrinks.
+      - Tests (new file): the fixture above abstains and reports null_discoveries 1; the same fixture with the real root at ir_tstat 2.5 commits the real root and reports null_discoveries 1; a fixture with no null branch behaves byte-identically to today's close-out JSON apart from the new field being 0 (reuse an existing closeout test fixture). The orchestrator member suite passes.
+    </expected>
+    <actual>Root cause: the commit rule (additions_spec_cost_aware_selection.xml feature 2) was written against the discovery bar alone; null branches were assumed to fall below it, which held while the null reference was unbiased.</actual>
+    <constraints>
+      Only closeout.py and the new test file change. The KS gates, FDR_deploy, sensitivity, specificity and Type-B depth are untouched. No new sidecar read; the labels used are the ones step 7 already resolved. campaign_ks_guard is not touched.
+    </constraints>
+  </bug>
+
+  <bug index="3" shape="core" severity="medium"
+       touches_files="deploy/campaign/null_power_check.py"
+       depends_on="1">
+    <title>deploy/campaign/null_power_check.py tests the null against a bare price panel and so cannot see a bias in the chain's own post-cost target</title>
+    <symptoms>The check reported mom20 / rev5 / vol20 null t means of +0.14 / -0.17 / +0.11 with P(|t| > 1.96) of 0.05-0.067 on the wide-h5 config on 2026-10-20, and was read as "null valid at horizon 5", while the chain's actual null for a funding-rank signal was centred at +1.2 to +1.8.</symptoms>
+    <reproduction_steps>
+      Run the script on ~/.config/nullius/campaign/evaluation-config-wide-h5-tail-mh.json with 100 seeds: it reports three signals, none funding-driven, each against block_permute_cross_section(price panel). No funding-rank signal is tested and the panel is the price return, not the funded return the chain serves.
+    </reproduction_steps>
+    <expected>
+      - The script builds its panel through orchestrator._targets.snapshot_forward_returns(context) (post bug 1: the funded return under perp) at the config's horizon, so it tests exactly the series the chain permutes.
+      - It adds a fourth signal, funding_rank: the trailing 20-day sum of funding_rate_sum per symbol (sign-flipped so that high funding ranks low, the construct the funding-crowding theme writes), present only when the context's instrument is perp and funding is available; otherwise it is skipped with a one-line note.
+      - It prints, per signal, the real IC t and the null t mean, sd, P(t > 1.96) and P(|t| > 1.96) over the seeds, and exits 1 when any signal's null mean is outside +-0.3 or its P(|t| > 1.96) exceeds 0.10 (the thresholds the docstring states), 0 otherwise.
+      - The docstring explains why the price panel alone was insufficient (the carry) and names the series now tested.
+    </expected>
+    <actual>Root cause: the script predates the perp instrument and was never updated when the carry entered the post-cost return.</actual>
+    <constraints>
+      Only the listed file changes. The script remains read-only (no store writes), stdlib plus the workspace members it already imports, and keeps its two positional arguments.
+    </constraints>
+  </bug>
+</bug_spec>
