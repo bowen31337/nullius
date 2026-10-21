@@ -273,7 +273,10 @@ DISCOVERY_TSTAT = 2.0
 #: feature 2): discovery is ``ir_tstat >= DISCOVERY_TSTAT and ic_tstat > 0``,
 #: and the commit ranks eligible nodes by ``ir_tstat``.  Named here so
 #: :attr:`CloseoutResult.selection_rule` can report which rule a close-out
-#: actually ran without a reader re-deriving it from the source.
+#: actually ran without a reader re-deriving it from the source.  The commit
+#: leg skips a node whose root the sidecar labels null even when it cleared
+#: the bar (see :func:`_commit_top_node`) -- the rule the discovery count and
+#: the commit share is the bar, and the label is the commit's own addition.
 SELECTION_RULE_POST_COST_IR = "post-cost-ir"
 
 #: The rule a node whose ``ir_tstat`` was never written falls back to -- the
@@ -427,6 +430,14 @@ class CloseoutResult:
     ran: :data:`SELECTION_RULE_POST_COST_IR` when at least one evaluated node
     carried ``ir_tstat``, :data:`SELECTION_RULE_IC_FALLBACK` when none did (a
     tree evaluated before that feature landed).
+
+    ``null_discoveries`` counts the discoveries of that count whose root the
+    sidecar labels null -- bar-clearing null branches the commit skipped
+    (see :func:`_commit_top_node`).  It is ``0`` for a campaign with no
+    null branch past the bar, and a campaign whose only bar-clearing nodes
+    are null abstains (``committed_pick`` ``None``) exactly as a campaign
+    with no discovery does.  A count, never a node id: the payload reports
+    how many null branches were skipped, not which ones (PRD §4.2).
     """
 
     campaign_id: str
@@ -446,6 +457,7 @@ class CloseoutResult:
     type_b: int | None
     discoveries: int
     discoveries_ic: int
+    null_discoveries: int
     selection_rule: str
     budget_charging_trials: int
     ledger_trials: int
@@ -475,7 +487,9 @@ class CloseoutResult:
         the node close-out committed to, or ``null`` for a miss.  The
         pick's own identity is not what PRD §4.2 protects; only its null
         status is, and that status is read only for calibration above and
-        never joins this payload (feature 2).
+        never joins this payload (feature 2).  ``null_discoveries`` is the
+        same stance applied to the commit's own skip: a count of bar-clearing
+        null branches passed over, never which ones.
         """
         return {
             "campaign_id": self.campaign_id,
@@ -496,6 +510,7 @@ class CloseoutResult:
             "selection_rule": self.selection_rule,
             "discoveries_ic": self.discoveries_ic,
             "discoveries": self.discoveries,
+            "null_discoveries": self.null_discoveries,
             "budget_charging_trials": self.budget_charging_trials,
             "ledger_trials": self.ledger_trials,
             "triage_auc": self.triage_auc,
@@ -1143,7 +1158,11 @@ class _ClosingQuestion:
         self.tree = _ClosingTree(node_ids)
 
 
-def _commit_top_node(evaluated: Sequence[_EvaluatedNode]) -> policy_runtime.Termination:
+def _commit_top_node(
+    evaluated: Sequence[_EvaluatedNode],
+    *,
+    null_nodes: frozenset[str] = frozenset(),
+) -> policy_runtime.Termination:
     """Commit to the eligible evaluated node with the highest ``ir_tstat``
     (additions_spec_cost_aware_selection.xml feature 2's commit rule --
     ``ic_tstat`` under :data:`SELECTION_RULE_IC_FALLBACK` for a node with no
@@ -1151,19 +1170,40 @@ def _commit_top_node(evaluated: Sequence[_EvaluatedNode]) -> policy_runtime.Term
     through :func:`policy_runtime.episode_commit` so the one-way-door and
     one-node cardinality it already enforces are not restated here.
 
+    ``null_nodes`` names the evaluated nodes whose root the sidecar labels
+    null -- the per-node labels :func:`close_out`'s own KS-split loop already
+    resolved in the same run -- and the commit skips them even when they
+    cleared the discovery bar: a null branch's score was read on the
+    permuted branch, so committing one writes the campaign's m2-fixed
+    replay row on a branch constructed to carry no edge (campaigns 46db5446
+    and 6717ee2b committed exactly such nodes).  A campaign whose only
+    bar-clearing nodes are null abstains exactly as a campaign with no
+    bar-clearing node does.  Only the eligible set shrinks -- the
+    :class:`_ClosingQuestion` seam still carries every evaluated node id,
+    so :func:`policy_runtime.episode_commit` validates the commit over the
+    same addresses it always did.  The default (no labels handed over)
+    skips nothing and ranks every bar-clearing node, the rule as it stood
+    before this fix -- the shape a caller with no sidecar labels of its own
+    (the incumbent-equivalence ground truth) still asks for.
+
     Ties are broken by node id, ascending: a deterministic total order over
     ``(-_selection_value(node), node_id)`` picks the same winner on every
     call over the same rows, which a direct ``max()`` without a tie-break key
     would not guarantee.  With no eligible node (every node below its own
-    rule's bar, or no evaluated node at all), nothing is committed and the
-    returned :class:`~policy_runtime.Termination` carries no pick -- the
-    campaign is a miss, scored :data:`policy_runtime.NON_COMMITTING_SCORE` by
-    the caller that reads it, never refused.
+    rule's bar, every bar-clearing node a skipped null branch, or no
+    evaluated node at all), nothing is committed and the returned
+    :class:`~policy_runtime.Termination` carries no pick -- the campaign is
+    a miss, scored :data:`policy_runtime.NON_COMMITTING_SCORE` by the caller
+    that reads it, never refused.
     """
     record = policy_runtime.episode_commit(
         _ClosingQuestion(frozenset(node.node_id for node in evaluated))
     )
-    eligible = [node for node in evaluated if _is_discovery(node)]
+    eligible = [
+        node
+        for node in evaluated
+        if _is_discovery(node) and node.node_id not in null_nodes
+    ]
     if eligible:
         winner = min(eligible, key=lambda node: (-_selection_value(node), node.node_id))
         record.commit(winner.node_id)
@@ -1361,6 +1401,15 @@ def close_out(
     discoveries: list[str] = []
     discovery_roots: list[str] = []
     discoveries_ic = 0
+    # The evaluated nodes whose root the sidecar labels null -- the same
+    # per-node labels this loop resolves for the KS split, handed on to the
+    # commit (step 9) so it can skip them.  Nothing new is read and no label
+    # is persisted: the set is this run's own memory of entries it already
+    # held.  ``null_discoveries`` counts the ones that cleared the discovery
+    # bar -- discoveries the calibration figures below still count, but
+    # nodes the campaign must never commit to.
+    null_branch_nodes: set[str] = set()
+    null_discoveries = 0
     triage_null: list[float] = []
     triage_real: list[float] = []
     # root_id -> (ic_mean, ic_tstat, is_null) of the root's *own* evaluation
@@ -1389,6 +1438,8 @@ def close_out(
                 "without one"
             )
         (null_scores if entry.is_null else real_scores).append(node.ic_mean)
+        if entry.is_null:
+            null_branch_nodes.add(node.node_id)
         if node.node_id == root_id:
             root_level[root_id] = (node.ic_mean, node.ic_tstat, entry.is_null)
         if is_type_d:
@@ -1410,6 +1461,8 @@ def close_out(
         if _is_discovery(node):
             discoveries.append(node.node_id)
             discovery_roots.append(root_id)
+            if entry.is_null:
+                null_discoveries += 1
         # The M1 triage sample -- every evaluated node whose lookback-jitter
         # tripwire actually measured, labelled by the same root-mapped
         # sidecar entry the KS split above just resolved (a child inherits
@@ -1647,8 +1700,14 @@ def close_out(
     #    Evaluation", feature 2).  Runs after every calibration step above:
     #    the commit reads the same in-sample ic_tstat those steps already
     #    measured, and the world is admitted or refused by the campaign's
-    #    calibration_status as that machinery just left it.
-    termination = _commit_top_node(evaluated)
+    #    calibration_status as that machinery just left it.  The null labels
+    #    the KS-split loop above already resolved ride along, so a planted
+    #    null branch that cleared the discovery bar is skipped, never
+    #    committed -- the calibration figures above still counted it, and
+    #    null_discoveries reports how many were skipped here.
+    termination = _commit_top_node(
+        evaluated, null_nodes=frozenset(null_branch_nodes)
+    )
     committed_pick = termination.pick.node_id if termination.committed else None
 
     oos_ir: float | None = None
@@ -1714,6 +1773,7 @@ def close_out(
         type_b=type_b,
         discoveries=len(discoveries),
         discoveries_ic=discoveries_ic,
+        null_discoveries=null_discoveries,
         selection_rule=selection_rule,
         budget_charging_trials=budget_charging_trials,
         ledger_trials=ledger_trials,
