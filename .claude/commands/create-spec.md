@@ -775,17 +775,20 @@ ERROR that `/fix-spec` would have to clean up.
 2. **Embed one measurable outcome** (Layer 1, WARNING otherwise). Each bullet must contain a
    recognised observable result. The validator looks for any of: `returns <NNN>` /
    `(returns …` / `displays` / `shows` / `redirects to` / `saves to` / `emits` / `sends` /
-   `creates` / `persists` / a `snake_case` field name / `HTTP <NNN>` / `<NNN> error` /
+   `creates` / `persists` / `prints <thing>` / `outputs <thing>` / `exits <N>` /
+   `writes … to stdout|stderr` / a `snake_case` field name / `HTTP <NNN>` / `<NNN> error` /
    `error message` / `toast notification`. ✗ "Handle errors appropriately" → ✓ "API returns
    422 with a field-level errors array when validation fails".
 
-3. **One action per bullet — never compound** (Layer 1, **ERROR** otherwise). Do not join two
-   actions with a connector. The validator hard-rejects these substrings: `and then`,
-   `and also`, `and after`, `and receive`, `and redirect`, `and create`, `and send`,
-   `and return`, `then login`, `then register`. ✗ "User can login and receive a JWT" → split
-   into two bullets: "User can login …" and "System issues a JWT …". (Plain "and" between
-   *nouns* — "email and password", "title and description" — is fine; only the listed
-   action-joining phrases are rejected.)
+3. **One action per bullet — never compound** (Layer 1; ERROR for bundled actions, WARNING
+   otherwise). Do not join two actions with a connector. The sequence connectors `and then`,
+   `and also`, `and after`, `then login`, `then register` are an **ERROR on any bullet**. The
+   outcome connectors `and receive`, `and redirect`, `and create`, `and send`, `and return to`
+   are an **ERROR only on a user-action bullet** (opens `User can …`, `Admin can …`,
+   `As a X, I …`); on descriptive system behaviour ("System validates the body and sends 201")
+   they are a WARNING. ✗ "User can login and receive a JWT" → split into two bullets: "User
+   can login …" and "System issues a JWT …". (Plain "and" between *nouns* — "email and
+   password" — is fine.)
 
 4. **At least 6 words, no vague filler** (Layer 1, WARNING otherwise). Bullets under 6 words,
    or containing `etc` / `various` / `multiple` / `some` / `things` / `stuff` / `items`, are
@@ -1005,6 +1008,51 @@ spec passes without `/fix-spec`:
   `src/core/middleware/auth.py` or `src/core/**`, never a blanket `src/**` that would swallow
   `src/plugins/<name>/`.
 
+#### Acceptance criteria
+
+A `<feature>` may carry an `<acceptance>` child. `plan` turns it into an independent
+"Acceptance tests: <feature>" task that writes executable tests into `acceptance/<slug>/`
+BEFORE the feature is built; the tests must fail first, the feature's agent cannot edit
+them, and its work is accepted only when they pass. Rules for writing them:
+
+- One observable criterion per `- ` line.
+- Each criterion must be checkable from outside the code: an HTTP status, CLI output,
+  rendered text, a returned value. Never an implementation detail ("uses bcrypt",
+  "calls the helper").
+- Prefer criteria checkable through HTTP requests, CLI invocations or exported functions.
+  Use rendered-UI criteria only when the stack already has a browser test harness (e.g.
+  Playwright). The tests are written before the feature exists, so each criterion must
+  name a surface the feature will expose.
+- That surface must exist within the feature's own `depends_on` closure. The tests run
+  after the feature's dependencies merge and before its dependents exist, so a criterion
+  on an internal module (a recalculation engine, a parser) that only a later feature's
+  route exposes can never pass and strands everything after it. Put such criteria on the
+  first feature whose closure creates the route (the validator WARNs, Gap 18).
+- Keep each criterion on a single line: an `<acceptance>` element with no `- ` bullet is a
+  validator ERROR, and non-bullet lines inside it (e.g. a wrapped continuation) are dropped.
+- Aim for 2-5 per user-facing feature. A criterion the author could not check without
+  reading the source is not a criterion.
+- Skip them for pure scaffolding and `shape="contracts"` features; nothing observable
+  to test.
+- Never put criteria on the first (scaffolding) feature or on any other root feature in
+  a greenfield spec. The acceptance tests are written by a task that runs with the
+  feature's own dependencies, so on a root feature it runs on an empty tree with no test
+  framework and cannot add one. Give the feature `depends_on` the feature that scaffolds
+  the project and its test framework (the validator WARNs on a greenfield root with
+  criteria).
+
+```xml
+<feature index="2" depends_on="1" shape="plugin" plugin="auth" touches_files="src/auth/**">
+  <description>User can log in with email and password</description>
+  <acceptance>
+    - POST /api/auth/login with correct credentials returns 200 and sets a session cookie
+    - A wrong password returns 401 and sets no cookie
+  </acceptance>
+</feature>
+```
+
+Config: `agent.acceptance_criteria: enforce | off` (absent means enforce).
+
 #### Failure modes
 
 - **User skips classification** → emit Phase 5 unchanged; no `shape`
@@ -1159,7 +1207,9 @@ user's project details. The XML must include:
   as feature index 1
 - `<technology_stack>` with `<frontend>`, `<backend>`, `<database>`, `<communication>`, `<infrastructure>`
 - `<prerequisites>` with environment setup bullet list
-- `<core_features>` with categorized bullet lists (this is the bulk — 150-400 bullets)
+- `<core_features>` with categorized bullet lists (this is the bulk — 150-400 bullets).
+- Optionally, a user-facing `<feature>` may carry an `<acceptance>` child (one `- `
+  observable criterion per line; see Phase 3.25 "Acceptance criteria"). Not required.
 - `<database_schema>` with `<tables>` containing `<table name="…">` / `<column>` elements
 - `<api_endpoints_summary>` with `<domain name="…">` sections
 - `<ui_layout>` with main structure

@@ -1,13 +1,13 @@
 {
   "note": "Written by claw-forge. Records the sha256 of what claw-forge scaffolded, so `init --refresh` can tell an unmodified older version from your own edits. Safe to delete: refresh then falls back to backing up anything that differs.",
-  "claw_forge_version": "1.49.0",
+  "claw_forge_version": "1.53.1",
   "files": {
     "check-code.md": "f3b0bd9f2764ec0bea89bad531adeb0032a2c555ba768191c329df80e2d851a2",
     "checkpoint.md": "9e9cedc08fc089f6da9b2f6c25940208f44a6dce27f1d5fed537b257f7b2893e",
     "claw-forge-status.md": "51ea8a391b156e69759d6e7b69dd4d1fc1faceb81a292a5b40e97b08fe4882fa",
     "create-bug-report.md": "61355966c08b923af802a20f6efc05ae1bc6f1e1c05e4348396fd4eeef9f1737",
     "create-bug-spec.md": "be18d55a48b5955862b1c6125d21e0471b2375105667979fe45a3dadbcafbe17",
-    "create-spec.md": "e3a42e544440b6dded53cdce0238b79a1ddbee511892798935ae880ca64503e9",
+    "create-spec.md": "623cdd75d9d7c9036b5138a7b9e7d13a9a0f6c6e17c0c31601613e43c9e6f934",
     "example.md": "bc6385fa3dddbc1fc1a532c2d77c100aaa52315fe8d84690754f4fd55756590f",
     "expand-project.md": "d11c2eecfad86c1893fb3f7989166bbea1d2e76616bae0e20dd88e8d0c8f7cd3",
     "fix-spec.md": "e79f79a0ac8fe995aa8ae91d1cf25138a83d2402aa40e1355ea5f40f07bcd9be",
