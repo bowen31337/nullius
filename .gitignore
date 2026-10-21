@@ -50,3 +50,4 @@ coverage/
 # user-journey sweep screenshots (regenerated per run)
 docs/user-journeys/screenshots/
 .env.campaign-wide-h5.tpl
+.env.campaign-*.tpl
