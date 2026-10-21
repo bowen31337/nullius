@@ -1,0 +1,59 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — a short-tail research book: short the bottom decile, long the rest equal-weight, dollar-neutral</project_name>
+  <addition_summary>
+    docs/preregistration/2026-10-20-m2-wide-h5-v2.RESULT.md ("Decile profile
+    of each committed pick") and the v1 RESULT before it show the same shape
+    on every committed pick at the chain's own 5-day returns: the bottom
+    decile of scores is the losing bucket (−5 to −59 bp per period against
+    the cross-section; v1's attention roots −41 to −54 bp) while the top
+    decile is never the best bucket and deciles 2–10 are flat and
+    non-monotone. The tail_decile book (additions_spec_tail_decile_book.xml)
+    spends half its gross on a long leg that carries no gradient, and the
+    registered portfolio of six such books reached t 1.23 on 60 out-of-sample
+    dates where the picks' rank IC reached t 2.2 to 2.9.
+
+    This addition gives the research book a fourth weighting, "short_tail":
+    each date's book is short the bottom decile of scores, equal-weight within
+    that leg, and long every remaining scored name equal-weight, so the book is
+    dollar-neutral at gross 1 and its long leg is the market-like complement
+    rather than a second bet on a decile that carries nothing. The existing
+    beta-neutral rescale applies after, as for every weighting. It sits at the
+    same seam as tail_decile and leaves every default untouched: with
+    weighting "z", "inverse_vol" or "tail_decile" every number is identical to
+    today, and the nightly evaluation canary (frozen reference, deviation 0.0
+    on 2026-10-21) is the enforcement of that. The weighting is a construction
+    the next pre-registration tests; nothing here changes selection, nulls,
+    costs or stored rows.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest.</stack>
+    <test_baseline>main at 08028f18: evaluator 699, orchestrator 955 (5 skipped, -n 2), router 1480, root tests/ 1671, all passing; evaluation canary deviation 0.0.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams: packages/evaluator/src/evaluator/_metrics.py book_weights(scores, betas=None, *, vols=None, weighting="z") and _tail_decile_weights(scores, *, day=None) (additions_spec_tail_decile_book.xml); the closed vocabulary BOOK_WEIGHTINGS in packages/orchestrator/src/orchestrator/_context.py with the TAIL_DECILE_WEIGHTING constant and BookConfig.weighting validation; both evaluation chains (evaluate_node, evaluate_on_dates in packages/orchestrator/src/orchestrator/_evaluate.py) pass weighting=context.book.weighting to compute_node_metrics. TAIL_DECILE_MIN_LEG = 2 is the thin-cross-section refusal. Ties in every ranking are broken by symbol name. Exact reproduction tests use 1e-12.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/src/contract/** or src/app/** (gVisor runtime root).
+      - Never edit deploy/**, packages/router/**, orchestrator/shadow.py, orchestrator/shadow_eval.py, orchestrator/closeout.py, orchestrator/_targets.py, nulloracle/**, docs/preregistration/** or docs/user-journeys/**.
+      - Defaults unchanged: with weighting "z", "inverse_vol" or "tail_decile" every number compute_node_metrics and book_weights produce is identical to today (1e-12); the evaluation canary's frozen reference must still report deviation 0.0.
+      - book_weights keeps its positional (scores, betas) contract; the new spelling joins the existing keyword-only weighting vocabulary.
+      - No stored row is rewritten; no new table, column or config key other than the new value of the existing book.weighting key.
+      - Lint only the touched files.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Research Book">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/evaluator/src/evaluator/_metrics.py,packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/_evaluate.py"
+               creates="packages/evaluator/tests/test_book_weights_short_tail.py,packages/orchestrator/tests/test_book_weighting_short_tail.py">
+        System lets the evaluation config set book.weighting to "short_tail", under which each date's research book is short the bottom decile of scores, equal-weight within that leg, and long every other scored name equal-weight, dollar-neutral at gross 1, with the beta-neutral rescale applied after exactly as for the other weightings.
+        <steps>
+          - _metrics.py gains SHORT_TAIL_WEIGHTING = "short_tail" in the closed weighting vocabulary beside "z", "inverse_vol" and "tail_decile", and a _short_tail_weights(scores, *, day=None) that mirrors _tail_decile_weights: sort the date's symbols by (score, symbol) ascending, k = floor(n/10); refuse with EvaluatorMetricsError naming the count, k, the day (when given) and TAIL_DECILE_MIN_LEG when k is below TAIL_DECILE_MIN_LEG, with the same wording shape as the tail-decile refusal; otherwise the k lowest names each carry −0.5/k and the remaining n−k names each carry +0.5/(n−k). Gross is 1 and net is 0 by construction. book_weights dispatches on the new spelling exactly where it dispatches "tail_decile", and the beta-neutral rescale that follows is unchanged. compute_node_metrics passes the new spelling through per date; the rank IC is still over the full joined cross-section; NodeMetrics.tail_k (the leg size the tail-decile weighting records) is set to k for this weighting too, and the metric fields are otherwise the same set.
+          - _context.py: BOOK_WEIGHTINGS gains "short_tail" (SHORT_TAIL_WEIGHTING constant, exported like TAIL_DECILE_WEIGHTING); BookConfig.weighting validation accepts it; the "evaluating node … book weighting %r" log line needs no change. _evaluate.py: both chains already pass weighting=context.book.weighting, so the only change is wherever a weighting-specific branch names "tail_decile" (the gross diagnostic's "carries no side panel" note and any constant tuple), which must treat "short_tail" the same way: no side panel, no vols.
+          - Docstrings in _metrics.py and _context.py state the construction and why (the gradient lives in the bottom decile; the long leg is the complement), citing this spec; the module-level weighting list in _metrics.py and the config docs in _context.py name the fourth spelling.
+          - Tests (new evaluator file): a 20-name fixture gives exactly 2 shorts at −0.25 and 18 longs at +1/36 with gross 1 (1e-12) and net 0, ties broken by name; a 50-name fixture gives 5 shorts at −0.1 and 45 longs at +1/90; a 15-name fixture is refused with a message naming 15, floor(15/10) = 1 and the minimum; with betas supplied the rescaled book is beta-neutral to 1e-12 and still gross 1; weighting "z", "inverse_vol" and "tail_decile" on an existing book_weights fixture reproduce today's weights to 1e-12 (reuse the tail-decile test's fixture). Tests (new orchestrator file): a BookConfig with weighting "short_tail" loads; one of the other three spellings loads unchanged; an unknown spelling is still refused naming all four; compute_node_metrics on the orchestrator's existing small PostCostReturns fixture under "short_tail" reports tail_k = floor(n/10) and book_returns equal to the short-tail book's per-date returns computed directly in the test (1e-12). The evaluator and orchestrator member suites pass.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
