@@ -53,6 +53,21 @@ real series or a block permutation of it — is chosen entirely downstream of
 this seam, inside ``TargetEndpoint.post``, from the sidecar's own sealed
 assignment. Nothing in this module could tell the two branches apart even if
 it tried, because it is never told which branch it was supplying.
+
+**Under ``context.instrument == "perp"``, the served value is the funded
+return, not the bare price return.** bug_spec_null_carry_leak: a planted
+null permutes exactly the series this seam serves (nulloracle's per-symbol
+block permutation runs on this function's own answer), so a funding or
+basis carry left out of this series — added only later, downstream of the
+permutation — rides along on its own symbol through a null, immune to the
+derangement everything else in the series is subject to. Folding the carry
+in here, before either branch is built, means a null's derangement swaps
+the carry along with the price return: the served value for symbol A on a
+null is exactly the donor symbol's own funded return, never a mix of A's
+carry and some other symbol's price. For any other instrument the served
+value is byte-for-byte today's price return — the carry is perp-only
+because :func:`_funding_carry` reads ``context.funding``, which is
+``None`` for the spot default.
 """
 
 from __future__ import annotations
@@ -60,6 +75,9 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Mapping
 from typing import Any
+
+from ._context import PERP_INSTRUMENT
+from ._evaluate import _funding_carry
 
 __all__ = ["grid_forward_returns", "snapshot_forward_returns"]
 
@@ -91,10 +109,23 @@ def snapshot_forward_returns(
     1``. A ``(date, symbol)`` pair with no close that many trading days
     ahead — the tail of a symbol's series, or a symbol whose series ends
     earlier than another's — is omitted, never zero-filled.
+
+    **Under ``context.instrument == "perp"``, that price return is further
+    reduced by the funding carry** over the holding window ``D+1`` through
+    ``D+h`` (:func:`orchestrator._evaluate._funding_carry` — the one
+    definition of the carry; this seam is now its only caller). The served
+    value is therefore the *funded* return: ``close[i + horizon] / close[i]
+    - 1 - carry``. For any other instrument the carry term is never
+    computed and the served value is exactly the price return above.
     """
 
     closes: Mapping[str, Mapping[dt.date, float]] = context.closes
     horizon = context.horizon
+    # getattr, not context.instrument: a bare duck-typed context (several of
+    # this module's own tests, and other callers that mean "today's spot
+    # default") carries no instrument attribute at all — the same courtesy
+    # _cost_schedule_from_context extends.
+    perp = getattr(context, "instrument", None) == PERP_INSTRUMENT
 
     def _forward_returns(request: Any) -> dict[dt.date, dict[str, float]]:
         requested_symbols = getattr(request, "symbols", None)
@@ -123,7 +154,9 @@ def snapshot_forward_returns(
                     continue
                 entry_close = by_date[entry_day]
                 exit_close = by_date[ordered[exit_index]]
-                series.setdefault(entry_day, {})[symbol] = exit_close / entry_close - 1.0
+                price_return = exit_close / entry_close - 1.0
+                carry = _funding_carry(context, symbol, entry_day, step) if perp else 0.0
+                series.setdefault(entry_day, {})[symbol] = price_return - carry
         return series
 
     return _forward_returns

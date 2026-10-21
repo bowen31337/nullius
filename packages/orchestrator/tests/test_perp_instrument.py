@@ -13,11 +13,14 @@ contract at all), this suite covers:
   closed (a third spelling is refused);
 * with ``"perp"``, ``context.closes`` is served from ``futbars``'
   ``fut_close`` — never the bars ``close`` — keyed by the same spot symbol;
-* the funding carry :func:`orchestrator._evaluate._cost_schedule_from_context`
-  adds is the sum of ``funding_rate_sum`` over the holding window ``D+1``
+* the funding carry :func:`orchestrator._evaluate._funding_carry` computes
+  is the sum of ``funding_rate_sum`` over the holding window ``D+1``
   through ``D+h``, excluding the settlement row keyed to ``D`` itself and
   counting a missing row as zero, with the sign that makes a long pay
-  positive funding and a short receive it;
+  positive funding and a short receive it (bug_spec_null_carry_leak moved
+  where that carry is charged — into the target seam,
+  :func:`orchestrator._targets.snapshot_forward_returns` — but
+  ``_funding_carry`` itself, and this window rule, are unchanged);
 * a scored symbol with no perp close at a date is dropped from the score
   vector before alignment, never refused;
 * a "perp" instrument whose cost-model schedule does not price a USD-M
@@ -69,6 +72,7 @@ from orchestrator._context import (
 from orchestrator._evaluate import (
     _cost_schedule_from_context,
     _drop_unpriced_symbols,
+    _funding_carry,
     evaluate_node,
 )
 from orchestrator._oracle import SubtreeOracle
@@ -394,6 +398,20 @@ def test_funding_carry_sums_d_plus_1_through_d_plus_h_excluding_d_itself(
     )
     assert context is not None
 
+    # WINDOW_FUNDING (D+1) is summed; WINDOW_DAY_PLUS_2's missing row counts
+    # zero; WINDOW_DAY's own SENTINEL_FUNDING is excluded entirely — if it
+    # had leaked in, the carry would be off by nearly 9.0. _funding_carry is
+    # the one definition of this window rule (bug_spec_null_carry_leak kept
+    # its signature and semantics; only its caller moved), so this still
+    # exercises the window math against a real, sealed-snapshot-backed
+    # context's own parsed funding partitions.
+    expected_carry = float(WINDOW_FUNDING) + 0.0
+    assert _funding_carry(context, "AAAUSDT", WINDOW_DAY, 2) == pytest.approx(expected_carry)
+
+    # bug_spec_null_carry_leak moved the carry out of charges() and into the
+    # target seam (orchestrator._targets.snapshot_forward_returns, so that a
+    # planted null's permutation carries it along); charges() now quotes the
+    # uniform fee alone, with no trace of the carry.
     gross_return = 0.05
     gated = _gated_with(
         {WINDOW_DAY: {"AAAUSDT": gross_return}},
@@ -406,16 +424,10 @@ def test_funding_carry_sums_d_plus_1_through_d_plus_h_excluding_d_itself(
     )
 
     fee = context.cost_schedule.fee_fraction(TAKER)
-    # WINDOW_FUNDING (D+1) is summed; WINDOW_DAY_PLUS_2's missing row counts
-    # zero; WINDOW_DAY's own SENTINEL_FUNDING is excluded entirely — if it
-    # had leaked in, the charge would be off by nearly 9.0.
-    expected_carry = float(WINDOW_FUNDING) + 0.0
-    expected_cost = fee + expected_carry
-
-    assert priced.charges(2)[WINDOW_DAY]["AAAUSDT"] == pytest.approx(expected_cost)
+    assert priced.charges(2)[WINDOW_DAY]["AAAUSDT"] == pytest.approx(fee)
 
     post_cost_return = priced.returns(2)[WINDOW_DAY]["AAAUSDT"]
-    assert post_cost_return == pytest.approx(gross_return - expected_cost)
+    assert post_cost_return == pytest.approx(gross_return - fee)
 
 
 def test_a_long_earns_less_than_its_price_return_and_a_short_earns_more(

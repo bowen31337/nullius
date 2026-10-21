@@ -1250,46 +1250,32 @@ def _cost_schedule_from_context(context: EvaluationContext) -> Any:
     turnover charge :func:`_turnover_fee_from_context` hands
     ``compute_node_metrics`` at both call sites below.
 
-    **With ``context.instrument == "perp"``, a funding carry is added beside
-    the uniform fee, per ``(date, symbol)``.**
-    additions_spec_research_book_v2.xml, the perp instrument feature: for a
-    rebalance date ``D`` and a horizon ``h`` (``request.horizon``, one
-    request per horizon — see :func:`evaluator.apply_costs`), the carry is
-    the sum of ``funding_rate_sum`` over the holding days ``D+1`` through
-    ``D+h`` (:func:`_funding_carry`). Unlike the uniform taker fee, this
-    term is *not* uniform across symbols, so it does not cancel in the
-    node's dollar-neutral book: ``Σ w_i (r_i − fee − carry_i)`` is what
-    :mod:`evaluator._metrics`'s ``compute_node_metrics`` actually reduces
-    (it reads :attr:`~evaluator.PostCostReturns` straight off this
-    schedule's quote), so a long in a positive-funding coin earns less than
-    its price return and a short earns more, exactly as a funded perpetual
-    position would. The uniform fee stays exactly as before — COST-1's
-    turnover charge remains the binding *fee* cost; this only adds the
-    carry a perpetual position was never subject to on the spot default.
+    **Quotes the uniform fee alone — on every instrument, including perp.**
+    additions_spec_research_book_v2.xml's perp instrument feature once added
+    a funding carry here, beside the fee, keyed by the request's own
+    ``(date, symbol)``. bug_spec_null_carry_leak found that seam downstream
+    of the null oracle's permutation: a planted null permutes the *target*
+    series (:func:`orchestrator._targets.snapshot_forward_returns`, read
+    through :class:`nulloracle.TargetEndpoint`) but this schedule quoted the
+    carry straight off the request's own symbol, so a null's permuted price
+    return still carried its own symbol's real funding — the one component
+    of the post-cost return no derangement ever touched, biasing every
+    funding- or basis-driven signal's null distribution upward. The carry
+    now lives in the target seam instead: ``snapshot_forward_returns`` sums
+    it into the served forward return, under ``context.instrument ==
+    "perp"``, before either branch (real or permuted) is built, so a null's
+    derangement carries the carry along with the price return it is paired
+    with. :func:`_funding_carry` keeps its one definition and its signature;
+    only its caller moved.
     """
     from evaluator import CostQuote
 
     fee = _fee_per_unit_traded(context)
-    # getattr, not context.instrument: a test may hand this function a bare
-    # duck-typed context carrying only cost_schedule (the same courtesy
-    # _materialize_from_context extends max_history_days), and those callers
-    # mean "today's spot default", which a missing attribute already is.
-    perp = getattr(context, "instrument", None) == PERP_INSTRUMENT
 
     def charges(request: Any) -> Any:
-        if not perp:
-            costs = {
-                day: dict.fromkeys(row, fee)
-                for day, row in request.gross_returns.items()
-            }
-        else:
-            costs = {
-                day: {
-                    symbol: fee + _funding_carry(context, symbol, day, request.horizon)
-                    for symbol in row
-                }
-                for day, row in request.gross_returns.items()
-            }
+        costs = {
+            day: dict.fromkeys(row, fee) for day, row in request.gross_returns.items()
+        }
         return CostQuote(venue=request.venue, version=request.version, costs=costs)
 
     return charges
