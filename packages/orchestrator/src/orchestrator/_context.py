@@ -221,6 +221,7 @@ __all__ = [
     "PERP_INSTRUMENT",
     "REQUIRED_KEYS",
     "SANDBOX_RUNTIMES",
+    "SHORT_TAIL_WEIGHTING",
     "SPOT_INSTRUMENT",
     "TAIL_DECILE_WEIGHTING",
     "TEST_STUB_SANDBOX_ENV",
@@ -506,7 +507,7 @@ DEFAULT_BETA_WINDOW_DAYS: Final[int] = 60
 #: every other symbol's returns on, when the document omits the key.
 DEFAULT_BETA_BENCHMARK: Final[str] = "BTCUSDT"
 
-#: The three weightings :data:`BOOK_KEY`'s ``weighting`` inner key accepts —
+#: The four weightings :data:`BOOK_KEY`'s ``weighting`` inner key accepts —
 #: closed, the same stance :data:`INSTRUMENTS` takes toward its own
 #: two-member set: ``"z"`` is today's score-proportional book, unchanged;
 #: ``"inverse_vol"`` divides each score by its own symbol's point-in-time
@@ -514,18 +515,28 @@ DEFAULT_BETA_BENCHMARK: Final[str] = "BTCUSDT"
 #: :func:`compute_vols`); ``"tail_decile"`` ignores the score's magnitude
 #: entirely and goes long the top decile of the day's ranking, short the
 #: bottom decile, equal-weight within each leg, for a ranking whose return
-#: gradient lives in its tails rather than across the whole cross-section.
-#: A fourth spelling is refused by name rather than guessed, because a
+#: gradient lives in its tails rather than across the whole cross-section;
+#: ``"short_tail"`` (additions_spec_short_tail_book.xml) shorts the bottom
+#: decile of the day's ranking equal-weight and holds every other scored name
+#: long equal-weight, dollar-neutral at gross 1 — the construction the
+#: committed preregistration results ask for, where the return gradient lives
+#: in the bottom decile of scores alone (the top decile never the best
+#: bucket, deciles 2 through 10 flat), so the long leg is the market-like
+#: complement of the short rather than a second bet on a decile that carries
+#: no gradient.
+#: A fifth spelling is refused by name rather than guessed, because a
 #: weighting is the whole book's construction — running one a document
 #: never named is measuring a different portfolio than the one the campaign
 #: configured.
 Z_WEIGHTING: Final[str] = "z"
 INVERSE_VOL_WEIGHTING: Final[str] = "inverse_vol"
 TAIL_DECILE_WEIGHTING: Final[str] = "tail_decile"
+SHORT_TAIL_WEIGHTING: Final[str] = "short_tail"
 BOOK_WEIGHTINGS: Final[tuple[str, ...]] = (
     Z_WEIGHTING,
     INVERSE_VOL_WEIGHTING,
     TAIL_DECILE_WEIGHTING,
+    SHORT_TAIL_WEIGHTING,
 )
 
 #: ``weighting``'s default when the document omits it — today's book,
@@ -606,8 +617,17 @@ class BookConfig:
     and compute no side panel at all: the book is a function of each date's
     scores alone — long the top decile of the ranking, short the bottom,
     equal-weight within each leg — for a ranking whose return gradient lives
-    in its tails rather than across the whole cross-section.  Each of the
-    three weightings composes independently with ``beta_neutral``, which
+    in its tails rather than across the whole cross-section.  With
+    ``weighting="short_tail"`` (additions_spec_short_tail_book.xml) the chains
+    pass that string through the same way and compute no side panel either:
+    each date's book is short the bottom decile of that date's scores
+    equal-weight and long every other scored name equal-weight, dollar-neutral
+    at gross 1 — the construction the committed preregistration results ask
+    for, where the gradient lives in the bottom decile alone (the top decile
+    never the best bucket, deciles 2 through 10 flat), so the long leg is the
+    market-like complement of the short rather than a second bet on a decile
+    that carries no gradient.  Each of the
+    four weightings composes independently with ``beta_neutral``, which
     rescales the legs the weighting chose.
     """
 
@@ -622,10 +642,13 @@ class BookConfig:
     #: Which weighting each date's book is built under —
     #: :data:`Z_WEIGHTING` (score-proportional, today's book),
     #: :data:`INVERSE_VOL_WEIGHTING` (each score divided by its own symbol's
-    #: point-in-time realised volatility before normalization), or
+    #: point-in-time realised volatility before normalization),
     #: :data:`TAIL_DECILE_WEIGHTING` (long the top decile of the day's
     #: ranking, short the bottom decile, equal-weight within each leg, the
-    #: score's magnitude unused).  :data:`DEFAULT_BOOK_WEIGHTING` when the
+    #: score's magnitude unused), or :data:`SHORT_TAIL_WEIGHTING` (short the
+    #: bottom decile of the day's ranking equal-weight, long every other
+    #: scored name equal-weight — the long leg the complement of the short).
+    #: :data:`DEFAULT_BOOK_WEIGHTING` when the
     #: document omits it.
     weighting: str = DEFAULT_BOOK_WEIGHTING
     #: How many trailing daily returns a point-in-time volatility is measured
@@ -1320,9 +1343,12 @@ def _book_config(document: Mapping[str, Any], named: str) -> BookConfig:
             "symbol's realised volatility first, "
             f"'{TAIL_DECILE_WEIGHTING}' goes long each date's top score "
             "decile and short its bottom decile at equal weight within each "
-            "leg — and a value outside that closed set is refused rather "
-            "than guessed, because running a weighting the document never "
-            "named would measure a portfolio the campaign did not configure"
+            f"leg, and '{SHORT_TAIL_WEIGHTING}' shorts each date's bottom "
+            "score decile at equal weight and holds every other scored name "
+            "long at equal weight — and a value outside that closed set is "
+            "refused rather than guessed, because running a weighting the "
+            "document never named would measure a portfolio the campaign "
+            "did not configure"
         )
     vol_window_raw = raw.get(
         _BOOK_VOL_WINDOW_DAYS_KEY, DEFAULT_VOL_WINDOW_DAYS

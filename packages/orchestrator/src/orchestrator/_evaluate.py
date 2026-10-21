@@ -130,16 +130,19 @@ With ``"z"`` (the default, key absent or spelled ``"z"``) ``vols`` stays
 A third spelling, ``"tail_decile"``, needs no side panel at all: the book
 is a function of each date's scores alone, so ``vols`` stays ``None`` (the
 same ``INVERSE_VOL_WEIGHTING`` branch guarding it), and every call below
-hands ``weighting=context.book.weighting`` through unchanged.  The
+hands ``weighting=context.book.weighting`` through unchanged.  The fourth
+spelling, ``"short_tail"`` (additions_spec_short_tail_book.xml), is guarded
+the same way: no side panel, no ``vols``, the string passed straight
+through.  The
 weighting is carried on the call rather than folded into the panel, so the
 net figure, :func:`_gross_ir_tstat`'s gross diagnostic and the out-of-sample
 chain (``evaluate_on_dates``) all measure the *same* book the config named —
 a weighting applied to only one of the three would report a fee, an IC or an
 OOS t-statistic for a portfolio the campaign never configured.  ``betas``
 still composes afterwards, inside
-:func:`evaluator.book_weights`, so a tail-decile book can be beta-neutral
-too: the two knobs are independent, exactly as ``beta_neutral`` and
-``weighting`` already are for the other two weightings.
+:func:`evaluator.book_weights`, so a tail-decile or short-tail book can be
+beta-neutral too: the two knobs are independent, exactly as ``beta_neutral``
+and ``weighting`` already are for the other two weightings.
 
 **``charges_budget`` is the oracle's bit, nothing else, and it defaults
 conservatively until the oracle has spoken.**  Before ``gate_targets`` asks
@@ -1342,10 +1345,11 @@ def _gross_ir_tstat(
     over the same inverse-volatility (or z-weighted) book as the net one,
     never a different weighting the config did not name.  ``weighting`` is
     handed through unchanged for that same reason and is what makes it true
-    of the tail-decile book too: ``vols`` alone cannot say it, because
-    ``"tail_decile"`` carries no side panel, so a gross diagnostic that
+    of the tail-decile and short-tail books too: ``vols`` alone cannot say
+    it, because ``"tail_decile"`` and ``"short_tail"`` carry no side panel,
+    so a gross diagnostic that
     only forwarded the panel would silently measure a z-weighted book
-    against a tail-decile net figure.  ``horizon``
+    against a tail-decile or short-tail net figure.  ``horizon``
     (bug_spec_metrics_horizon.xml bug 2) is handed through for the same
     reason again: the gross figure is measured over the same horizon's
     series as the net one, never the shortest covered one the config did

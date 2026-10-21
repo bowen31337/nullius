@@ -233,6 +233,31 @@ for the other weightings.  :attr:`NodeMetrics.tail_k` records ``k`` per date.
 Every figure this module computed before the parameter existed is unchanged
 under the default, :data:`Z_WEIGHTING`.
 
+**A fourth weighting shorts the one decile that carries the gradient.**
+The tail-decile book spends half its gross on a long leg drawn from the top
+decile, but the preregistration results this workspace committed
+(``docs/preregistration/2026-10-20-m2-wide-h5-v2.RESULT.md``, "Decile profile
+of each committed pick") show the same shape on every committed pick: the
+*bottom* decile of scores is the losing bucket while the top decile is never
+the best one and deciles 2 through 10 are flat — a gradient that lives in the
+bottom decile alone, so a book that also bets the top decile against it
+finances a second bet the ranking never supported.  Under
+:data:`SHORT_TAIL_WEIGHTING` (additions_spec_short_tail_book.xml) each date's
+book is therefore short the bottom ``floor(n/10)`` names of the same
+``(score, symbol)`` ranking at ``-0.5/k`` each and long every remaining
+scored name at ``+0.5/(n-k)`` each (:func:`_short_tail_weights`): equal-weight
+within each leg, gross 1 and net 0 **by construction**, with the long leg the
+market-like complement of the short rather than a second decile bet.  The
+same thin-cross-section refusal guards it as guards the tail-decile book —
+``k`` below :data:`TAIL_DECILE_MIN_LEG` would short a leg of one name, a
+directional bet dressed as a cross-sectional one — ``vols`` is ignored under
+it exactly as under :data:`TAIL_DECILE_WEIGHTING`, and the beta-neutral leg
+rescale applies *after* the legs are formed, exactly as for every other
+weighting.  :attr:`NodeMetrics.tail_k` records ``k`` per date under this
+weighting too — the count is the short leg's size, the figure that makes the
+recorded book checkable.  Every figure this module computed before the
+weighting existed is unchanged under the other three spellings.
+
 **Beta-neutral legs are an optional rescale of the same weights.**  The
 dollar-neutral book (``w_i = z_i / Σ|z_j|``) is net-zero but not benchmark
 beta-neutral: a book tilted toward low-beta names on the long side and
@@ -313,11 +338,12 @@ __all__ = [
     "INVERSE_VOL_WEIGHTING",
     "METRICS_HORIZON",
     "METRICS_STEP",
-    "NodeMetrics",
+    "SHORT_TAIL_WEIGHTING",
     "TAIL_DECILE_MIN_LEG",
     "TAIL_DECILE_WEIGHTING",
     "WEIGHTINGS",
     "Z_WEIGHTING",
+    "NodeMetrics",
     "book_weights",
     "compute_node_metrics",
 ]
@@ -343,13 +369,19 @@ __all__ = [
 #:   and short the bottom decile, equal-weight within each leg (see
 #:   :func:`_tail_decile_weights`), for a ranking whose return gradient lives
 #:   in its tails.  ``vols`` is ignored under it.
+#: * :data:`SHORT_TAIL_WEIGHTING` — short the bottom decile of the day's
+#:   scores equal-weight and long every other scored name equal-weight (see
+#:   :func:`_short_tail_weights`), for a cross-section whose gradient lives in
+#:   its bottom decile alone.  ``vols`` is ignored under it.
 Z_WEIGHTING: str = "z"
 INVERSE_VOL_WEIGHTING: str = "inverse_vol"
 TAIL_DECILE_WEIGHTING: str = "tail_decile"
-WEIGHTINGS: tuple[str, str, str] = (
+SHORT_TAIL_WEIGHTING: str = "short_tail"
+WEIGHTINGS: tuple[str, str, str, str] = (
     Z_WEIGHTING,
     INVERSE_VOL_WEIGHTING,
     TAIL_DECILE_WEIGHTING,
+    SHORT_TAIL_WEIGHTING,
 )
 
 #: The fewest names either leg of a tail-decile book may hold — two, the floor
@@ -572,13 +604,16 @@ class NodeMetrics:
     #: How many names each leg of each rebalance date's tail-decile book held —
     #: ``floor(n/10)`` for that date's joined cross-section of ``n`` scored
     #: symbols, where the long leg holds the top ``k`` and the short leg the
-    #: bottom ``k``, each name at ``±0.5/k``.  Carried for the reason
+    #: bottom ``k``, each name at ``±0.5/k``.  Under
+    #: ``weighting="short_tail"`` the same ``k`` is the short leg's size, the
+    #: long leg holding the remaining ``n − k`` names.  Carried for the reason
     #: :attr:`vol_dropped` is: the weights alone say a tail-decile book was
     #: equal-weight within its legs but not how many names shared the gross, so
     #: a reader cannot tell a two-name leg from a fifty-name one without it,
     #: and that count is the figure a capacity or concentration read needs.
     #: Every measured date carries an entry under
-    #: ``weighting="tail_decile"``; empty under every other weighting (the z
+    #: ``weighting="tail_decile"`` and ``weighting="short_tail"``; empty under
+    #: every other weighting (the z
     #: and inverse-vol books hold every symbol, so there is no ``k`` to
     #: record) and on a record rebuilt from the metrics store, which persists
     #: neither this field nor :attr:`book_returns` nor
@@ -1046,11 +1081,62 @@ def _tail_decile_weights(
     return weights
 
 
+def _short_tail_weights(
+    scores: Mapping[str, float], *, day: dt.date | None = None
+) -> dict[str, float]:
+    """The short-tail book for one date — short the bottom decile, long the rest.
+
+    ``scores`` is one date's already-validated cross-section, sorted by score
+    ascending with ties broken by symbol name — the same deterministic total
+    order :func:`_tail_decile_weights` ranks under.  The bottom decile is the
+    first ``floor(n/10)`` names; those ``k`` names each carry ``-0.5 / k`` and
+    every one of the remaining ``n - k`` names ``+0.5 / (n - k)``.  The book is
+    therefore equal-weight within each leg, gross 1 (``0.5 + 0.5``) and net 0
+    (the two legs' identical gross sums cancel) by construction, whatever the
+    scores' own scale or centering, and its long leg is the complement of the
+    short — the market-like residual of the cross-section rather than a second
+    bet on a decile.  That is the construction additions_spec_short_tail_book.xml
+    pins: the committed preregistration results show the return gradient living
+    in the bottom decile of scores alone (the top decile never the best bucket,
+    deciles 2 through 10 flat), so the book shorts the one decile that carries
+    the gradient and holds everything else as the financing leg.
+
+    A cross-section too small for a non-empty decile is refused, with the same
+    wording shape as the tail-decile refusal: ``k`` below
+    :data:`TAIL_DECILE_MIN_LEG` names a short leg of one name (or none), and a
+    "decile" holding a single symbol is a directional bet dressed as a
+    cross-sectional one.  ``day``, when the caller has one, is named in the
+    refusal beside the count, so a per-date caller's message says *which*
+    rebalance date's cross-section was too thin; :func:`book_weights` has no
+    date to name and omits it.
+    """
+    ordered = sorted(scores, key=lambda symbol: (scores[symbol], symbol))
+    count = len(ordered)
+    leg = count // 10
+    where = f" on {day.isoformat()}" if day is not None else ""
+    if leg < TAIL_DECILE_MIN_LEG:
+        raise EvaluatorMetricsError(
+            f"the cross-section{where} carries {count} scored symbols, so its "
+            f"bottom decile would hold floor({count}/10) = {leg} "
+            f"name(s); a short-tail book needs at least "
+            f"{TAIL_DECILE_MIN_LEG} names in its short leg (a leg of one name "
+            "is a directional bet, not a cross-sectional one), which needs at "
+            f"least {10 * TAIL_DECILE_MIN_LEG} scored symbols — refusing "
+            "rather than trading a decile that is not one"
+        )
+    short_weight = -0.5 / leg
+    long_weight = 0.5 / (count - leg)
+    return {
+        symbol: short_weight if position < leg else long_weight
+        for position, symbol in enumerate(ordered)
+    }
+
+
 def _resolve_weighting(weighting: object, vols: object) -> str:
     """Settle which book the caller asked for — and refuse a contradiction.
 
     ``weighting`` is the caller's spelling, one of :data:`WEIGHTINGS`; ``vols``
-    is the panel it handed beside it (or ``None``).  Two of the three
+    is the panel it handed beside it (or ``None``).  Two of the four
     weightings are named by the panel rather than only by the string, so the
     two must agree:
 
@@ -1065,6 +1151,8 @@ def _resolve_weighting(weighting: object, vols: object) -> str:
       ``vols`` panel handed with it is ignored, exactly as the spec's own
       sentence says, because the two weightings disagree about what a
       volatility would even mean here.
+    * :data:`SHORT_TAIL_WEIGHTING` is a function of the scores alone too, and
+      a ``vols`` panel handed with it is ignored for the same reason.
     """
     if not isinstance(weighting, str) or weighting not in WEIGHTINGS:
         raise EvaluatorMetricsError(
@@ -1113,17 +1201,20 @@ def book_weights(
     centered.  When both are given the beta-neutral
     rescale is applied *after* the vol scaling, to the vol-scaled weights.
     ``weighting`` (keyword-only, default :data:`Z_WEIGHTING`), one of
-    :data:`WEIGHTINGS`, names which of the three books to build; the default
+    :data:`WEIGHTINGS`, names which of the four books to build; the default
     and ``vols=None`` together are exactly this function's behaviour before
     the parameter existed.  ``vols`` and ``weighting`` must agree — see
     :func:`_resolve_weighting`: ``vols=<a panel>`` *is* the
     ``"inverse_vol"`` weighting, and ``weighting="inverse_vol"`` with no panel
     is refused by name.  Under ``weighting="tail_decile"`` the book is the
     tail-decile one (:func:`_tail_decile_weights`): long the top decile of
-    scores, short the bottom, equal-weight within each leg, ``vols`` ignored;
-    the beta-neutral rescale is still applied after the legs are formed.  This
-    is the one place those rules are spelled out;
-    :func:`compute_node_metrics` calls this function for its own per-date
+    scores, short the bottom, equal-weight within each leg, ``vols`` ignored.
+    Under ``weighting="short_tail"`` the book is the short-tail one
+    (:func:`_short_tail_weights`): short the bottom decile of scores
+    equal-weight, long every other scored name equal-weight, ``vols`` ignored.
+    Under either decile weighting the beta-neutral rescale is still applied
+    after the legs are formed.  This is the one place those rules are spelled
+    out; :func:`compute_node_metrics` calls this function for its own per-date
     weights, so the two cannot drift, and a forward shadow that calls this
     function with the same scores, betas and vols an evaluation scored trades
     exactly the book the evaluation did.
@@ -1136,9 +1227,10 @@ def book_weights(
     gives it a non-positive volatility — each refused by name, never silently
     defaulted, because a vol is a positive scale rather than a direction; when
     ``weighting`` is outside :data:`WEIGHTINGS`, or names
-    ``"inverse_vol"`` with no ``vols``; and, under ``"tail_decile"``, when the
-    cross-section is too small for two non-empty deciles (fewer than
-    ``10 × TAIL_DECILE_MIN_LEG`` scored symbols), the refusal naming the count.
+    ``"inverse_vol"`` with no ``vols``; and, under ``"tail_decile"`` or
+    ``"short_tail"``, when the cross-section is too small for a non-empty
+    decile (fewer than ``10 × TAIL_DECILE_MIN_LEG`` scored symbols), the
+    refusal naming the count.
     """
     if not isinstance(scores, Mapping):
         raise EvaluatorMetricsError(
@@ -1179,6 +1271,11 @@ def book_weights(
         # A function of the scores alone: a decile is a count of names, not a
         # share of gross, so a volatility has nothing to divide here.
         weights = _tail_decile_weights(validated_scores)
+    elif book == SHORT_TAIL_WEIGHTING:
+        # The same stance for the fourth spelling: the short-tail book's legs
+        # are counts of names too, so a volatility has nothing to divide here
+        # either.
+        weights = _short_tail_weights(validated_scores)
     else:
         if vols is not None:
             validated_scores = _inverse_vol_scores(validated_scores, vols)
@@ -1305,25 +1402,31 @@ def compute_node_metrics(
     returned before the parameter existed.
 
     ``weighting`` (keyword-only, default :data:`Z_WEIGHTING`) names which of
-    :data:`WEIGHTINGS`' three books each date's weights are built under, and is
+    :data:`WEIGHTINGS`' four books each date's weights are built under, and is
     passed straight to :func:`book_weights` per date; with ``"z"`` it composes
     with ``vols`` exactly as the previous paragraph describes (``vols`` given
     *is* the inverse-volatility weighting).  Under ``"tail_decile"`` each
     date's book is the tail-decile one — long the top decile of that date's
     scores, short the bottom, equal-weight within each leg, gross 1 and net 0 —
-    and **the rank coefficient is unchanged**: ``ic_mean`` and ``ic_tstat`` are
-    still measured over the full joined cross-section, since the book's
-    membership is not what the ranking is measured on.  What changes is the
-    weights, and so :attr:`NodeMetrics.book_returns`,
+    and under ``"short_tail"`` it is the short-tail one — short the bottom
+    decile equal-weight, long every other scored name equal-weight, the long
+    leg the complement of the short (see :func:`_short_tail_weights`) — and
+    under either **the rank coefficient is unchanged**: ``ic_mean`` and
+    ``ic_tstat`` are still measured over the full joined cross-section, since
+    the book's membership is not what the ranking is measured on.  What changes
+    is the weights, and so :attr:`NodeMetrics.book_returns`,
     :attr:`NodeMetrics.ir_standalone`, the turnover and the turnover cost
     charge — which is the whole point: a ranking whose return gradient lives in
     its tails is traded where the gradient is.  Each measured date's leg count
-    ``k`` is recorded in :attr:`NodeMetrics.tail_k`.  ``vols`` is ignored under
-    ``"tail_decile"`` (a decile is a count of names, not a share of gross, so a
-    volatility has nothing to divide here); a date whose joined cross-section
-    is too small for two non-empty deciles (fewer than
-    ``10 × TAIL_DECILE_MIN_LEG`` scored symbols) is refused **by name, naming
-    that date and its count** rather than trading a decile of one name.
+    ``k`` is recorded in :attr:`NodeMetrics.tail_k` under either decile
+    weighting — the count of names the weighting's *short* leg held under
+    ``"short_tail"``, the shared per-leg size under ``"tail_decile"``.
+    ``vols`` is ignored under ``"tail_decile"`` and ``"short_tail"`` (a decile
+    is a count of names, not a share of gross, so a volatility has nothing to
+    divide here); a date whose joined cross-section is too small for a
+    non-empty decile (fewer than ``10 × TAIL_DECILE_MIN_LEG`` scored symbols)
+    is refused **by name, naming that date and its count** rather than trading
+    a decile of one name.
 
     ``horizon`` (keyword-only, default ``None``) names the horizon the four
     scalars are measured over, overriding :data:`METRICS_HORIZON`'s "shortest
@@ -1384,14 +1487,14 @@ def compute_node_metrics(
     # caller that predates the parameter), and a name that disagrees with the
     # panel is refused before a single date is measured.
     book = _resolve_weighting(weighting, vols)
-    if book == TAIL_DECILE_WEIGHTING:
+    if book in (TAIL_DECILE_WEIGHTING, SHORT_TAIL_WEIGHTING):
         # A decile is a count of names, not a share of gross, so a volatility
         # has nothing to divide here; the spec's own sentence says a vols
-        # handed under this weighting is ignored, and dropping it here (rather
-        # than at each use below) is what keeps that from becoming a special
-        # case in the per-date loop — no vol is validated, none is dropped,
-        # and NodeMetrics.vol_dropped stays empty exactly as it does when vols
-        # is absent.
+        # handed under these weightings is ignored, and dropping it here
+        # (rather than at each use below) is what keeps that from becoming a
+        # special case in the per-date loop — no vol is validated, none is
+        # dropped, and NodeMetrics.vol_dropped stays empty exactly as it does
+        # when vols is absent.
         vols = None
     if not isinstance(scores, Mapping):
         raise EvaluatorMetricsError(
@@ -1554,9 +1657,9 @@ def compute_node_metrics(
                 row_scores, row_betas, vols=row_vols, weighting=book
             )
         except EvaluatorMetricsError as exc:
-            if book == TAIL_DECILE_WEIGHTING:
-                # The tail-decile book refuses a cross-section too small for
-                # two non-empty deciles; the refusal above names the count,
+            if book in (TAIL_DECILE_WEIGHTING, SHORT_TAIL_WEIGHTING):
+                # The decile books refuse a cross-section too small for a
+                # non-empty decile; the refusal above names the count,
                 # and this is the per-date caller, so it is restated with the
                 # date the count belongs to — "which rebalance date was too
                 # thin" is the one thing a reader cannot recover from the
@@ -1575,13 +1678,13 @@ def compute_node_metrics(
                 "rather than dividing by zero"
             ) from exc
         per_date_weights[day] = weights
-        if book == TAIL_DECILE_WEIGHTING:
+        if book in (TAIL_DECILE_WEIGHTING, SHORT_TAIL_WEIGHTING):
             # The count of names each leg actually held on this date — the
             # figure that makes the recorded book checkable, since the weights
             # alone say the legs were equal-weight but not how many names
             # carried that weight.  ``floor(len/10)`` is the same expression
-            # :func:`_tail_decile_weights` used to build the weights above, so
-            # the two cannot disagree.
+            # :func:`_tail_decile_weights` and :func:`_short_tail_weights`
+            # used to build the weights above, so the two cannot disagree.
             tail_k[day] = len(weighted_symbols) // 10
         per_date_return[day] = math.fsum(
             weights[symbol] * returns_row[symbol] for symbol in weighted_symbols
