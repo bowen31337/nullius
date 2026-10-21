@@ -877,16 +877,19 @@ def test_the_balance_door_refuses_when_the_account_cannot_fund_the_plan(
 
 
 def test_the_required_margin_counts_only_what_grows_a_position():
-    """The arithmetic the door judges, term by term.
+    """The arithmetic the door judges, term by term — both sides netted.
 
     Five legs over three held positions, one of every shape the law
     names: a passive BUY from flat (BTC, at its own limit price), a
-    passive SELL that only reduces a long (ETH, free), a passive SELL
-    that crosses through zero (1000PEPE, counted only beyond it), a
-    MARKET BUY from flat (SOL, at the fixture document's own mark
-    118.392) and a MARKET BUY that only reduces a short (DOGE, free).
-    Only the growing parts count, at the preflight's leverage of one,
-    and the total carries the half-percent headroom.
+    passive SELL that only reduces a long (ETH), a passive SELL that
+    crosses through zero (1000PEPE), a MARKET BUY from flat (SOL, at the
+    fixture document's own mark 118.392) and a MARKET BUY that only
+    reduces a short (DOGE).  Only the growing parts bind, at the
+    preflight's leverage of one; the closing parts release at the same
+    references — ETH's whole size at its limit, PEPE's up-to-flat 2 at
+    its limit, DOGE's whole size at its mark — and the door's term nets
+    the release against the requirement before the half-percent headroom
+    (bug_spec_vst_slot_resilience.xml, bug 1).
     """
     client = _MirrorClient(
         positions=(
@@ -904,7 +907,8 @@ def test_the_required_margin_counts_only_what_grows_a_position():
             quantity="0.5",
             price="83000",
         ),
-        # Reduces a long of 2: no new margin at any price.
+        # Reduces a long of 2: no new margin, and its whole size
+        # releases at its own limit price.
         _manual_order(
             symbol="ETH-USDT",
             side=BINGX_SELL,
@@ -912,7 +916,8 @@ def test_the_required_margin_counts_only_what_grows_a_position():
             quantity="1",
             price="2600",
         ),
-        # Crosses through zero: only the 3 beyond it counts.
+        # Crosses through zero: only the 3 beyond it binds, and only the
+        # 2 up to flat releases.
         _manual_order(
             symbol="1000PEPE-USDT",
             side=BINGX_SELL,
@@ -927,7 +932,8 @@ def test_the_required_margin_counts_only_what_grows_a_position():
             order_type=BINGX_MARKET_ORDER,
             quantity="8",
         ),
-        # Reduces a short of 100: free, though it is a BUY.
+        # Reduces a short of 100: binds nothing, releases its whole size
+        # at its mark, though it is a BUY.
         _manual_order(
             symbol="DOGE-USDT",
             side=BINGX_BUY,
@@ -938,13 +944,20 @@ def test_the_required_margin_counts_only_what_grows_a_position():
 
     margin = plan_required_margin(client=client, orders=orders)
 
-    bare = (
+    increase = (
         Decimal("0.5") * Decimal(83000)
         + Decimal(3) * Decimal("0.0044")
         + Decimal(8) * Decimal("118.392")
     )
-    assert margin == bare * REQUIRED_MARGIN_HEADROOM
-    assert margin == Decimal("42659.384946")
+    release = (
+        Decimal(1) * Decimal(2600)
+        + Decimal(2) * Decimal("0.0044")
+        + Decimal(40) * Decimal("0.09381")
+    )
+    assert margin.increase_usdt == increase
+    assert margin.release_usdt == release
+    assert margin == (increase - release) * REQUIRED_MARGIN_HEADROOM
+    assert margin == Decimal("40042.60494")
 
 
 def test_an_all_reducing_or_empty_plan_needs_no_margin(test_database_url):

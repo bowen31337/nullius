@@ -102,10 +102,34 @@ The sufficiency term is therefore computed here, from the orders this
 run is about to send: each contributes its *position-increasing*
 quantity times a reference price at the preflight's own leverage of one
 — a passive leg at its limit price, a MARKET leg at its symbol's mark —
-with reducing legs free, crossing legs counted only beyond zero, and
-the total carrying half a percent of headroom for taker fees and drift
+with crossing legs counted only beyond zero, and the total carrying
+half a percent of headroom for taker fees and drift
 (:func:`plan_required_margin`).  The book's ``equity_usdt`` keeps its
 one job: sizing the orders through Stage 0's sizer, unchanged.
+
+**The term nets the margin the plan's own reducing legs release, and the
+reducing legs are sent first.**  ``bug_spec_vst_slot_resilience.xml``
+bug 1, won from the forward shadow book's slots of 2026-10-20T20:00 and
+2026-10-21T00:00 UTC: an increase-only term refuses the rebalance of a
+fully invested book for a shortfall the same plan would itself free —
+the account held 62 positions at about 88 % of equity, answered
+available 1164.35 against a required 1179.03, and the plan's reducing
+legs released more than the 14.7 shortfall.  Each order's
+*position-reducing* quantity — the part of its size that closes existing
+exposure on its symbol, read from the same live positions document the
+increasing side reads — times the same reference price, at the same
+leverage of one, is therefore netted against the increasing legs'
+requirement, and the door's term is ``max(0, increase − release)`` times
+the standing headroom (:func:`plan_required_margin`): an all-reducing
+plan still answers zero, an all-increasing plan answers the term this
+module always answered, and the answer carries both sides beside it
+(:class:`NettedRequiredMargin`) so the preflight's record and its
+``insufficient_balance`` refusal name what was netted.  And because the
+venue frees that margin only as the reducing legs *fill*,
+:func:`mirror_place` sends the plan's position-reducing legs before its
+position-increasing legs — stable within each group in the plan's own
+order — so the margin the door already counted released is on the
+account by the time each increasing leg posts and binds it.
 
 **The venue's ``clientOrderID`` is 40 characters; the store's key is 64.**
 :class:`~router.bingx_order.BingXOrder` carries only the projection feature 3
@@ -182,7 +206,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from cost_model import (
     COST_MODEL_PATH_ENV,
@@ -256,6 +280,7 @@ __all__ = [
     "REQUIRED_MARGIN_HEADROOM",
     "VST_MIRROR_WEIGHT_SCHEDULE",
     "MirrorLeg",
+    "NettedRequiredMargin",
     "RouterBingXMirrorError",
     "build_mirror_plan",
     "live_positions",
@@ -882,41 +907,47 @@ def _increasing_size(order: BingXOrder, held: Decimal) -> Decimal:
     return beyond if beyond > 0 else Decimal(0)
 
 
-def plan_required_margin(
-    *, client: Any, orders: Sequence[BingXOrder]
-) -> Decimal:
-    """The margin the plan's orders need, as one exact decimal.
+def _reducing_size(order: BingXOrder, held: Decimal) -> Decimal:
+    """The part of ``order`` that closes the symbol's held exposure, if any.
 
-    The term the preflight's ``insufficient_balance`` check judges
-    against, computed here — the mirror's own verb — because the
-    question is about the orders this run is about to send, and only the
-    mirror knows them beside the account that will fund them:
-
-    * each order contributes its position-increasing quantity (see
-      :func:`_increasing_size`) times a reference price, divided by the
-      leverage the preflight itself sets (:data:`PREFLIGHT_LEVERAGE`,
-      one — the mirror's sizing assumes the account funds the notional
-      itself);
-    * the reference price is the order's own limit price for a passive
-      leg and the symbol's mark price for a MARKET leg, which carries no
-      price of its own — read from the venue's premiumIndex document,
-      the same read the plan was sized through;
-    * the total carries :data:`REQUIRED_MARGIN_HEADROOM`, the half
-      percent for taker fees and price drift.
-
-    The account's positions are re-read through :func:`live_positions`
-    and the premiumIndex document only when a MARKET leg needs it, so an
-    all-passive plan costs the one positions read and an empty plan
-    costs nothing at all — an empty or all-reducing plan answers zero,
-    which passes the balance door on any account, the boundary the bug
-    spec names.  Every term is an exact
-    :class:`~decimal.Decimal` built from the venue's own strings and the
-    order's own spelling; no float enters the arithmetic.
+    The release side of the netting ``bug_spec_vst_slot_resilience.xml``
+    bug 1 added to the door's term: an order against the held side gives
+    margin back as it fills, and the quantity that counts is the part of
+    its size that closes existing exposure — never more than the
+    exposure itself.  Three shapes, the mirror image of
+    :func:`_increasing_size`'s own: an order from flat or growing the
+    side already held closes nothing; an order against the held side but
+    no larger than it closes its whole size; and an order that crosses
+    through zero closes only the part up to flat, the ``abs(held)`` it
+    takes to reach zero — the crossing part beyond is a new position on
+    the other side and releases nothing.  The two helpers therefore
+    partition every order's size between them, and neither answers a
+    signed quantity.
     """
-    if not orders:
-        # An empty plan places nothing and needs nothing: zero, which
-        # the door judges as funded on any account.
+    size = Decimal(order.quantity)
+    if held == 0 or (held > 0) == (order.side == BINGX_BUY):
+        # Flat, or growing the side already held: nothing is closed.
         return Decimal(0)
+    # An order larger than the holding releases only up to flat; the
+    # rest crosses, and the crossing part is increase, not release.
+    return min(size, abs(held))
+
+
+def _margin_sides(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> tuple[Decimal, Decimal]:
+    """The door's two sides over one walk: what binds, and what releases.
+
+    The shared arithmetic of :func:`plan_required_margin` and nothing
+    else: the account's positions are read once through
+    :func:`live_positions`, the premiumIndex document only when a MARKET
+    leg needs it, and each order's increasing and reducing quantities
+    (see :func:`_increasing_size` and :func:`_reducing_size`) are priced
+    at the same reference — the order's own limit price for a passive
+    leg, the symbol's mark for a MARKET one — at the preflight's own
+    leverage, so both sides of the netting answer in the same terms and
+    no float enters either.
+    """
     held = live_positions(client)
     market_symbols = sorted(
         {
@@ -948,19 +979,119 @@ def plan_required_margin(
                 "leg the plan ordered cannot be priced for funding by a "
                 "document that does not price it (feature 2)"
             ) from refusal
-    total = Decimal(0)
+    increase = Decimal(0)
+    release = Decimal(0)
     for order in orders:
         reference = (
             Decimal(order.price)
             if order.type == BINGX_LIMIT_ORDER
             else marks[order.symbol]
         )
-        total += (
-            _increasing_size(order, held.get(order.symbol, Decimal(0)))
-            * reference
-            / PREFLIGHT_LEVERAGE
+        position = held.get(order.symbol, Decimal(0))
+        increase += (
+            _increasing_size(order, position) * reference / PREFLIGHT_LEVERAGE
         )
-    return total * REQUIRED_MARGIN_HEADROOM
+        release += (
+            _reducing_size(order, position) * reference / PREFLIGHT_LEVERAGE
+        )
+    return increase, release
+
+
+class NettedRequiredMargin(Decimal):
+    """The margin the plan's orders need, carrying the two sides it netted.
+
+    The exact term :func:`router.bingx_preflight.run_bingx_preflight`
+    reads, compares and records as ``required_usdt`` — a
+    :class:`~decimal.Decimal` first, answering the same value the door
+    always judged — subclassed for the one fact the netting adds
+    (``bug_spec_vst_slot_resilience.xml``, bug 1): beside the netted
+    requirement, the increasing legs' gross requirement
+    (:attr:`increase_usdt`) and the reducing legs' release
+    (:attr:`release_usdt`), both exact ``Decimal``\\ s, so the report the
+    preflight records and the ``insufficient_balance`` refusal it raises
+    name what was netted instead of leaving an operator to re-derive the
+    two sides from the plan.  The fields ride the term itself through
+    the keyword mapping the mirror already hands the preflight — the one
+    seam that constraint leaves, ``bingx_preflight.py`` keeping its
+    signature and its four refusals — and nothing else about the value
+    changes: it compares, prints and is recorded as the plain decimal it
+    always was (the refusal's own message words neither field), and any
+    arithmetic on it answers a plain ``Decimal``, so the subclass can
+    never leak past the door it was coined for.
+    """
+
+    increase_usdt: Decimal
+    release_usdt: Decimal
+
+    def __new__(
+        cls,
+        required_usdt: Any,
+        *,
+        increase_usdt: Decimal,
+        release_usdt: Decimal,
+    ) -> Self:
+        self = super().__new__(cls, required_usdt)
+        self.increase_usdt = increase_usdt
+        self.release_usdt = release_usdt
+        return self
+
+
+def plan_required_margin(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> NettedRequiredMargin:
+    """The margin the plan's orders need, as one exact decimal.
+
+    The term the preflight's ``insufficient_balance`` check judges
+    against, computed here — the mirror's own verb — because the
+    question is about the orders this run is about to send, and only the
+    mirror knows them beside the account that will fund them:
+
+    * each order contributes its position-increasing quantity (see
+      :func:`_increasing_size`) times a reference price, divided by the
+      leverage the preflight itself sets (:data:`PREFLIGHT_LEVERAGE`,
+      one — the mirror's sizing assumes the account funds the notional
+      itself);
+    * the reference price is the order's own limit price for a passive
+      leg and the symbol's mark price for a MARKET leg, which carries no
+      price of its own — read from the venue's premiumIndex document,
+      the same read the plan was sized through;
+    * **the reducing legs' release is netted against that requirement**
+      (``bug_spec_vst_slot_resilience.xml``, bug 1): each order's
+      position-reducing quantity — the part of its size that closes
+      existing exposure on its symbol, read from the same live positions
+      document (see :func:`_reducing_size`) — times the same reference
+      price at the same leverage, so a rebalance that trims holdings is
+      judged on what it asks the account to find, not on its increasing
+      legs alone.  The answer is ``max(0, increase − release)`` times
+      :data:`REQUIRED_MARGIN_HEADROOM`: an all-reducing plan still
+      answers zero, and an all-increasing plan answers the term this
+      verb always answered, to the last digit.
+
+    The answer is a :class:`NettedRequiredMargin` — the decimal the door
+    reads, carrying the increase and the release it netted beside it, so
+    the preflight's record and its refusal name both sides.  The
+    account's positions are re-read through :func:`live_positions` and
+    the premiumIndex document only when a MARKET leg needs it, so an
+    all-passive plan costs the one positions read and an empty plan
+    costs nothing at all — an empty or all-reducing plan answers zero,
+    which passes the balance door on any account, the boundary the bug
+    spec names.  Every term is an exact
+    :class:`~decimal.Decimal` built from the venue's own strings and the
+    order's own spelling; no float enters the arithmetic.
+    """
+    if not orders:
+        # An empty plan places nothing, binds nothing and releases
+        # nothing: zero, which the door judges as funded on any account.
+        return NettedRequiredMargin(
+            Decimal(0), increase_usdt=Decimal(0), release_usdt=Decimal(0)
+        )
+    increase, release = _margin_sides(client=client, orders=orders)
+    net = increase - release
+    return NettedRequiredMargin(
+        (net if net > 0 else Decimal(0)) * REQUIRED_MARGIN_HEADROOM,
+        increase_usdt=increase,
+        release_usdt=release,
+    )
 
 
 # -- Passive repricing ---------------------------------------------------------
@@ -1891,14 +2022,26 @@ def mirror_place(
     symbols the plan will order and the margin those orders need (see
     :func:`plan_required_margin`) — so a killed order layer, a skewed
     clock, a hedge-mode account or an unfunded one refuses here, before
-    a single order leaves — and then places each order leg in the plan's
-    own order through the store, the limiter and the backoff (see
-    :func:`_place_one`), repricing every passive leg at its own side of
-    the live book just before it leaves (see :func:`_passive_repricer`).
-    The repricer and the margin are built *before* the preflight runs:
-    their client face checks and their public reads are
-    side-effect-free, so a wiring fault refuses before the preflight's
-    first venue POST rather than after it.
+    a single order leaves — and then places each order leg through the
+    store, the limiter and the backoff (see :func:`_place_one`),
+    repricing every passive leg at its own side of the live book just
+    before it leaves (see :func:`_passive_repricer`).  The legs are sent
+    **position-reducing first**: every leg whose increasing quantity is
+    zero — it only closes exposure, so it binds none of the account's
+    money — leaves before any leg that grows a position anywhere
+    (including one that crosses through zero, whose beyond-zero part
+    binds), each group keeping the plan's own order inside it
+    (``bug_spec_vst_slot_resilience.xml``, bug 1).  The door's term
+    already nets the margin the reducing legs release, and the venue
+    frees that margin only as they fill, so sending them first is what
+    makes the netted term true at the venue by the time each increasing
+    leg posts and binds it — nothing else about the placement changes:
+    one order per leg, the store's idempotency, the per-order record and
+    the refusal handling are exactly as they were.  The repricer and the
+    margin are built *before* the preflight runs: their client face
+    checks and their public reads are side-effect-free, so a wiring
+    fault refuses before the preflight's first venue POST rather than
+    after it.
 
     Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol.  A leg
     the plan itself refused (a gate's code word, a document's) is not an
@@ -1930,8 +2073,21 @@ def mirror_place(
         preflight_kwargs["clock"] = clock
     run_bingx_preflight(client, **preflight_kwargs)
 
+    # Reducing legs first (bug_spec_vst_slot_resilience.xml, bug 1): the
+    # door's term nets the margin these legs release, and the venue frees
+    # it only as they fill, so they leave before any leg that grows a
+    # position.  The sort is stable, so each group keeps the plan's own
+    # order inside it and nothing else about the loop below changed.
+    held = live_positions(client) if orders else {}
+
+    def binds(order: BingXOrder) -> bool:
+        """Whether this leg grows its symbol's position anywhere."""
+        return _increasing_size(order, held.get(order.symbol, Decimal(0))) > 0
+
+    ordered = sorted(orders, key=binds)
+
     outcomes: dict[str, MirrorLeg] = {}
-    for order in orders:
+    for order in ordered:
         outcomes[order.symbol] = _place_one(
             client=client,
             order=order,
