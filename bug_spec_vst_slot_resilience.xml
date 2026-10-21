@@ -1,0 +1,66 @@
+<bug_spec>
+  <!-- VST-SLOT-1. Found 2026-10-21 01:15 UTC (docs/preregistration/
+       2026-10-15-shadow-v1.ADDENDUM.md, Addendum 8). The first in-window
+       VST slot of the forward shadow book (70 legs, gross 1.0, leverage 1)
+       placed every leg at 2026-10-20 12:05 UTC; 62 filled. The next three
+       slots did not complete. 16:05 UTC: the venue answered code 109429
+       "over 20 error code:109421 requests within 480000 ms ... can retry
+       after time: EPOCH_MS" and the slot aborted (exit 1 after 22 s);
+       the journal keeps only that final line, so the step that issued more
+       than twenty "order not exist" (109421) queries is not identifiable
+       from the records kept. 20:05 and 00:05 UTC: the placement preflight
+       refused with insufficient_balance, available 1164.35 USDT against
+       1179.03 and 1173.96 "this plan's orders need". plan_required_margin
+       sums the position-INCREASING quantity of every order and never
+       credits the margin the position-REDUCING legs release, so a fully
+       invested book whose rebalance mostly trims positions is refused for
+       a shortfall the same plan would itself release. Every further slot
+       fails the same way until this changes, and the book's 62 positions
+       sit unrebalanced. A manual `vst status` on the same book at 01:05
+       UTC also tripped 109429 (seventy per-order GETs). Standing
+       constraints: only bingx_flatten with its confirm flag and the daily-loss guard
+       close positions; the vst verbs run under .env.vst.tpl; live venue
+       shapes are pinned in packages/router/tests/fixtures/bingx_vst/live/
+       and extended, never guessed. -->
+
+  <bug index="1" shape="core" severity="critical"
+       touches_files="packages/router/src/router/bingx_mirror.py"
+       creates="packages/router/tests/test_mirror_margin_netting.py">
+    <title>The placement preflight's required margin counts position-increasing legs and ignores the margin the plan's own reducing legs release, so a fully invested book's rebalance is refused for a shortfall it would itself free</title>
+    <symptoms>nullius-vst-rebalance.service, slots 2026-10-20T20:00 and 2026-10-21T00:00 UTC for book shadow-2026-10-19-cf8d683d304a: "bingx_rebalance: insufficient_balance: available USDT 1164.3478 is below the 1179.0264465165 this plan's orders need" (and 1173.96 four hours later), exit 1 after 7 s, no order sent, slot completion row absent. The account held 62 positions worth about 88 % of equity; the plan was a rebalance of those positions whose reducing legs release more margin than the 14.7 USDT shortfall.</symptoms>
+    <reproduction_steps>
+      Build a book of three symbols on an injected client whose positions document holds A long 100 and B short 100 at mark 1.0, and whose balance answers availableMargin 10. Build a plan whose legs are: reduce A by 50 (SELL 50, position-reducing), reduce B by 50 (BUY 50, position-reducing), and increase C by 30 (BUY 30, a new long at limit 1.0). plan_required_margin answers 30 (times the half-percent headroom): the two reducing legs contribute nothing and release nothing, and run_bingx_preflight refuses insufficient_balance although the plan frees 100 of margin as it fills.
+    </reproduction_steps>
+    <expected>
+      - plan_required_margin nets, against the increasing legs' requirement, the margin the plan's position-reducing quantities release: for each order, its reducing quantity (the part of its size that closes existing exposure on that symbol, read from the same live positions document the function already reads) times the same reference price the increasing side uses, divided by PREFLIGHT_LEVERAGE. The result is max(0, increase_margin − release_margin) times the existing REQUIRED_MARGIN_HEADROOM; an all-reducing plan still answers 0, an all-increasing plan is byte-for-byte today's answer. Exact Decimal arithmetic throughout, as today.
+      - mirror_place sends the plan's position-reducing legs before its position-increasing legs (stable within each group in today's order), so the venue releases margin before the increasing legs post. Idempotency, the per-order store record and the refusal handling are unchanged; only the send order changes.
+      - The preflight report (run_bingx_preflight's record) gains two fields beside required_usdt: increase_usdt and release_usdt, both exact Decimal strings, so a refusal names what was netted.
+      - Docstrings of plan_required_margin and the preflight-why paragraph in bingx_mirror state the netting and the send order, citing this spec.
+      - Tests (new file): (1) the fixture above passes the balance door with required 0 and sends A and B before C; (2) a plan with increases 1179.03 and releases 14.70 against available 1164.35 (the live case, as Decimals) passes, and the same plan with releases 0 is refused with the same message as today; (3) an all-increasing plan's required_usdt equals the pre-fix computation to the last digit (reuse the existing plan_required_margin test fixture); (4) a reducing leg larger than the position (crossing to the other side) counts the crossing part as increasing, as today's _increasing_size already does; (5) the router member suite passes.
+    </expected>
+    <actual>Root cause: bug_spec_bingx_preflight_margin.xml moved the sufficiency term from the book's equity to the orders' increasing margin, which fixed the first live failure (a book with positions could never fund its own equity), but the release side of a rebalance was left out; with a 5-leg fixture book the gap never bound, with a 70-leg book at gross 1.0 it binds on every slot.</actual>
+    <constraints>
+      Only bingx_mirror.py and the new test file change; bingx_preflight.py keeps its signature and its four refusals (the record's new fields come through the mapping the mirror already hands it, so if that needs a key the preflight does not forbid, add it on the mirror side only). No position is closed, no reduceOnly flag is added, sizing is untouched, Decimal only. Venue response shapes come from the existing live fixtures.
+    </constraints>
+  </bug>
+
+  <bug index="2" shape="core" severity="high"
+       touches_files="packages/router/src/router/bingx_client.py,packages/router/src/router/bingx_orders.py,packages/router/src/router/bingx_rebalance.py"
+       creates="packages/router/tests/test_venue_error_budget.py">
+    <title>The venue's error budget (code 109429 after twenty 109421 answers in 480 s) is not recognised as a rate limit, per-order read-back walks can exhaust it, and a slot aborts without recording which step hit it</title>
+    <symptoms>Slot 2026-10-20T16:00 UTC: "bingx_rebalance: bingx_refused: the venue answered code 109429 with 'over 20 error code:109421 requests within 480000 ms for this api, please verify and fix it ,can retry after time: 1792512797246' (feature 1)", exit 1 after 22 s; no slot completion row, the previous slot's fills never reconciled, no record of which step (guard, cancel, reconcile, preflight, placement) issued the queries. `python -m router.bingx_mirror --status` on the same 70-leg book at 01:05 UTC: the same 109429 after seventy single-order GETs, leaving the key blocked for 18 minutes.</symptoms>
+    <reproduction_steps>
+      Inject a client whose query_order answers code 109421 for the first 20 identifiers and code 109429 with the live message text for every call after; run read_back_orders over 70 identifiers: it raises RouterBingXRefusedError(109429) on the 21st call. Run bingx_rebalance's slot over a book whose previous slot recorded 70 orders against that client: the slot exits 1 with that message and the journal holds nothing else.
+    </reproduction_steps>
+    <expected>
+      - bingx_client: a venue envelope with code 109429 is raised as RouterRateLimitedError (feature 1's rate-limit refusal, the class a 429 already produces), with retry_after derived from the message's "can retry after time: EPOCH_MS" when present (seconds from the client's clock, floored at 0) and the token-bucket default otherwise. Recorded in a new live fixture packages/router/tests/fixtures/bingx_vst/live/query_order_error_budget.json carrying the exact message text quoted above, and listed in capture.json.
+      - bingx_orders.read_back_orders takes a keyword-only not_found_budget (default 15): after that many not_found answers in one call it stops querying and reports every remaining order with a new status VST_ORDER_UNREAD ("unread"), which is neither found nor not_found; callers that reduce statuses (reconcile) treat unread as "not reconciled this slot" rather than as a fill or a miss. The default keeps every existing test green for books under the budget.
+      - bingx_rebalance: every RouterBingXRefusedError or RouterRateLimitedError a step raises is logged at info before it propagates as one greppable line "bingx_rebalance: step=STEP venue_code=CODE symbol=SYMBOL_OR_DASH MSG"; a rate-limit refusal raised by the cancel or reconcile step does not abort the slot: it is logged, that step is recorded as skipped in the RebalanceReport (new fields cancel_skipped / reconciled already false), and the slot proceeds to preflight and placement; a rate-limit refusal from the guard, the preflight or the placement still ends the slot with exit 1 as today, since placing against an unknown account state is the one thing the slot must not do.
+      - Tests (new file): the client fixture raises RouterRateLimitedError with the parsed retry_after; read_back_orders over 70 identifiers with 20 not_found answers stops at 15 queries and reports 55 unread; a slot whose reconcile hits 109429 completes with exit 0 when placement succeeds and its report says reconciled false and names the skipped step; the info line is emitted with step=reconcile and venue_code=109429; the router member suite passes.
+    </expected>
+    <actual>Root cause: feature 1 maps HTTP 429 to the rate-limit refusal but the venue also enforces a per-API error budget through an in-envelope code (109429) that the client treats as an ordinary refusal; the read-back walk was written for a five-leg book; and the rebalance command translates only the final refusal into its one journal line.</actual>
+    <constraints>
+      Only the listed files and the new fixture and test change. bingx_flatten, bingx_preflight and bingx_mirror are untouched (bug 1 owns bingx_mirror). The slot's exit codes keep their meaning (0 placed or prior, 1 refused, 3 halted). No order is cancelled or placed in any test against a live venue; fixtures only.
+    </constraints>
+  </bug>
+</bug_spec>
