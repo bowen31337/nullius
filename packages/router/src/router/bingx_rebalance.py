@@ -94,7 +94,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .bingx_alert import INFO, URGENT, WARNING, scrub_bot_path, send_alert
-from .bingx_client import BingXClient
+from .bingx_client import BingXClient, RouterBingXRefusedError
 from .bingx_mirror import (
     MIRROR_OUTCOME_PLACED,
     MIRROR_OUTCOME_PRIOR,
@@ -113,7 +113,7 @@ from .bingx_risk import (
     RouterBingXOrdersHaltedError,
     guard_daily_loss,
 )
-from .errors import RouterError
+from .errors import RouterError, RouterRateLimitedError
 from .fidelity import FIDELITY_LEG_REJECTED, FidelitySlot, reconcile_fidelity
 from .limiter import RouterRateLimiter
 from .retry import _sleep
@@ -415,9 +415,14 @@ class RebalanceReport:
     ``rebalance_ts`` is the slot start; ``book_id`` the book it was run for;
     ``guard`` the :class:`~router.bingx_risk.DailyLossCheck` the daily-loss
     guard answered; ``cancelled`` the identifiers the sweep cancelled;
-    ``reconciled`` whether feature 3 recorded a fill-cost reconciliation for
-    the previous slot; ``orders`` one entry per order leg with its placement
-    outcome; ``refused`` one entry per leg the *venue or a gate* refused —
+    ``cancel_skipped`` whether the cancel step was skipped because the venue
+    rate-limited it (``bug_spec_vst_slot_resilience.xml``, bug 2) — a budget
+    that returns in minutes must not cost the book four hours of drift, so the
+    sweep is abandoned, the resting orders stay for the next slot, and the
+    slot places anyway; ``reconciled`` whether feature 3 recorded a fill-cost
+    reconciliation for the previous slot; ``orders`` one entry per order leg
+    with its placement outcome; ``refused`` one entry per leg the *venue or a
+    gate* refused —
     a gate-closed plan leg under ``plan``, a placement refusal under
     ``placement``; ``skipped`` the gate-closed plan legs that are neither an
     order nor a refusal (a symbol with no mark, a non-tradable contract),
@@ -440,6 +445,7 @@ class RebalanceReport:
     rebalance_ts: datetime
     guard: Any
     cancelled: tuple[str, ...]
+    cancel_skipped: bool
     reconciled: bool
     orders: tuple[dict[str, Any], ...]
     refused: tuple[dict[str, str], ...]
@@ -459,6 +465,7 @@ class RebalanceReport:
             "daily_loss": _decimal_text(self.guard.daily_loss),
             "daily_loss_limit": _decimal_text(self.guard.daily_loss_limit),
             "cancelled": list(self.cancelled),
+            "cancel_skipped": self.cancel_skipped,
             "reconciled": self.reconciled,
             "orders": list(self.orders),
             "refused": list(self.refused),
@@ -1036,6 +1043,89 @@ def _reconcile_fidelity(
         )
 
 
+# -- The slot's steps, named for the journal (bug 2) ------------------------------
+
+
+#: The four step names a venue refusal is logged against, spelled once so
+#: the journal line and the suite cannot disagree about which step is
+#: which: the daily-loss guard's account read, the resting-order sweep, the
+#: previous slot's reconciliation, and this slot's build-and-place (the
+#: preflight runs inside the placement, so a refusal it raises wears the
+#: placement's name).  One greppable line per refusal is the whole point:
+#: a slot that aborts must say which step hit the limit, or the operator
+#: is left grepping a bare exit code (``bug_spec_vst_slot_resilience.xml``,
+#: bug 2).
+_STEP_GUARD = "guard"
+_STEP_CANCEL = "cancel"
+_STEP_RECONCILE = "reconcile"
+_STEP_PLACEMENT = "placement"
+
+
+def _venue_code(exc: BaseException) -> Any:
+    """The venue's own code off a refusal, or ``-`` when it carried none.
+
+    The client sets ``venue_code`` on the error-budget rate limit — the code
+    the envelope itself carried, whatever spelling it arrived in; a plain
+    venue refusal carries ``code``; a rate limit with no venue code of its
+    own, a HTTP 429, names none, and the journal line answers ``-`` rather
+    than guessing at one.
+    """
+    code = getattr(exc, "venue_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    return "-" if code is None else code
+
+
+def _log_step_refusal(step: str, exc: BaseException) -> None:
+    """One info line naming the step a venue refusal hit (bug 2).
+
+    ``bingx_rebalance: step=STEP venue_code=CODE symbol=SYMBOL_OR_DASH MSG``
+    — the module's own code word, the step, the venue's own code and the
+    refusal's message — so an operator greps one line and learns which step
+    hit which limit and why.  The symbol is ``-`` unless the refusal names
+    one, because every refusal a slot sees on these steps is an account-wide
+    read or sweep rather than a single leg's.
+    """
+    log.info(
+        "%s: step=%s venue_code=%s symbol=%s %s",
+        BINGX_REBALANCE_CODE,
+        step,
+        _venue_code(exc),
+        getattr(exc, "symbol", None) or "-",
+        exc,
+    )
+
+
+def _run_step(
+    step: str, act: Callable[[], Any], *, skip_on_rate_limit: bool
+) -> tuple[Any, bool]:
+    """Run one slot step, naming any venue refusal it raises on the journal.
+
+    Every :class:`~router.bingx_client.RouterBingXRefusedError` or
+    :class:`~router.errors.RouterRateLimitedError` the step raises is logged
+    at info as that one greppable line *before* anything else happens to it,
+    so a slot that aborts says which step hit the limit (bug 2).  A
+    rate-limited step the caller marks ``skip_on_rate_limit`` is swallowed
+    instead of propagated — logged the same way, and answered as
+    ``(None, True)`` so the caller records the step as skipped — because a
+    budget that returns in minutes must not cost the book four hours of
+    drift: the cancel and the reconcile are housekeeping the next slot
+    repeats.  The guard and the placement are never skipped, since placing
+    against an unguarded or unknown account state is the one thing the slot
+    must not do; their refusals keep today's meaning and end the slot.
+    """
+    try:
+        return act(), False
+    except RouterRateLimitedError as exc:
+        _log_step_refusal(step, exc)
+        if skip_on_rate_limit:
+            return None, True
+        raise
+    except RouterBingXRefusedError as exc:
+        _log_step_refusal(step, exc)
+        raise
+
+
 def _run_slot(
     *,
     book: Mapping[str, Any],
@@ -1055,8 +1145,14 @@ def _run_slot(
 
     Raises :class:`~router.bingx_risk.RouterBingXDailyLossHaltError` on step
     1's breach (the command turns it into exit 3) and any other
-    :class:`~router.errors.RouterError` a step refuses with; answers the
-    :class:`RebalanceReport` otherwise, with ``exit_code`` 0 or 1.
+    :class:`~router.errors.RouterError` a step refuses with — each refusal
+    the venue made logged first, naming the step it hit
+    (:func:`_run_step`, bug 2) — except a rate limit on the cancel or the
+    reconcile, which the slot survives as a skipped step
+    (:attr:`RebalanceReport.cancel_skipped`, ``reconciled: false``) because
+    a budget that returns in minutes must not cost the book four hours of
+    drift.  Answers the :class:`RebalanceReport` otherwise, with
+    ``exit_code`` 0 or 1.
     """
 
     book_id, _ = _book_identity(book)
@@ -1068,49 +1164,85 @@ def _run_slot(
     #     the wall clock: the day whose opening equity the check measures
     #     against must be the slot's day, or a run near midnight would open
     #     the next day's row with the slot's own floor — the UTC day is the
-    #     same fact the slot's boundary is taken from.
-    guard = guard_daily_loss(
-        client=client,
-        book=stamped,
-        database_url=database_url,
-        env=env,
-        now=lambda: rebalance_ts,
+    #     same fact the slot's boundary is taken from.  A rate limit here
+    #     still ends the slot: an account the guard could not read is an
+    #     account the slot must not place against.
+    guard, _ = _run_step(
+        _STEP_GUARD,
+        lambda: guard_daily_loss(
+            client=client,
+            book=stamped,
+            database_url=database_url,
+            env=env,
+            now=lambda: rebalance_ts,
+        ),
+        skip_on_rate_limit=False,
     )
 
     # 2 — cancel the book's resting orders from the trailing day's slots.
+    #     A rate limit is skipped rather than fatal (bug 2): the sweep is
+    #     abandoned — any cancels it had already made stand on the venue,
+    #     but none are claimed, so the next slot's sweep finds the same
+    #     resting orders and repeats this one's work — and the slot places
+    #     anyway, because the resting orders are this book's own, priced
+    #     for a slot four hours stale at worst.
     previous = _previous_slot(rebalance_ts)
     trailing = _trailing_slots(rebalance_ts)
     identities = _slot_identities(book, trailing)
-    cancelled = tuple(cancel_rebalance_orders(client=client, orders=identities))
+    cancelled_answer, cancel_skipped = _run_step(
+        _STEP_CANCEL,
+        lambda: cancel_rebalance_orders(client=client, orders=identities),
+        skip_on_rate_limit=True,
+    )
+    cancelled = tuple(cancelled_answer or ())
 
     # 3 — reconcile the previous slot, from the terms placement recorded.
-    reconciliation = reconcile_rebalance_fill_costs(
-        client=client,
-        book_id=book_id,
-        rebalance_ts=previous,
-        database_url=database_url,
-        env=env,
+    #     A rate limit is skipped the same way (bug 2): the reconciliation
+    #     is recorded by a later slot instead — ``reconciled: false`` is
+    #     the report's own account of it — and no fill cost is guessed at.
+    reconciliation, _ = _run_step(
+        _STEP_RECONCILE,
+        lambda: reconcile_rebalance_fill_costs(
+            client=client,
+            book_id=book_id,
+            rebalance_ts=previous,
+            database_url=database_url,
+            env=env,
+        ),
+        skip_on_rate_limit=True,
     )
     # Feature 5 of the VST fidelity spec: the real sim-versus-live gap,
     # beside the fee-only reconciliation above, which stays unchanged.
+    # Store-only and best-effort, so it runs whether or not the venue read
+    # above was skipped.
     _reconcile_fidelity(
         book_id=book_id, previous=previous, database_url=database_url
     )
 
-    # 4 — build and place this slot's plan, idempotently.
-    plan = build_mirror_plan(book=stamped, client=client)
-    outcomes = mirror_place(
-        client=client,
-        book=stamped,
-        plan=plan,
-        store=store,
-        limiter=limiter,
-        database_url=database_url,
-        env=env,
-        clock=clock,
-        sleep=sleep,
-        jitter_rng=jitter_rng,
-        on_retry=on_retry,
+    # 4 — build and place this slot's plan, idempotently.  A rate limit
+    #     here still ends the slot (bug 2): a plan the venue would not
+    #     answer for is not a plan to place blind.
+    plan, _ = _run_step(
+        _STEP_PLACEMENT,
+        lambda: build_mirror_plan(book=stamped, client=client),
+        skip_on_rate_limit=False,
+    )
+    outcomes, _ = _run_step(
+        _STEP_PLACEMENT,
+        lambda: mirror_place(
+            client=client,
+            book=stamped,
+            plan=plan,
+            store=store,
+            limiter=limiter,
+            database_url=database_url,
+            env=env,
+            clock=clock,
+            sleep=sleep,
+            jitter_rng=jitter_rng,
+            on_retry=on_retry,
+        ),
+        skip_on_rate_limit=False,
     )
     orders: list[dict[str, Any]] = []
     refused: list[dict[str, str]] = []
@@ -1145,6 +1277,7 @@ def _run_slot(
         rebalance_ts=rebalance_ts,
         guard=guard,
         cancelled=cancelled,
+        cancel_skipped=cancel_skipped,
         reconciled=reconciliation is not None,
         orders=tuple(orders),
         refused=tuple(refused),

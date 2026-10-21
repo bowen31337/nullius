@@ -122,6 +122,7 @@ __all__ = [
     "CLIENT_ORDER_ID_ECHO_FIELD",
     "CLIENT_ORDER_ID_FIELD",
     "COMMISSION_FIELD",
+    "DEFAULT_NOT_FOUND_BUDGET",
     "EXECUTED_QUANTITY_FIELD",
     "IDENTIFIER_FIELDS",
     "LAST_FILL_TIME_FIELD",
@@ -142,6 +143,7 @@ __all__ = [
     "VST_ORDER_STATUS_NEW",
     "VST_ORDER_STATUS_PARTIALLY_FILLED",
     "VST_ORDER_STATUS_PENDING",
+    "VST_ORDER_UNREAD",
     "RouterBingXOrdersError",
     "VSTOrderStatus",
     "cancel_rebalance_orders",
@@ -244,6 +246,32 @@ VST_ORDER_STATUSES = frozenset(
 #: which a missing order is a value, not an exception.
 VST_ORDER_NOT_FOUND = "not_found"
 
+#: This system's sentinel for *the walk stopped before asking the venue
+#: about this order* — neither found nor not_found, because the venue was
+#: never questioned, so no fact about the order was stated either way.
+#: Coined by ``bug_spec_vst_slot_resilience.xml`` (bug 2): the venue bills
+#: its error answers — twenty within 480000 ms on one key and it answers
+#: code 109429, its per-API error budget — and a wide book's read-back can
+#: spend that budget on not-found answers alone.  A caller that reduces
+#: statuses (the reconcile) therefore counts an unread order as *not
+#: reconciled this slot*, never as a fill or a miss: the honest report of a
+#: question not asked.  Spelled lowercase to mark it as this system's word,
+#: beside :data:`VST_ORDER_NOT_FOUND`.
+VST_ORDER_UNREAD = "unread"
+
+#: How many not-found answers one :func:`read_back_orders` call may spend
+#: before it stops asking: fifteen, under the twenty the venue's error
+#: budget bills within its 480000 ms window, with margin for the error
+#: answers the rest of the system makes.  The count is per call and
+#: cumulative — a found answer does not buy the walk another not-found —
+#: and every order past it is reported :data:`VST_ORDER_UNREAD` rather
+#: than queried, because a walk that spends the budget loses the *whole
+#: key* for minutes, not only its own answers.  A caller narrows it per
+#: call through the verb's ``not_found_budget``; the default keeps every
+#: read the system made before this budget existed answer-for-answer the
+#: same, since no earlier walk reached fifteen not-found legs.
+DEFAULT_NOT_FOUND_BUDGET = 15
+
 #: The venue's own error codes for *it holds no record of this order* — the
 #: refusal codes :func:`read_back_orders` answers as
 #: :data:`VST_ORDER_NOT_FOUND` instead of a fault, and the only ones: every
@@ -319,7 +347,8 @@ class VSTOrderStatus:
       fact about which instrument an order was for.
     * ``client_order_id`` — the venue field's payload, the identifier the
       order was looked up by (feature 3's forty-character projection).
-    * ``status`` — the venue's word, or :data:`VST_ORDER_NOT_FOUND`.
+    * ``status`` — the venue's word, :data:`VST_ORDER_NOT_FOUND`, or
+      :data:`VST_ORDER_UNREAD`.
     * ``original_quantity`` — the venue's ``origQty`` as an exact
       :class:`~decimal.Decimal`, when the venue's document carries it, and
       ``None`` when it does not (and always for a not-found order).
@@ -338,12 +367,14 @@ class VSTOrderStatus:
       carried none.  :attr:`place_to_fill_ms` is their difference.
 
     ``executed_quantity`` and ``average_price`` are required together,
-    exactly when the status is not :data:`VST_ORDER_NOT_FOUND`: a found
-    order always has both (the venue answers ``"0"`` when nothing has
-    filled), and a not-found order has neither.  ``original_quantity`` is
-    answered exactly when the venue's document carried it, and never for a
-    not-found order.  Frozen and hashable, so a read-back can stand as a
-    key or sit in a set.
+    exactly when the status is neither :data:`VST_ORDER_NOT_FOUND` nor
+    :data:`VST_ORDER_UNREAD`: a found order always has both (the venue
+    answers ``"0"`` when nothing has filled), while a not-found order has
+    neither (the venue holds no record of it) and an unread one has neither
+    because the walk stopped before the venue was asked.  Similarly
+    ``original_quantity`` is answered exactly when the venue's document
+    carried it, and never for a not-found or unread order.  Frozen and
+    hashable, so a read-back can stand as a key or sit in a set.
     """
 
     symbol: str | None
@@ -441,7 +472,7 @@ class VSTOrderStatus:
                     f"({type(_value).__name__}); the venue's own instant is "
                     "never negative and never a fraction of a millisecond"
                 )
-        if self.status == VST_ORDER_NOT_FOUND:
+        if self.status in (VST_ORDER_NOT_FOUND, VST_ORDER_UNREAD):
             if (
                 self.executed_quantity is not None
                 or self.average_price is not None
@@ -451,14 +482,16 @@ class VSTOrderStatus:
                 or self.last_fill_ms is not None
             ):
                 raise RouterBingXOrdersError(
-                    f"{BINGX_ORDERS_CODE}: an order the venue holds no "
-                    "record of carries neither a quantity, a price, a "
-                    "commission nor a timestamp, got "
+                    f"{BINGX_ORDERS_CODE}: a {self.status} order carries "
+                    "neither a quantity, a price, a commission nor a "
+                    "timestamp, got "
                     f"{self.original_quantity!r}, {self.executed_quantity!r}, "
                     f"{self.average_price!r}, {self.commission!r}, "
-                    f"{self.placed_ms!r} and {self.last_fill_ms!r}; there is "
-                    "no order to have filled, and a value here would be "
-                    "invented"
+                    f"{self.placed_ms!r} and {self.last_fill_ms!r}; a "
+                    "not-found order is one the venue holds no record of "
+                    "and an unread one is a leg the walk stopped before "
+                    "asking about, and in neither case is there a "
+                    "measurement to report — a value here would be invented"
                 )
             return
         for term, value in (
@@ -965,7 +998,9 @@ def _open_order_entries(client: Any) -> list[Mapping]:
     return rows
 
 
-def read_back_orders(*, client: Any, orders: Any) -> list[VSTOrderStatus]:
+def read_back_orders(
+    *, client: Any, orders: Any, not_found_budget: int = DEFAULT_NOT_FOUND_BUDGET
+) -> list[VSTOrderStatus]:
     """Feature 3's first sentence: the book's orders, each as the venue sees it.
 
     Walks ``orders`` — the plan's legs, in the order it is handed — and
@@ -982,19 +1017,63 @@ def read_back_orders(*, client: Any, orders: Any) -> list[VSTOrderStatus]:
     is skipped: the gates closed it and it names no venue order to look
     up.
 
+    The walk spends its own budget (``bug_spec_vst_slot_resilience.xml``,
+    bug 2): ``not_found_budget`` not-found answers per call —
+    :data:`DEFAULT_NOT_FOUND_BUDGET` unless the caller names another count
+    — and then it *stops asking*, reporting every remaining order
+    :data:`VST_ORDER_UNREAD` instead of querying it.  The venue bills its
+    error answers against a per-API budget (twenty within 480000 ms and it
+    answers code 109429 for minutes, as the recorded refusal shows), and a
+    not-found answer is an error answer to the venue however informative it
+    is here, so a wide book's read-back must not spend the budget the rest
+    of the system needs.  An unread order is neither found nor not_found:
+    the venue was never asked, so the caller that reduces statuses counts
+    it as not reconciled this slot.
+
     A pure function of the injected client and the legs: it reads no clock,
     touches no store and opens no socket of its own.  Refuses
-    :class:`RouterBingXOrdersError` for the ask's own faults and lets
-    feature 1's errors — a transport failure, the venue's other refusals —
-    propagate unchanged.
+    :class:`RouterBingXOrdersError` for the ask's own faults — a budget
+    that is not a non-negative integer among them — and lets feature 1's
+    errors — a transport failure, the venue's other refusals — propagate
+    unchanged.
     """
+    if (
+        isinstance(not_found_budget, bool)
+        or not isinstance(not_found_budget, int)
+        or not_found_budget < 0
+    ):
+        raise RouterBingXOrdersError(
+            f"{BINGX_ORDERS_CODE}: not_found_budget is how many not-found "
+            "answers one read-back may spend on the venue before it stops "
+            f"asking, as a non-negative integer, got {not_found_budget!r} "
+            f"({type(not_found_budget).__name__}); the venue bills its "
+            "error answers against a per-API budget (twenty within 480000 "
+            "ms), and a count that is not a number cannot bound a walk"
+        )
     query = _require_method(client, "query_order")
     statuses: list[VSTOrderStatus] = []
+    not_found = 0
     for symbol, client_order_id in _book_orders(orders):
+        if not_found >= not_found_budget:
+            # The walk's own budget is spent: the venue was not asked about
+            # this leg, and the honest report of a question not asked is
+            # the unread sentinel — neither a fill nor a miss, so the
+            # reconcile counts the leg as not reconciled this slot.
+            statuses.append(
+                VSTOrderStatus(
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    status=VST_ORDER_UNREAD,
+                    executed_quantity=None,
+                    average_price=None,
+                )
+            )
+            continue
         try:
             document = query(client_order_id, symbol=symbol)
         except RouterBingXRefusedError as exc:
             if _is_not_found(exc.code):
+                not_found += 1
                 statuses.append(
                     VSTOrderStatus(
                         symbol=symbol,

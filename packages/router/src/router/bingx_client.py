@@ -55,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -100,6 +101,7 @@ __all__ = [
     "SECRET_KEY_ENV",
     "SERVER_TIME_PATH",
     "TRANSPORT_CODE",
+    "VENUE_ERROR_BUDGET_CODE",
     "VST_BASE_URL",
     "VST_CREDENTIALS_MISSING_CODE",
     "VST_HOST",
@@ -192,6 +194,28 @@ BINGX_MARGIN_TYPE_CROSSED = "CROSSED"
 #: because the venue has more than one spelling of the same answer across
 #: versions, and a caller tests membership rather than equality.
 ORDER_NOT_FOUND_CODE = 109400
+
+#: The venue's per-API **error budget**, as its own error code: after twenty
+#: error answers within 480000 ms on one key the venue answers this code for
+#: every further request until the instant its message names.  Recorded
+#: verbatim in fixture ``live/query_order_error_budget.json`` from the live
+#: refusal the 2026-10-20T16:05 UTC slot printed, after the read-back walk's
+#: ``109421`` answers had spent the budget.  It is a rate limit wearing an
+#: envelope: an ordinary HTTP 200 whose ``msg`` carries the epoch-ms instant
+#: the budget returns (``can retry after time:``), so the client raises the
+#: same :class:`~router.errors.RouterRateLimitedError` a HTTP 429 does —
+#: parsed from that message, not assumed — with the venue's own code set on
+#: the refusal as a ``venue_code`` attribute so a caller can name it without
+#: re-parsing the message
+#: (``bug_spec_vst_slot_resilience.xml``, bug 2).
+VENUE_ERROR_BUDGET_CODE = 109429
+
+#: The instant the venue's error-budget message names — ``can retry after
+#: time:`` followed by epoch milliseconds.  Read leniently around the words
+#: and the digits (the recorded message spells ``fix it ,can retry after
+#: time: 1792512797246``, comma tight against ``can``), because the figure
+#: is the whole point: the wait is derived from it, never guessed at.
+RETRY_AFTER_MESSAGE_PATTERN = re.compile(r"can\s+retry\s+after\s+time:\s*(\d+)")
 
 #: The greppable code words this module's refusals open with.  ``live_host_refused``
 #: and ``vst_credentials_missing`` are spelled by feature 1's own sentence;
@@ -640,8 +664,10 @@ class BingXClient:
         """Turn a raw response into the envelope's ``data``, or refuse.
 
         429 is feature 1's rate-limit refusal; a body that is not the envelope
-        is this module's response fault; a non-zero ``code`` is the venue's own
-        ``bingx_refused``; ``code`` zero returns ``data``.
+        is this module's response fault; the venue's error-budget code is the
+        same rate limit wearing an envelope (``bug_spec_vst_slot_resilience.xml``,
+        bug 2); a non-zero ``code`` is the venue's own ``bingx_refused``;
+        ``code`` zero returns ``data``.
         """
         if status == 429:
             raise _rate_limited(operation)
@@ -657,6 +683,10 @@ class BingXClient:
         code = decoded["code"]
         if _is_zero_code(code):
             return decoded.get("data")
+        if _is_error_budget(code):
+            raise _error_budget_limited(
+                operation, str(decoded.get("msg", "")), self.clock()
+            )
         raise RouterBingXRefusedError(code, str(decoded.get("msg", "")))
 
     def _request(
@@ -1005,6 +1035,20 @@ def _is_zero_code(code: Any) -> bool:
     return False
 
 
+def _is_error_budget(code: Any) -> bool:
+    """Whether the venue's refusal code is its per-API error budget.
+
+    Compared by spelling rather than by identity, the same way
+    :func:`_is_not_found` judges the not-found codes in
+    :mod:`router.bingx_orders`: the venue has sent its codes as integers and
+    as strings across versions, and the client carries whatever it sent, so
+    every spelling of :data:`VENUE_ERROR_BUDGET_CODE` is the budget.
+    """
+    if isinstance(code, bool) or code is None:
+        return False
+    return str(code).strip() == str(VENUE_ERROR_BUDGET_CODE)
+
+
 def _rate_limited(operation: str) -> RouterRateLimitedError:
     """A refusal reading for an HTTP 429, well-formed enough for feature 319.
 
@@ -1016,9 +1060,28 @@ def _rate_limited(operation: str) -> RouterRateLimitedError:
     one weight unit and ``retry_after`` is that unit's refill interval — a
     conservative floor for the retry to wake above.
     """
+    reading = _token_bucket_headroom(operation)
+    return RouterRateLimitedError(
+        "rate_limited: the venue answered HTTP 429 for "
+        f"{operation!r}; the request was refused by the venue's own budget, "
+        f"and {reading.retry_after} brings the weight it needs back "
+        "(feature 318)",
+        headroom=reading,
+    )
+
+
+def _token_bucket_headroom(operation: str) -> RateLimitHeadroom:
+    """The 429 reading alone: one missing weight unit of :data:`VST_WEIGHT_SCHEDULE`.
+
+    The same construction :func:`_rate_limited` states, stated once so the
+    error-budget refusal can reach for it too — a budget message that names
+    no retry instant has no wait to derive, so its refusal falls back to the
+    token-bucket default exactly the way a 429 without a ``Retry-After``
+    header does.
+    """
     weight = VST_WEIGHT_SCHEDULE.weight_for(operation)
     accrued = weight - 1
-    reading = RateLimitHeadroom(
+    return RateLimitHeadroom(
         scope=DEFAULT_WEIGHT_SCOPE,
         operation=operation,
         weight=weight,
@@ -1029,10 +1092,76 @@ def _rate_limited(operation: str) -> RouterRateLimitedError:
         observed_at=datetime.now(UTC),
         schedule=VST_WEIGHT_SCHEDULE,
     )
-    return RouterRateLimitedError(
-        "rate_limited: the venue answered HTTP 429 for "
-        f"{operation!r}; the request was refused by the venue's own budget, "
-        f"and {reading.retry_after} brings the weight it needs back "
-        "(feature 318)",
+
+
+def _stated_wait_headroom(
+    operation: str, wait: timedelta
+) -> RateLimitHeadroom:
+    """A refusal reading whose ``retry_after`` is a wait the venue itself stated.
+
+    The error budget's message names the epoch-ms instant it returns, so the
+    wait is *derived*, never guessed at — but :class:`~router.errors.RouterRateLimitedError`
+    can only carry a wait as a headroom, and a headroom only answers it as
+    ``refill_interval * deficit``.  A schedule of one unit over exactly the
+    stated wait makes that arithmetic state the wait itself: the unit's
+    refill interval is the whole window, the bucket holds nothing of it, so
+    the deficit of one unit refills in exactly the time the venue named.  A
+    wait already floored to zero is carried by a spent unit instead — a
+    bucket that has refilled, whose deficit is zero and whose wait therefore
+    reads as ``timedelta(0)``, the honest answer for a budget the venue says
+    has already returned.
+    """
+    window = wait if wait > timedelta(0) else timedelta(microseconds=1)
+    accrued = 0 if wait > timedelta(0) else 1
+    schedule = VenueWeightSchedule(
+        allowance=1, weights={operation: 1}, window=window
+    )
+    return RateLimitHeadroom(
+        scope=DEFAULT_WEIGHT_SCOPE,
+        operation=operation,
+        weight=schedule.weight_for(operation),
+        allowed=False,
+        remaining=accrued,
+        capacity=schedule.allowance,
+        accrued=accrued,
+        observed_at=datetime.now(UTC),
+        schedule=schedule,
+    )
+
+
+def _error_budget_limited(
+    operation: str, message: str, now_ms: int
+) -> RouterRateLimitedError:
+    """The error-budget envelope as the rate limit it is (bug 2).
+
+    Code :data:`VENUE_ERROR_BUDGET_CODE` arrives as an ordinary HTTP 200
+    envelope, but it *is* the venue's rate limit: the budget the API enforces
+    per key, spent by this system's own error answers, returning at the
+    instant the message names.  So the refusal is the same
+    :class:`~router.errors.RouterRateLimitedError` a HTTP 429 raises, with the
+    wait derived from that instant measured against the client's own clock
+    (floored at zero — a budget the venue says has already returned is a wait
+    of zero seconds, not a negative one) and the token-bucket default when the
+    message names no instant at all.  The venue's own code is set on the
+    refusal as ``venue_code`` so a caller — the slot's step log, an operator
+    grepping the journal — names the budget without re-parsing the message,
+    and the message itself rides on the refusal verbatim for the same reason.
+    """
+    match = RETRY_AFTER_MESSAGE_PATTERN.search(message)
+    if match is None:
+        reading = _token_bucket_headroom(operation)
+    else:
+        wait_ms = int(match.group(1)) - now_ms
+        reading = _stated_wait_headroom(
+            operation, timedelta(milliseconds=max(wait_ms, 0))
+        )
+    refusal = RouterRateLimitedError(
+        "rate_limited: the venue answered code "
+        f"{VENUE_ERROR_BUDGET_CODE} for {operation!r} with its per-API error "
+        "budget (twenty error answers within 480000 ms) spent; the wait read "
+        f"off the message's own retry instant is {reading.retry_after} — "
+        f"{message!r} (bug_spec_vst_slot_resilience.xml, bug 2)",
         headroom=reading,
     )
+    refusal.venue_code = VENUE_ERROR_BUDGET_CODE
+    return refusal
