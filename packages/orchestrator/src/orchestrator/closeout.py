@@ -438,6 +438,17 @@ class CloseoutResult:
     are null abstains (``committed_pick`` ``None``) exactly as a campaign
     with no discovery does.  A count, never a node id: the payload reports
     how many null branches were skipped, not which ones (PRD §4.2).
+
+    ``dedup_skipped`` and ``dedup_against`` are additions_spec_dedup_
+    committed_constructs.xml's pair: the number of bar-clearing real nodes
+    the commit skipped because their in-sample fingerprint equals one an
+    earlier campaign under the same ``evaluation_config_sha256`` already
+    committed, and the number of earlier picks they were checked against.
+    Both are ``0`` for every campaign whose evaluation config omitted the
+    key or set it ``false`` -- which is every campaign written before the
+    key existed -- and for one whose config set it ``true`` but whose store
+    holds no earlier commit under the same hash.  Counts, not identities,
+    the same §4.2 stance ``null_discoveries`` takes.
     """
 
     campaign_id: str
@@ -458,6 +469,8 @@ class CloseoutResult:
     discoveries: int
     discoveries_ic: int
     null_discoveries: int
+    dedup_skipped: int
+    dedup_against: int
     selection_rule: str
     budget_charging_trials: int
     ledger_trials: int
@@ -489,7 +502,10 @@ class CloseoutResult:
         status is, and that status is read only for calibration above and
         never joins this payload (feature 2).  ``null_discoveries`` is the
         same stance applied to the commit's own skip: a count of bar-clearing
-        null branches passed over, never which ones.
+        null branches passed over, never which ones.  ``dedup_skipped`` and
+        ``dedup_against`` are that stance a second time -- how many
+        bar-clearing nodes the dedup rule excluded and how many earlier
+        picks they were checked against -- and neither is ever a node id.
         """
         return {
             "campaign_id": self.campaign_id,
@@ -511,6 +527,8 @@ class CloseoutResult:
             "discoveries_ic": self.discoveries_ic,
             "discoveries": self.discoveries,
             "null_discoveries": self.null_discoveries,
+            "dedup_skipped": self.dedup_skipped,
+            "dedup_against": self.dedup_against,
             "budget_charging_trials": self.budget_charging_trials,
             "ledger_trials": self.ledger_trials,
             "triage_auc": self.triage_auc,
@@ -539,6 +557,14 @@ class _EvaluatedNode:
     feature 1) -- ``None`` for a node a pre-feature-1 tree writer evaluated,
     read here as the signal to fall back to :data:`SELECTION_RULE_IC_
     FALLBACK` for that node (:func:`_is_discovery`, :func:`_selection_value`).
+
+    ``turnover`` is feature 101's seventh metric column, read here for
+    additions_spec_dedup_committed_constructs.xml's fingerprint
+    (:func:`_construct_fingerprint`, :func:`_earlier_committed_fingerprints`)
+    -- ``None`` when the column is absent or NULL, which the fingerprint
+    reads as "never matches" rather than as a zero-turnover construct.  It
+    rides on this record rather than a second read so one campaign's own
+    fingerprint costs no extra query.
     """
 
     node_id: str
@@ -546,6 +572,12 @@ class _EvaluatedNode:
     ic_tstat: float
     perturb_stability: float | None
     ir_tstat: float | None
+    #: The node's stored turnover, or ``None`` when the column is missing or
+    #: NULL.  Defaulted, unlike the five above, only so a caller that
+    #: constructs one of these to drive :func:`_commit_top_node` (the
+    #: incumbent-equivalence ground truth, a test) need not name a field it
+    #: does not use.
+    turnover: float | None = None
 
 
 def _sqlite_path(database_url: str) -> Path:
@@ -682,11 +714,15 @@ def _read_evaluated_nodes(
     in a query, rather than let as a raw ``sqlite3.OperationalError`` reach
     the CLI's generic refusal printer.
 
-    ``ir_tstat`` is probed for the same way: a tree no evaluation has
-    touched since additions_spec_cost_aware_selection.xml feature 1 landed
-    carries no such column, read here as ``NULL`` on every row rather than
-    refused -- the column's whole absence is feature 2's own documented
-    fallback trigger, not an unevaluated tree.
+    ``ir_tstat`` and ``turnover`` are probed for the same way: a tree no
+    evaluation has touched since additions_spec_cost_aware_selection.xml
+    feature 1 landed carries no ``ir_tstat`` column, read here as ``NULL`` on
+    every row rather than refused -- the column's whole absence is feature 2's
+    own documented fallback trigger, not an unevaluated tree.  ``turnover``
+    is feature 101's and arrives with ``0114``; either of the two being
+    absent reads ``NULL`` on every row, which is the answer
+    additions_spec_dedup_committed_constructs.xml's fingerprint needs (a
+    ``NULL`` field never matches).
     """
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection:
@@ -706,9 +742,12 @@ def _read_evaluated_nodes(
         ir_tstat_column = (
             "ir_tstat" if _has_column(connection, NODE_TABLE, "ir_tstat") else "NULL"
         )
+        turnover_column = (
+            "turnover" if _has_column(connection, NODE_TABLE, "turnover") else "NULL"
+        )
         query = (
             f"SELECT id, {fail_class_column}, ic_mean, ic_tstat, "
-            f"perturb_stability, {ir_tstat_column} "
+            f"perturb_stability, {ir_tstat_column}, {turnover_column} "
             f"FROM {NODE_TABLE} WHERE campaign_id = ?"
         )
         try:
@@ -719,7 +758,15 @@ def _read_evaluated_nodes(
                 f"evaluated nodes from {database_url!r}: {exc}"
             ) from exc
     evaluated: list[_EvaluatedNode] = []
-    for node_id, fail_class, ic_mean, ic_tstat, perturb_stability, ir_tstat in rows:
+    for (
+        node_id,
+        fail_class,
+        ic_mean,
+        ic_tstat,
+        perturb_stability,
+        ir_tstat,
+        turnover,
+    ) in rows:
         # A NULL fail_class on a row with metrics is an evaluated node: the
         # root evaluation path writes metrics but no fail_class, and a row
         # with no recorded failure is one where nothing has failed. Dropping
@@ -733,6 +780,7 @@ def _read_evaluated_nodes(
                 ic_tstat=ic_tstat,
                 perturb_stability=perturb_stability,
                 ir_tstat=ir_tstat,
+                turnover=turnover,
             )
         )
     return tuple(evaluated)
@@ -1100,6 +1148,193 @@ def _force_void(database_url: str, campaign_id: str) -> None:
         )
 
 
+# -- The dedup: a construct an earlier campaign already committed --
+
+
+#: How close two fingerprint fields must be to name one construct --
+#: additions_spec_dedup_committed_constructs.xml's own ``1e-9``.  Absolute,
+#: so it means the same thing whatever magnitude the figure it compares
+#: carries.
+DEDUP_FINGERPRINT_TOL = 1e-9
+
+
+def _construct_fingerprint(
+    ic_mean: float | None,
+    ic_tstat: float | None,
+    ir_tstat: float | None,
+    turnover: float | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """A construct's in-sample fingerprint -- the four stored figures a
+    committed pick is identified by (additions_spec_dedup_committed_
+    constructs.xml).
+
+    The four columns are the ones the RESULT's own finding is stated in:
+    ``docs/preregistration/2026-10-21-m2-short-h5.RESULT.md`` records
+    campaigns 4 and 8 committing roots with *"bit-identical statistics (IC t
+    2.0558, IR t 3.5953, out-of-sample -12.93 bp) under different code
+    hashes: two agents wrote the same function in different source text"* --
+    so a *code* hash cannot see the duplicate and a statistics tuple can.
+    ``turnover`` joins them because it is the figure that separates two
+    constructions agreeing on their ranking metric but trading different
+    names -- the fingerprint is the construct, not the metric alone.
+
+    The tuple is a value, never compared here: :func:`_fingerprints_match`
+    owns the comparison, including the tolerance, so one call site could not
+    drift from another on what "the same construct" means.  A ``None`` field
+    is carried through rather than refused: it is the honest reading of a
+    column the tree never wrote (a pre-feature-1 ``ir_tstat``, a node
+    migrated before ``0114``), and :func:`_fingerprints_match` turns any such
+    field into "never matches", which is the rule the spec states.
+    """
+    return (ic_mean, ic_tstat, ir_tstat, turnover)
+
+
+def _fingerprints_match(
+    left: Sequence[float | None],
+    right: Sequence[float | None],
+    *,
+    tol: float = DEDUP_FINGERPRINT_TOL,
+) -> bool:
+    """Whether two fingerprints name the same construct.
+
+    ``False`` when *any* field of either side is ``None``: a fingerprint
+    missing a term identifies no construct this campaign could be a repeat
+    of, and reading a missing ``ir_tstat`` as agreement would merge every
+    pre-feature-1 pick with every other.  Otherwise every field must agree
+    within ``tol`` — additions_spec_dedup_committed_constructs.xml's own
+    ``1e-9``, loose enough to absorb the last-bit drift two runs of the same
+    arithmetic can show on one platform (the four-decimal agreement the
+    RESULT quotes is 1e-4), tight enough that the next distinct construct
+    the search finds — which differs in the third decimal at worst — is never
+    swallowed by it.
+    """
+    for a, b in zip(left, right, strict=False):
+        if a is None or b is None:
+            return False
+        if not math.isclose(a, b, rel_tol=0.0, abs_tol=tol):
+            return False
+    return len(left) == len(right)
+
+
+def _earlier_committed_fingerprints(
+    database_url: str, campaign_id: str
+) -> list[tuple[float | None, ...]]:
+    """Every construct an *earlier* campaign under this campaign's own
+    evaluation config hash already committed as its ``m2-fixed`` row.
+
+    The read walks the store the way the feature's sentence does, in three
+    steps:
+
+    1. **This campaign's own grid identity.**  ``campaign.evaluation_config_
+       sha256`` and ``campaign.created_at`` are read off this campaign's row.
+       A row with no sha256 (every campaign written before
+       ``0120_campaign_evaluation_grid.py``, and any the backfill could not
+       place) answers an empty list: *same evaluation config hash* names no
+       set, so there is nothing this campaign could be a duplicate of.  The
+       same absence-as-not-applicable reading :func:`_read_evaluated_nodes`
+       takes of an absent column.
+    2. **The peer campaigns.**  Every other campaign row carrying the same
+       sha256 and a **strictly earlier** ``created_at``.  Strictly, so a
+       campaign can never be its own peer — a rerun of one close-out refreshes
+       its own row rather than tripping over it, and two campaigns created in
+       the same second do not silently dedup against each other.  The
+       comparison is on the stored text, which is ISO-8601 UTC in both
+       dialects (``0111``'s own note) and therefore orders correctly as
+       text.
+    3. **Their committed picks.**  Every ``replay_score`` row under
+       :data:`M2_FIXED_POLICY_VERSION` whose ``world_id`` is one of those
+       campaigns and whose ``committed_pick`` is not NULL — a miss committed
+       nothing, so it fingerprints nothing — with the pick's four figures
+       read off the ``node`` table.
+
+    ``ir_tstat`` and ``turnover`` are read through the same
+    :func:`_has_column` probe :func:`_read_evaluated_nodes` uses, so a
+    database whose chain has not reached them answers ``None`` for every
+    row rather than raising ``no such column``: a pick with an absent field
+    never matches (:func:`_fingerprints_match`), which is the feature's own
+    rule for a NULL.
+
+    Read-only and idempotent: a campaign whose config did not set
+    :data:`orchestrator._context.DEDUP_COMMITTED_KEY` never calls this at
+    all, and a call writes nothing.
+    """
+    path = _sqlite_path(database_url)
+    with closing(sqlite3.connect(path)) as connection:
+        try:
+            own = connection.execute(
+                f"SELECT {discovery.EVALUATION_CONFIG_SHA256_COLUMN}, "
+                f"{discovery.CREATED_AT_COLUMN} FROM "
+                f"{discovery.CAMPAIGN_TABLE} WHERE {discovery.ID_COLUMN} = ?",
+                (campaign_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # A chain that has not reached 0120 carries no such column, and
+            # a database the campaign table itself is missing has no peers
+            # to compare at all -- both are "no grid identity recorded",
+            # never a broken store this read should refuse on.
+            return []
+        if own is None or own[0] is None or own[1] is None:
+            return []
+        config_sha256, created_at = own[0], own[1]
+
+        try:
+            peers = connection.execute(
+                f"SELECT {discovery.ID_COLUMN} FROM "
+                f"{discovery.CAMPAIGN_TABLE} WHERE "
+                f"{discovery.EVALUATION_CONFIG_SHA256_COLUMN} = ? "
+                f"AND {discovery.CREATED_AT_COLUMN} < ? "
+                f"AND {discovery.ID_COLUMN} != ?",
+                (config_sha256, created_at, campaign_id),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise CloseoutError(
+                f"{CLOSEOUT_CODE}: could not read the campaigns sharing "
+                f"campaign {campaign_id!r}'s evaluation config hash from "
+                f"{database_url!r}: {exc}"
+            ) from exc
+        if not peers:
+            return []
+
+        # The picks those campaigns committed.  A store with no
+        # replay_score table yet holds no earlier commit, the same
+        # absence-is-nothing reading :func:`_m2_fixed_is_holdout` takes.
+        picks: list[str] = []
+        for (peer_id,) in peers:
+            try:
+                rows = connection.execute(
+                    f"SELECT committed_pick FROM {replay.REPLAY_SCORE_TABLE} "
+                    "WHERE policy_version = ? AND world_id = ? "
+                    "AND committed_pick IS NOT NULL",
+                    (M2_FIXED_POLICY_VERSION, peer_id),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue
+            picks.extend(row[0] for row in rows)
+        if not picks:
+            return []
+
+        ir_tstat_column = (
+            "ir_tstat" if _has_column(connection, NODE_TABLE, "ir_tstat") else "NULL"
+        )
+        turnover_column = (
+            "turnover" if _has_column(connection, NODE_TABLE, "turnover") else "NULL"
+        )
+        fingerprints: list[tuple[float | None, ...]] = []
+        for node_id in picks:
+            row = connection.execute(
+                f"SELECT ic_mean, ic_tstat, {ir_tstat_column}, "
+                f"{turnover_column} FROM {NODE_TABLE} WHERE id = ?",
+                (node_id,),
+            ).fetchone()
+            if row is None:
+                # A pick whose node row is gone names no construct to
+                # compare against; skipped rather than refused, because the
+                # only way there is a store something else has edited.
+                continue
+            fingerprints.append(_construct_fingerprint(*row))
+    return fingerprints
+
+
 # -- The commit: policy-runtime's EpisodeCommit, over this module's own tree --
 
 
@@ -1121,6 +1356,43 @@ def _selection_value(node: _EvaluatedNode) -> float:
     """The figure the commit ranks an eligible node by -- ``ir_tstat`` where
     the node carries one, ``ic_tstat`` under the fallback rule."""
     return node.ir_tstat if node.ir_tstat is not None else node.ic_tstat
+
+
+def _dedup_excluded_nodes(
+    evaluated: Sequence[_EvaluatedNode],
+    earlier: Sequence[Sequence[float | None]],
+    *,
+    null_nodes: frozenset[str],
+) -> frozenset[str]:
+    """The evaluated nodes the dedup rule excludes from the commit --
+    additions_spec_dedup_committed_constructs.xml.
+
+    A node is excluded when it **clears the discovery bar** (the same
+    :func:`_is_discovery` the commit's own eligible set reads -- a node that
+    would never have been committed cannot be a duplicate of one that was),
+    is **not a null branch** (that exclusion is the null rule's,
+    :func:`_commit_top_node`'s ``null_nodes``, and counting a node twice
+    would overstate ``dedup_skipped``), and its **stored fingerprint matches
+    one an earlier campaign already committed** (:func:`_fingerprints_match`,
+    over :func:`_construct_fingerprint` of its own four stored figures --
+    stored, never recomputed, so a node the tree measured with an older
+    evaluator is compared on the figures the commit ranked it by).
+
+    Empty when ``earlier`` is empty, so a campaign with no peers reads
+    nothing further and its exclusion set is exactly the null one.
+    """
+    if not earlier:
+        return frozenset()
+    excluded: set[str] = set()
+    for node in evaluated:
+        if node.node_id in null_nodes or not _is_discovery(node):
+            continue
+        fingerprint = _construct_fingerprint(
+            node.ic_mean, node.ic_tstat, node.ir_tstat, node.turnover
+        )
+        if any(_fingerprints_match(fingerprint, seen) for seen in earlier):
+            excluded.add(node.node_id)
+    return frozenset(excluded)
 
 
 class _ClosingTree:
@@ -1185,6 +1457,27 @@ def _commit_top_node(
     skips nothing and ranks every bar-clearing node, the rule as it stood
     before this fix -- the shape a caller with no sidecar labels of its own
     (the incumbent-equivalence ground truth) still asks for.
+
+    ``null_nodes`` also carries the *dedup* exclusion when the evaluation
+    config set :data:`orchestrator._context.DEDUP_COMMITTED_KEY`
+    (additions_spec_dedup_committed_constructs.xml, and
+    :func:`_dedup_excluded_nodes`, which computes that half): the two
+    exclusions ride in through one parameter because they are one thing to
+    this function -- evaluations the commit must not spend its one pick on --
+    and keeping the signature and the ranking untouched is what lets the
+    pre-flag behaviour stay provably identical.  The dedup half exists
+    because ``docs/preregistration/2026-10-21-m2-short-h5.RESULT.md`` records
+    ten campaigns under one evaluation config committing the same
+    persistent-high-funding construct: mean pairwise correlation 0.91, N_eff
+    1.09, and campaigns 4 and 8 committing roots with bit-identical
+    statistics (IC t 2.0558, IR t 3.5953) under different code hashes, because
+    two agents wrote the same function in different source text.  A series of
+    ten campaigns therefore sampled one book ten times; with the flag set,
+    the later campaigns skip a construct an earlier one already committed and
+    the series' verdict measures a space rather than a point.  This function
+    never reads the store itself: the caller resolves the earlier
+    fingerprints and hands the excluded ids over, so the commit stays a pure
+    ranking over records.
 
     Ties are broken by node id, ascending: a deterministic total order over
     ``(-_selection_value(node), node_id)`` picks the same winner on every
@@ -1360,6 +1653,15 @@ def close_out(
     this call commits to is scored out of sample through it; otherwise the
     OOS reading is unavailable (``None``) and the world is still persisted,
     scored by the miss rule.
+
+    ``context.dedup_committed_constructs`` is additions_spec_dedup_
+    committed_constructs.xml's switch: when it is set, the node step 9
+    commits to is chosen after excluding every bar-clearing real node whose
+    stored in-sample fingerprint an earlier campaign under the same
+    ``evaluation_config_sha256`` already committed, and the two counts are
+    reported as ``dedup_skipped`` and ``dedup_against``.  With the flag unset
+    -- and for every caller that hands no context at all -- the commit ranks
+    exactly the nodes it always did and both counts are ``0``.
 
     Refuses with :class:`CloseoutError` for an unknown campaign or an
     evaluated node whose root cannot be resolved -- its walk leaves the
@@ -1705,8 +2007,37 @@ def close_out(
     #    null branch that cleared the discovery bar is skipped, never
     #    committed -- the calibration figures above still counted it, and
     #    null_discoveries reports how many were skipped here.
+    #
+    #    The dedup variant (additions_spec_dedup_committed_constructs.xml)
+    #    rides in through the same exclusion set when the evaluation config
+    #    set dedup_committed_constructs: every bar-clearing real node whose
+    #    stored in-sample fingerprint equals one an earlier campaign under
+    #    the same evaluation_config_sha256 already committed is excluded too,
+    #    so a series of campaigns samples distinct constructs rather than the
+    #    same one repeatedly (the short-h5 RESULT's ten campaigns, mean
+    #    pairwise correlation 0.91).  With the flag false nothing is read and
+    #    both counts stay 0.
+    dedup_skipped = 0
+    dedup_against = 0
+    dedup_nodes: frozenset[str] = frozenset()
+    if context is not None and context.dedup_committed_constructs:
+        earlier = _earlier_committed_fingerprints(database_url, campaign)
+        dedup_against = len(earlier)
+        dedup_nodes = _dedup_excluded_nodes(
+            evaluated, earlier, null_nodes=frozenset(null_branch_nodes)
+        )
+        dedup_skipped = len(dedup_nodes)
+        _logger.info(
+            "campaign %s: dedup_committed_constructs is set — %d bar-clearing "
+            "node(s) skipped as already committed, checked against %d earlier "
+            "pick(s) under this evaluation config",
+            campaign,
+            dedup_skipped,
+            dedup_against,
+        )
     termination = _commit_top_node(
-        evaluated, null_nodes=frozenset(null_branch_nodes)
+        evaluated,
+        null_nodes=frozenset(null_branch_nodes) | dedup_nodes,
     )
     committed_pick = termination.pick.node_id if termination.committed else None
 
@@ -1774,6 +2105,8 @@ def close_out(
         discoveries=len(discoveries),
         discoveries_ic=discoveries_ic,
         null_discoveries=null_discoveries,
+        dedup_skipped=dedup_skipped,
+        dedup_against=dedup_against,
         selection_rule=selection_rule,
         budget_charging_trials=budget_charging_trials,
         ledger_trials=ledger_trials,

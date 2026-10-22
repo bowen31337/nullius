@@ -31,9 +31,10 @@ One test per claim the fix makes:
   counted nulls would pick the null, the fix picks the real.
 * **a campaign with no bar-clearing null branch closes out exactly as it
   did before the fix** -- the payload's key set is the pre-fix one plus
-  ``null_discoveries`` (``0``), every pre-fix field still mirrors its
+  ``null_discoveries`` (``0``) and the later-added dedup pair (``0``, ``0``),
+  every pre-fix field still mirrors its
   :class:`~orchestrator.closeout.CloseoutResult` attribute, and the CLI
-  prints the one new field and still exits 0.
+  prints the new fields and still exits 0.
 
 No test opens a network connection, reads a real credential, or writes
 outside a pytest temporary directory, and none holds any state at module
@@ -88,6 +89,12 @@ COST_MODEL_HASH = hashlib.sha256(b"closeout-commit-skips-nulls-cost-model").hexd
 #: here so the "a campaign with no null branch closes out byte-identically
 #: apart from the new field" claim is checked against the pre-fix shape
 #: itself rather than against whatever the current source happens to print.
+#: The fields later features added to :meth:`CloseoutResult.to_payload`
+#: beside this fix's own ``null_discoveries`` -- additions_spec_dedup_
+#: committed_constructs.xml's pair, ``0`` on any campaign whose evaluation
+#: config did not set ``dedup_committed_constructs``.
+LATER_PAYLOAD_KEYS = frozenset({"dedup_skipped", "dedup_against"})
+
 PRE_FIX_PAYLOAD_KEYS = frozenset(
     {
         "campaign_id",
@@ -426,10 +433,15 @@ def test_campaign_with_no_null_discovery_payload_unchanged_apart_from_new_field(
     assert result.null_discoveries == 0
 
     payload = result.to_payload()
-    # Exactly the pre-fix key set plus the one new integer field, carrying 0
-    # for a clean campaign -- nothing else about the line changed.
-    assert set(payload) == PRE_FIX_PAYLOAD_KEYS | {"null_discoveries"}
+    # Exactly the pre-fix key set plus this fix's one new integer field and
+    # the two the dedup key adds, all carrying 0 for a clean campaign --
+    # nothing else about the line changed.
+    assert set(payload) == (
+        PRE_FIX_PAYLOAD_KEYS | {"null_discoveries"} | LATER_PAYLOAD_KEYS
+    )
     assert payload["null_discoveries"] == 0
+    assert payload["dedup_skipped"] == 0
+    assert payload["dedup_against"] == 0
     # Every pre-fix field still mirrors its result attribute, unchanged in
     # shape and value (the one non-attribute spelling, ks_root_counts, is
     # printed as the list of the result's own tuple).
@@ -448,6 +460,10 @@ def test_campaign_with_no_null_discovery_payload_unchanged_apart_from_new_field(
     assert code == EXIT_OK
     assert len(lines) == 1
     printed = json.loads(lines[0])
-    assert set(printed) == PRE_FIX_PAYLOAD_KEYS | {"null_discoveries"}
+    assert set(printed) == (
+        PRE_FIX_PAYLOAD_KEYS | {"null_discoveries"} | LATER_PAYLOAD_KEYS
+    )
     assert printed["null_discoveries"] == 0
+    assert printed["dedup_skipped"] == 0
+    assert printed["dedup_against"] == 0
     assert printed["committed_pick"] == winner_id

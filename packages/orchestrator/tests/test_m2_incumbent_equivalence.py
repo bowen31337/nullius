@@ -305,6 +305,11 @@ def _fake_evaluation_context(*, database_url: str, artifact_dir: Path) -> Any:
         oos_dates=(dt.date(2026, 6, 1),),
         closes={},
         horizon=1,
+        # additions_spec_dedup_committed_constructs.xml: close_out reads the
+        # switch off the context before the commit, so a stand-in that
+        # duck-types the record must carry it.  False is today's rule, the
+        # one both call paths in this suite are checking equivalence for.
+        dedup_committed_constructs=False,
     )
 
 

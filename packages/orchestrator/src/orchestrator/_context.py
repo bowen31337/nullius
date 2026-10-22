@@ -182,9 +182,11 @@ __all__ = [
     "BOOK_KEY",
     "BOOK_WEIGHTINGS",
     "BWRAP_RUNTIME",
+    "DEDUP_COMMITTED_KEY",
     "DEFAULT_BETA_BENCHMARK",
     "DEFAULT_BETA_WINDOW_DAYS",
     "DEFAULT_BOOK_WEIGHTING",
+    "DEFAULT_DEDUP_COMMITTED",
     "DEFAULT_EVALUATION_MODE",
     "DEFAULT_EVALUATION_WORKERS",
     "DEFAULT_EXECUTION",
@@ -468,6 +470,38 @@ METRICS_HORIZONS: Final[tuple[str, str]] = (
 #: :data:`DEFAULT_EXECUTION` and :data:`DEFAULT_BOOK_WEIGHTING` take toward
 #: their own optional keys.
 DEFAULT_METRICS_HORIZON: Final[str] = METRICS_HORIZON_SHORTEST
+
+#: The optional boolean key switching the close-out's M2 commit to the
+#: dedup variant — additions_spec_dedup_committed_constructs.xml.
+#: ``docs/preregistration/2026-10-21-m2-short-h5.RESULT.md`` records ten
+#: campaigns under one evaluation config that each committed the same
+#: persistent-high-funding construct: the ten out-of-sample book series carry
+#: mean pairwise correlation 0.91 and N_eff 1.09, and campaigns 4 and 8
+#: committed functions whose in-sample statistics agree to four decimals
+#: (ic_tstat 2.0558, ir_tstat 3.5953, turnover 0.22) under different code
+#: hashes, because two agents wrote the same function in different source
+#: text.  A series of ten campaigns therefore sampled one book ten times, and
+#: its registered portfolio verdict measured one construct, not a space.
+#: With ``true``, :func:`orchestrator.closeout.close_out`'s step 9 excludes
+#: from the commit's eligible set every bar-clearing node whose stored
+#: in-sample fingerprint equals that of a pick an earlier campaign under the
+#: same ``evaluation_config_sha256`` already committed as its ``m2-fixed``
+#: row, and reports the two counts as ``dedup_skipped`` and
+#: ``dedup_against``.  Optional, the same stance :data:`METRICS_HORIZON_KEY`
+#: and :data:`EXECUTION_KEY` take toward their own optional keys: a document
+#: that omits it gets ``False`` rather than a refusal, since "commit the
+#: best bar-clearing node of this campaign alone" is what every evaluation
+#: config written before this key existed already means — and with the key
+#: absent or ``false`` every number, row and JSON field is identical to
+#: today's, which is what keeps the evaluation canary's frozen reference at
+#: deviation 0.0.
+DEDUP_COMMITTED_KEY: Final[str] = "dedup_committed_constructs"
+
+#: :data:`DEDUP_COMMITTED_KEY`'s default when the document omits it —
+#: today's commit rule, unchanged, the same stance
+#: :data:`DEFAULT_METRICS_HORIZON` and :data:`DEFAULT_EXECUTION` take toward
+#: their own optional keys.
+DEFAULT_DEDUP_COMMITTED: Final[bool] = False
 
 #: The optional key naming the out-of-sample evaluation grid —
 #: additions_spec_m2_baseline_financial_worlds.xml feature 1.  Absent means
@@ -828,6 +862,19 @@ class EvaluationContext:
     #: through ``dataclasses.replace(context, horizon=…)`` — at the horizon
     #: the campaign was configured under.
     metrics_horizon: str = DEFAULT_METRICS_HORIZON
+    #: Whether the close-out's M2 commit runs the dedup variant — read from
+    #: the optional :data:`DEDUP_COMMITTED_KEY`
+    #: (:data:`DEFAULT_DEDUP_COMMITTED` when absent, so a document written
+    #: before the key existed behaves exactly as it always did).
+    #: additions_spec_dedup_committed_constructs.xml: with ``True``,
+    #: :func:`orchestrator.closeout.close_out`'s step 9 excludes from the
+    #: commit's eligible set every bar-clearing node whose stored in-sample
+    #: fingerprint matches one an earlier campaign under the same
+    #: ``evaluation_config_sha256`` already committed, and reports the two
+    #: counts as ``dedup_skipped`` and ``dedup_against``; with ``False``
+    #: nothing is read and both counts print ``0``.  See
+    #: :data:`DEDUP_COMMITTED_KEY` for the short-h5 RESULT that motivates it.
+    dedup_committed_constructs: bool = DEFAULT_DEDUP_COMMITTED
 
     @property
     def metrics_horizon_value(self) -> int | None:
@@ -904,6 +951,7 @@ def load_evaluation_context(
     instrument = _instrument(document, named)
     execution = _execution(document, named)
     metrics_horizon = _metrics_horizon(document, named)
+    dedup_committed_constructs = _dedup_committed(document, named)
     test_stub_sandbox = source.get(TEST_STUB_SANDBOX_ENV) or None
     database_url = _database_url(source)
 
@@ -983,6 +1031,7 @@ def load_evaluation_context(
         funding=funding,
         execution=execution,
         metrics_horizon=metrics_horizon,
+        dedup_committed_constructs=dedup_committed_constructs,
     )
 
 
@@ -1055,6 +1104,7 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
             INSTRUMENT_KEY,
             EXECUTION_KEY,
             METRICS_HORIZON_KEY,
+            DEDUP_COMMITTED_KEY,
         )
     )
     for key in document:
@@ -1069,7 +1119,8 @@ def _refuse_unknown_keys(document: Mapping[str, Any], named: str) -> None:
                 f"is gvisor, and the always-optional {MAX_HISTORY_DAYS_KEY!r}, "
                 f"{EVALUATION_WORKERS_KEY!r}, {EVALUATION_MODE_KEY!r}, "
                 f"{OOS_DATES_KEY!r}, {BOOK_KEY!r}, {INSTRUMENT_KEY!r}, "
-                f"{EXECUTION_KEY!r} and {METRICS_HORIZON_KEY!r}); "
+                f"{EXECUTION_KEY!r}, {METRICS_HORIZON_KEY!r} and "
+                f"{DEDUP_COMMITTED_KEY!r}); "
                 "the file never holds a credential — every "
                 "key is one the loader defines, and an unknown key is "
                 "refused rather than read past. Credentials live where "
@@ -1452,6 +1503,38 @@ def _metrics_horizon(document: Mapping[str, Any], named: str) -> str:
             "measured at — the shortest one the priced panel covers, or "
             "the horizon this document's own 'horizon' key configures — "
             "and a third spelling is refused rather than guessed"
+        )
+    return raw
+
+
+def _dedup_committed(document: Mapping[str, Any], named: str) -> bool:
+    """Whether the close-out's M2 commit runs the dedup variant —
+    :data:`DEFAULT_DEDUP_COMMITTED` when :data:`DEDUP_COMMITTED_KEY` is
+    absent.
+
+    additions_spec_dedup_committed_constructs.xml: the key is optional and
+    its value is a *JSON boolean* — not the string ``"true"``, not ``1``.
+    A JSON ``true``/``false`` is the only shape that states a decision, and
+    a document that wrote ``"false"`` would be read as truthy by any
+    language whose truthiness this loader did not overrule, which is exactly
+    the bug this check exists to refuse before a campaign's commit rule
+    silently differs from the one its config appears to name.  Anything
+    else — a string, a number, ``null``, an object — is refused by name,
+    with the type found, the same closed-vocabulary discipline
+    :func:`_metrics_horizon` and :func:`_execution` hold for their own keys.
+    """
+    if DEDUP_COMMITTED_KEY not in document:
+        return DEFAULT_DEDUP_COMMITTED
+    raw = document[DEDUP_COMMITTED_KEY]
+    if not isinstance(raw, bool):
+        raise EvaluationConfigError(
+            f"{EVALUATION_CONFIG_CODE}: {DEDUP_COMMITTED_KEY} must be a JSON "
+            f"boolean (true or false), got {raw!r} ({type(raw).__name__}); "
+            "this switches the close-out's M2 commit to the variant that "
+            "skips a bar-clearing node whose in-sample fingerprint an earlier "
+            "campaign under the same evaluation config already committed, and "
+            "a value that is not a boolean — a string, a number, null — names "
+            "no such decision, refused rather than guessed"
         )
     return raw
 
