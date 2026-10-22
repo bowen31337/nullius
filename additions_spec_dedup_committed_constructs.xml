@@ -1,0 +1,62 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — a commit rule that cannot select a construct an earlier campaign of the same series already committed</project_name>
+  <addition_summary>
+    docs/preregistration/2026-10-21-m2-short-h5.RESULT.md records ten
+    campaigns under one evaluation config that each committed the same
+    persistent-high-funding construct: the ten out-of-sample book series have
+    mean pairwise correlation 0.91 and N_eff 1.09, and campaigns 4 and 8
+    committed functions whose in-sample statistics agree to four decimals
+    (ic_tstat 2.0558, ir_tstat 3.5953, turnover 0.22) under different code
+    hashes, because two agents wrote the same function in different source
+    text. A series of ten campaigns therefore sampled one book ten times, and
+    its registered portfolio verdict measured one construct, not a space.
+
+    This addition gives the evaluation config one optional boolean key,
+    dedup_committed_constructs (default false). When true, the close-out's M2
+    commit (orchestrator.closeout._commit_top_node's caller, step 9) excludes
+    from the eligible set every node whose in-sample fingerprint (ic_mean,
+    ic_tstat, ir_tstat and turnover, each within 1e-9) equals the fingerprint
+    of a pick an earlier campaign under the same evaluation_config_sha256
+    already committed as its m2-fixed row. The excluded nodes are counted in a
+    new close-out field dedup_skipped, and the number of earlier picks the
+    campaign was checked against in dedup_against. A campaign whose only
+    bar-clearing real nodes are duplicates abstains, exactly as one with no
+    bar-clearing node does. With the key absent or false every number, row and
+    JSON field is identical to today; the nightly evaluation canary (frozen
+    reference, deviation 0.0) and the orchestrator suite enforce that. The
+    rule is a selection variant the next pre-registration names; nothing here
+    changes nulls, costs, metrics, the discovery bar or stored rows.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest.</stack>
+    <test_baseline>main at 234c579b: evaluator 730, orchestrator 964 (5 skipped, -n 2), router 1480, root tests/ 1671, all passing; evaluation canary deviation 0.0 (2026-10-21).</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams: packages/orchestrator/src/orchestrator/_context.py holds the closed key vocabulary (REQUIRED_KEYS, the optional keys named in _refuse_unknown_keys's message such as OOS_DATES_KEY, BOOK_KEY, INSTRUMENT_KEY, METRICS_HORIZON_KEY) and the EvaluationContext dataclass with defaulted optional fields (metrics_horizon is the model: a module constant for the key, a Final default, a validated parse, a dataclass field). packages/orchestrator/src/orchestrator/closeout.py: _EvaluatedNode (node_id, ic_mean, ic_tstat, perturb_stability, ir_tstat) is read by _evaluated_nodes from the node table through _has_column probes; _is_discovery and _selection_value define the bar; _commit_top_node(evaluated, *, null_nodes=frozenset()) ranks the eligible set by (-_selection_value, node_id) and the caller (step 9 of close_out) passes the null-branch node ids; CloseoutResult carries null_discoveries and its to_json names every field; the campaign table has evaluation_config_sha256 and created_at; replay_score rows with policy_version M2_FIXED_POLICY_VERSION ("m2-fixed") hold world_id (= campaign id) and committed_pick; _sqlite_path translates DATABASE_URL. The node table has ic_mean, ic_tstat, ir_tstat and turnover columns (ir_tstat probed, since pre-feature trees lack it). Exact reproduction tests use 1e-12.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/src/contract/** or src/app/** (gVisor runtime root).
+      - Never edit deploy/**, packages/router/**, orchestrator/shadow.py, orchestrator/shadow_eval.py, orchestrator/_targets.py, orchestrator/_evaluate.py, evaluator/**, nulloracle/**, docs/preregistration/** or docs/user-journeys/**.
+      - Defaults unchanged: with the new key absent or false, close_out produces byte-identical JSON apart from the two new fields reading 0, commits the same pick, writes the same replay_score row; the evaluation canary's frozen reference must still report deviation 0.0.
+      - No new table or column. No stored row is rewritten. The only new config key is dedup_committed_constructs; an unknown key is still refused and the refusal message names the new key with the other optional keys.
+      - The fingerprint is compared on stored node-table figures only, never recomputed; a node or an earlier pick with any fingerprint field NULL never matches.
+      - Lint only the touched files.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Selection">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_context.py,packages/orchestrator/src/orchestrator/closeout.py"
+               creates="packages/orchestrator/tests/test_dedup_committed_constructs.py">
+        System lets the evaluation config set dedup_committed_constructs to true, under which the close-out's M2 commit skips every bar-clearing node whose stored in-sample fingerprint equals that of a pick an earlier campaign under the same evaluation config hash already committed, prints the skipped count as dedup_skipped and the earlier-pick count as dedup_against in the close-out JSON line, and otherwise behaves exactly as today (both fields print 0 when the key is absent or false).
+        <steps>
+          - _context.py: DEDUP_COMMITTED_KEY = "dedup_committed_constructs" joins the optional-key vocabulary beside METRICS_HORIZON_KEY (exported in __all__; named in _refuse_unknown_keys's message); the value must be a JSON boolean, any other type refused with the module's EVALUATION_CONFIG_CODE prefix naming the key and the type found; EvaluationContext gains dedup_committed_constructs: bool = False, set from the document when present. The docstring states what the key does and cites this spec and the short-h5 RESULT.
+          - closeout.py: a pure function _construct_fingerprint(ic_mean, ic_tstat, ir_tstat, turnover) returning a tuple, and _fingerprints_match(a, b, *, tol=1e-9) that is False when any field of either side is None. A store read _earlier_committed_fingerprints(database_url, campaign_id) that, under _sqlite_path, reads this campaign's evaluation_config_sha256 and created_at from the campaign table, selects every replay_score row with policy_version = M2_FIXED_POLICY_VERSION, committed_pick not null, whose world_id names a campaign with the same evaluation_config_sha256 and a strictly earlier created_at, and returns the committed picks' (ic_mean, ic_tstat, ir_tstat, turnover) read from the node table (ir_tstat and turnover through the existing _has_column probe; a missing column reads None for every row). A campaign with no evaluation_config_sha256 row value returns an empty list. _evaluated_nodes also reads turnover onto _EvaluatedNode as turnover: float | None (probed), so the fingerprint of this campaign's nodes is available without a second read.
+          - Step 9 of close_out: when context is not None and context.dedup_committed_constructs is true, compute earlier = _earlier_committed_fingerprints(...), then dedup_nodes = the ids of evaluated nodes that pass _is_discovery, are not in null_branch_nodes, and whose fingerprint matches any earlier fingerprint; dedup_skipped = len(dedup_nodes), dedup_against = len(earlier). Pass null_nodes=frozenset(null_branch_nodes) | dedup_nodes to _commit_top_node (the exclusion set is a union; the function's signature and ranking are unchanged). When the flag is false both counts are 0 and nothing is read. CloseoutResult gains dedup_skipped: int and dedup_against: int, both in to_json after null_discoveries; the printed JSON line therefore carries them for every campaign. A log line at INFO names the two counts when the flag is true.
+          - Docstrings: _commit_top_node's docstring gains a paragraph on the dedup exclusion riding in through null_nodes and why (the RESULT's campaigns 4 and 8); close_out's step-9 comment names the flag.
+          - Tests (new orchestrator file, sqlite temp store built with the member's existing schema helpers the closeout tests already use): (a) loader: a config with the key true loads with dedup_committed_constructs True, absent loads False, a string value is refused naming the key; an unknown key's refusal message lists the new key. (b) _fingerprints_match: equal tuples match; a 1e-10 difference matches; a 1e-6 difference does not; any None on either side does not. (c) two campaigns under the same evaluation_config_sha256: the earlier has an m2-fixed row committing node A with fingerprint F; the later campaign's evaluated nodes include node B with fingerprint F (ir_tstat 3.5 above the bar) and node C with a different fingerprint and ir_tstat 2.5 above the bar; with the flag true the later campaign's close-out step (exercised through the same seam the existing commit tests use, with the exclusion computed by the new helper) commits C and reports dedup_skipped 1, dedup_against 1; with the flag false it commits B and reports 0 and 0. (d) a third campaign under a different evaluation_config_sha256 with the same node-A fingerprint is not counted (dedup_against 0). (e) when B is the only bar-clearing node the campaign abstains with dedup_skipped 1 and the replay_score row carries NON_COMMITTING_SCORE as for any abstention. (f) an earlier pick whose node row lacks ir_tstat never matches. (g) the existing closeout JSON test fixture gains the two fields at 0 and otherwise compares equal to today's expected payload. The orchestrator member suite passes.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
