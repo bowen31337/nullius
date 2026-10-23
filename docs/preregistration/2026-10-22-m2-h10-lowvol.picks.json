@@ -1,0 +1,42 @@
+[
+ {
+  "campaign_id": "6302398a-190f-4fcb-b31e-41b204fa5e3b",
+  "node_id": "a4e6a759-e88b-50af-a37a-652507626f23"
+ },
+ {
+  "campaign_id": "549f9d04-8385-4475-b6f4-0d6f7a59a39c",
+  "node_id": "0a7a9382-7911-5250-8a94-01a9f8d4cdc3"
+ },
+ {
+  "campaign_id": "67b1c023-4fc4-43ec-bbd7-b81a677d25d3",
+  "node_id": "10d35ed6-8852-51f3-a354-8900ae576b81"
+ },
+ {
+  "campaign_id": "a996c229-c20b-485c-95ed-3a8f2ddc83a0",
+  "node_id": "8f1bee9a-6fea-5b71-987a-07d9f35e47fa"
+ },
+ {
+  "campaign_id": "36578f6a-b1e5-4c52-a79e-3859d6b94357",
+  "node_id": "2a983865-354e-5361-beae-99c921e57e03"
+ },
+ {
+  "campaign_id": "9c3b8736-662f-4293-8ba3-19af5520c64c",
+  "node_id": "da02600e-f73c-5632-ad85-cda34466d85d"
+ },
+ {
+  "campaign_id": "2c06b1bf-732c-40ab-9257-83eae6cd1bad",
+  "node_id": "2cf4cb02-fed7-5c47-8bad-bf29ff8d53b0"
+ },
+ {
+  "campaign_id": "015bccd0-b9d6-40be-91a7-ac60d01a2435",
+  "node_id": "e718c720-4489-5e49-8a11-93841cd2d6a7"
+ },
+ {
+  "campaign_id": "0164efc4-ee2e-4a40-89d2-914c13425e84",
+  "node_id": "37a6cde8-0263-58d8-85c2-9d97d2bf49a5"
+ },
+ {
+  "campaign_id": "93b1b703-a448-4268-be91-322906ef02dc",
+  "node_id": "81ee2226-1d3f-5a21-9bc4-94af4e09a1d9"
+ }
+]
