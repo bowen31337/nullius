@@ -49,11 +49,18 @@ from router.bingx_alert import (
     send_alert,
 )
 from router.bingx_heartbeat import (
+    ALERT_DEDUPED,
+    ALERT_FAILED,
+    ALERT_NONE,
+    ALERT_NOT_CONFIGURED,
+    ALERT_RESENT,
+    ALERT_SENT,
     BINGX_HEARTBEAT_CODE,
     DEFAULT_MAX_AGE_HOURS,
     EXIT_OK,
     EXIT_STALE,
     NO_COMPLETION_KEY,
+    REALERT_HOURS,
     ROUTER_HEARTBEAT_ALERT_TABLE,
     VERDICT_ABSENT,
     VERDICT_FRESH,
@@ -125,7 +132,13 @@ def _body_of(recorder: _Recorder) -> dict:
 
 
 def _verdict_of(out: str) -> dict:
-    """Parse stdout as the one JSON verdict line the check prints."""
+    """Parse stdout as the one JSON verdict line the check prints.
+
+    *One* line, alert outcome and all: J21 step 4 pins that running the
+    command by hand yields a single JSON object, and the ``"alert"`` field is
+    what makes the outcome part of that object rather than a second line.
+    """
+
     lines = out.splitlines()
     assert len(lines) == 1, out
     return json.loads(lines[0])
@@ -188,6 +201,7 @@ def test_a_fresh_completion_sends_nothing_and_exits_zero(
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 4.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_NONE,
     }
 
 
@@ -209,6 +223,7 @@ def test_a_completion_exactly_at_the_limit_is_still_fresh(
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 5.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_NONE,
     }
 
 
@@ -244,6 +259,7 @@ def test_a_stale_completion_sends_one_urgent_alert_naming_slot_and_age(
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 6.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_SENT,
     }
     _assert_no_token(captured)
 
@@ -269,6 +285,7 @@ def test_no_completion_at_all_alerts_once_and_exits_one(
         "newest_slot": None,
         "age_hours": None,
         "max_age_hours": 5.0,
+        "alert": ALERT_SENT,
     }
 
 
@@ -329,12 +346,16 @@ def test_a_second_check_of_the_same_stale_slot_sends_nothing_but_still_exits_one
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 7.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_DEDUPED,
     }
 
     first, first_recorder = _run(test_database_url)
     assert first == EXIT_STALE
     assert len(first_recorder.calls) == 1
-    assert _verdict_of(capsys.readouterr().out) == expected_verdict
+    assert _verdict_of(capsys.readouterr().out) == {
+        **expected_verdict,
+        "alert": ALERT_SENT,
+    }
 
     for _ in range(3):
         again, recorder = _run(test_database_url)
@@ -366,6 +387,94 @@ def test_a_new_stale_slot_alerts_again(test_database_url) -> None:
     assert SLOT_NOON.isoformat() in _body_of(second_recorder)["text"]
 
 
+def test_a_stall_that_persists_for_days_is_re_alerted(test_database_url, capsys) -> None:
+    """The bug: a stale slot that never changes paged exactly once, forever.
+
+    While nothing completes, the dedupe key is constant, so the operator was
+    told once about a stall that then ran for days.  The marker is a *rate*,
+    not a tombstone: past :data:`REALERT_HOURS` the same stale slot pages
+    again, and the marker's own instant is pushed forward so the next quiet
+    window starts here.
+    """
+    key = f"synthetic-vst-0:{SLOT_NOON.isoformat()}"
+    _seed(test_database_url, finished_at=MOMENT - timedelta(hours=6))
+    store = RouterHeartbeatAlertStore(test_database_url)
+    store.mark_alerted(key, alerted_at=MOMENT - timedelta(hours=REALERT_HOURS + 1))
+
+    code, recorder = _run(test_database_url)
+    assert code == EXIT_STALE
+    assert len(recorder.calls) == 1
+    assert SLOT_NOON.isoformat() in _body_of(recorder)["text"]
+    assert _verdict_of(capsys.readouterr().out)["alert"] == ALERT_RESENT
+    # The marker now names this re-alert, so the next check is quiet again.
+    assert store.already_alerted(key, now=MOMENT) is True
+    assert store.already_alerted(key, now=MOMENT + timedelta(hours=REALERT_HOURS + 1)) is False
+
+
+def test_a_marker_inside_the_realert_window_still_dedupes(test_database_url, capsys) -> None:
+    """Inside the window nothing changes: the hour after a page is silent."""
+    key = f"synthetic-vst-0:{SLOT_NOON.isoformat()}"
+    _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
+    RouterHeartbeatAlertStore(test_database_url).mark_alerted(
+        key, alerted_at=MOMENT - timedelta(hours=1)
+    )
+
+    code, recorder = _run(test_database_url)
+    assert code == EXIT_STALE
+    assert recorder.calls == []
+    assert _verdict_of(capsys.readouterr().out)["alert"] == ALERT_DEDUPED
+
+
+def test_a_refused_delivery_is_not_counted_as_having_told_the_operator(
+    test_database_url, capsys
+) -> None:
+    """The window governs repeats; it never swallows a *lost* page.
+
+    Telegram answering ``ok:false`` delivered nothing, so no marker is written
+    and the very next hourly check — well inside the window — sends again.
+    The verdict says ``failed`` for that delivery, so a reader of stdout knows
+    the operator was *not* told even though the bot is stale.
+    """
+    key = f"synthetic-vst-0:{SLOT_NOON.isoformat()}"
+    _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
+    store = RouterHeartbeatAlertStore(test_database_url)
+    store.mark_alerted(key, alerted_at=MOMENT - timedelta(hours=REALERT_HOURS + 1))
+
+    refused = _Recorder(_refused())
+    code, _ = _run(test_database_url, transport=refused)
+    assert code == EXIT_STALE
+    assert len(refused.calls) == 1
+    assert _verdict_of(capsys.readouterr().out)["alert"] == ALERT_FAILED
+    # Unchanged: the old marker still names the last alert that landed, so the
+    # next check is not silenced by the failed attempt.
+    assert store.last_alerted_at(key) == MOMENT - timedelta(hours=REALERT_HOURS + 1)
+
+    retried = _Recorder()
+    _run(test_database_url, transport=retried)
+    assert len(retried.calls) == 1
+    assert store.last_alerted_at(key) == MOMENT
+
+
+def test_the_never_finished_state_is_re_alerted_on_the_same_window(test_database_url) -> None:
+    """The absent case follows the same rule, on its own dedupe key."""
+    store = RouterHeartbeatAlertStore(test_database_url)
+    store.mark_alerted(NO_COMPLETION_KEY, alerted_at=MOMENT - timedelta(hours=13))
+    code, recorder = _run(test_database_url)
+    assert code == EXIT_STALE
+    assert len(recorder.calls) == 1
+    assert "never recorded a finished slot" in _body_of(recorder)["text"]
+    assert store.already_alerted(NO_COMPLETION_KEY, now=MOMENT) is True
+
+
+def test_the_first_alert_for_a_new_key_is_recorded_as_sent(test_database_url, capsys) -> None:
+    """No marker means a plain send; the verdict says so."""
+    _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
+    code, recorder = _run(test_database_url)
+    assert code == EXIT_STALE
+    assert len(recorder.calls) == 1
+    assert _verdict_of(capsys.readouterr().out)["alert"] == ALERT_SENT
+
+
 def test_the_never_finished_state_is_its_own_dedupe_key(test_database_url) -> None:
     """An empty store and a stale slot do not silence each other."""
     first, first_recorder = _run(test_database_url)
@@ -394,13 +503,17 @@ def test_the_marker_is_only_written_after_telegram_answers_ok(
     refused = _Recorder(_refused())
     code, _ = _run(test_database_url, transport=refused)
     assert code == EXIT_STALE
-    assert not store.already_alerted(f"synthetic-vst-0:{SLOT_NOON.isoformat()}")
+    assert not store.already_alerted(
+        f"synthetic-vst-0:{SLOT_NOON.isoformat()}", now=MOMENT
+    )
 
     retried = _Recorder()
     code, _ = _run(test_database_url, transport=retried)
     assert code == EXIT_STALE
     assert len(retried.calls) == 1
-    assert store.already_alerted(f"synthetic-vst-0:{SLOT_NOON.isoformat()}")
+    assert store.already_alerted(
+        f"synthetic-vst-0:{SLOT_NOON.isoformat()}", now=MOMENT
+    )
 
 
 def test_a_missing_credential_leaves_the_exit_stale_and_no_marker(
@@ -426,13 +539,16 @@ def test_a_missing_credential_leaves_the_exit_stale_and_no_marker(
     assert code == EXIT_STALE
     assert recorder.calls == []
     store = RouterHeartbeatAlertStore(test_database_url)
-    assert not store.already_alerted(f"synthetic-vst-0:{SLOT_NOON.isoformat()}")
+    assert not store.already_alerted(
+        f"synthetic-vst-0:{SLOT_NOON.isoformat()}", now=MOMENT
+    )
     captured = capsys.readouterr()
     assert _verdict_of(captured.out) == {
         "verdict": VERDICT_STALE,
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 7.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_NOT_CONFIGURED,
     }
     _assert_no_token(captured)
 
@@ -473,7 +589,7 @@ def test_a_marker_store_that_cannot_answer_still_sends_the_alert(
     """A bookkeeping fault is logged, not allowed to silence a stale bot."""
 
     class _BrokenStore:
-        def already_alerted(self, _key):
+        def already_alerted(self, _key, *, now):
             raise RuntimeError("disk I/O error")
 
     _seed(test_database_url, finished_at=MOMENT - timedelta(hours=7))
@@ -499,8 +615,11 @@ def test_a_marker_that_cannot_be_written_is_logged_after_delivery(
     """The message already left, so a marker fault is only a log line."""
 
     class _BrokenStore:
-        def already_alerted(self, _key):
+        def already_alerted(self, _key, *, now):
             return False
+
+        def last_alerted_at(self, _key):
+            return None
 
         def mark_alerted(self, _key, *, alerted_at):
             raise RuntimeError("disk I/O error")
@@ -519,6 +638,7 @@ def test_a_marker_that_cannot_be_written_is_logged_after_delivery(
     assert code == EXIT_STALE
     assert len(recorder.calls) == 1
     assert "could not be written" in caplog.text
+    _assert_no_token(capsys.readouterr())
     _assert_no_token(capsys.readouterr())
 
 
@@ -580,7 +700,10 @@ def test_the_marker_store_is_idempotent(test_database_url) -> None:
     store = RouterHeartbeatAlertStore(test_database_url)
     store.mark_alerted("k", alerted_at=MOMENT)
     store.mark_alerted("k", alerted_at=MOMENT + timedelta(hours=1))
-    assert store.already_alerted("k") is True
+    assert store.already_alerted("k", now=MOMENT + timedelta(hours=1)) is True
+    # One row, its instant moved to the later report: a re-alert rewrites, it
+    # does not append, so counting rows counts stale conditions.
+    assert store.last_alerted_at("k") == MOMENT + timedelta(hours=1)
 
 
 def test_the_marker_store_refuses_an_empty_url() -> None:
@@ -604,6 +727,41 @@ def test_the_alert_table_is_this_modules_own() -> None:
 
 def test_the_no_completion_key_is_not_a_slot_key() -> None:
     assert NO_COMPLETION_KEY == "no-completion"
+
+
+def test_the_realert_window_is_twelve_hours() -> None:
+    """Three missed rebalances: the rate a persistent stall pages at."""
+    assert REALERT_HOURS == 12
+
+
+def test_the_alert_vocabulary_is_pinned() -> None:
+    """The words the verdict line's ``"alert"`` field can carry."""
+    assert (
+        ALERT_SENT,
+        ALERT_RESENT,
+        ALERT_DEDUPED,
+        ALERT_NOT_CONFIGURED,
+        ALERT_FAILED,
+        ALERT_NONE,
+    ) == ("sent", "resent", "deduped", "not_configured", "failed", "none")
+
+
+def test_a_marker_exactly_at_the_window_still_dedupes(test_database_url) -> None:
+    """The window's boundary belongs to the dedupe, as the freshness limit's does.
+
+    A marker aged *exactly* ``REALERT_HOURS`` is still inside the window, the
+    same inclusive reading the bot's own staleness limit takes: the operator
+    was told recently enough, and the next check an hour later re-alerts.
+    """
+    store = RouterHeartbeatAlertStore(test_database_url)
+    store.mark_alerted("k", alerted_at=MOMENT - timedelta(hours=REALERT_HOURS))
+    assert store.already_alerted("k", now=MOMENT) is True
+    assert (
+        store.already_alerted(
+            "k", now=MOMENT + timedelta(seconds=1)
+        )
+        is False
+    )
 
 
 def test_the_heartbeat_never_touches_the_venue(test_database_url) -> None:
@@ -826,6 +984,7 @@ def test_a_real_send_through_feature_one_scrubs_the_token(
         "newest_slot": SLOT_NOON.isoformat(),
         "age_hours": 7.0,
         "max_age_hours": 5.0,
+        "alert": ALERT_SENT,
     }
     _assert_no_token(captured)
     assert FAKE_TOKEN not in caplog.text
