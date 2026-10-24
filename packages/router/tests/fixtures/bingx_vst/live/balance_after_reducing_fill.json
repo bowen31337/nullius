@@ -1,0 +1,38 @@
+{
+  "before": {
+    "code": 0,
+    "msg": "",
+    "data": {
+      "balance": {
+        "userId": "<redacted>",
+        "asset": "VST",
+        "balance": "9999.3507",
+        "equity": "9999.2781",
+        "unrealizedProfit": "-0.0726",
+        "realisedProfit": "0",
+        "availableMargin": "636.2532",
+        "usedMargin": "9363.0249",
+        "freezedMargin": "0.0000",
+        "shortUid": "<redacted>"
+      }
+    }
+  },
+  "after": {
+    "code": 0,
+    "msg": "",
+    "data": {
+      "balance": {
+        "userId": "<redacted>",
+        "asset": "VST",
+        "balance": "9999.3507",
+        "equity": "9999.2781",
+        "unrealizedProfit": "-0.0726",
+        "realisedProfit": "0",
+        "availableMargin": "789.4116",
+        "usedMargin": "9209.8665",
+        "freezedMargin": "0.0000",
+        "shortUid": "<redacted>"
+      }
+    }
+  }
+}

@@ -34,6 +34,25 @@ The fix, clause by clause:
   mapping the mirror already hands the preflight; the preflight's own
   signature and refusals are untouched).
 
+**And the netting alone did not end the deadlock.**
+``bug_spec_vst_margin_partial_placement.xml`` bug 1 found the same book
+refused again — six consecutive slots (2026-10-22 12:00 to 2026-10-23
+08:00 UTC), each in under ten seconds, with the *same* available figure to
+four decimals across 24 hours — because the counterfactual the netting
+rested on was never bought: the venue frees a reducing leg's margin only
+as it fills, and a door that refuses the netted term before a single leg
+leaves never lets it fill.  So ``mirror_place`` now hands the preflight
+``required_usdt`` :class:`~decimal.Decimal` ``0`` (its kill, skew, hedge
+and per-symbol preparation checks unchanged), sends the reducing legs,
+re-reads the balance with :func:`router.bingx_preflight.read_available_usdt`,
+and admits each increasing leg only while the running total of admitted
+requirements stays at or below the available figure — deferring the rest
+as a ``refused`` leg carrying
+:data:`router.bingx_mirror.MARGIN_DEFERRED_CODE`.  The tests at the tail
+of this file hold the parts that changed: the two reducing legs leave and
+the increasing leg they do not cover is deferred; and a plan the account
+can fund whole is placed in exactly the pre-bug order.
+
 Every test injects a client double — no socket, no key, no network.  The
 recorded premiumIndex fixture is read for the one test that reuses the
 existing margin fixture's own marks; everything else states its own
@@ -46,10 +65,11 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
 from router.bingx_client import ORDER_NOT_FOUND_CODE, RouterBingXRefusedError
 from router.bingx_mirror import (
+    MARGIN_DEFERRED_CODE,
     MIRROR_OUTCOME_PLACED,
+    MIRROR_OUTCOME_REFUSED,
     REQUIRED_MARGIN_HEADROOM,
     mirror_place,
     plan_required_margin,
@@ -62,10 +82,7 @@ from router.bingx_order import (
     BINGX_SELL,
     BingXOrder,
 )
-from router.bingx_preflight import (
-    RouterBingXInsufficientBalanceError,
-    run_bingx_preflight,
-)
+from router.bingx_preflight import run_bingx_preflight
 from router.submission_result import RouterOrderPlacementStore
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "bingx_vst"
@@ -427,24 +444,33 @@ def test_the_netted_plan_passes_the_door_and_sends_its_reducing_legs_first(
 
     outcomes = _place(client, _spec_plan(), test_database_url)
 
-    assert [outcome.outcome for outcome in outcomes.values()] == [
-        MIRROR_OUTCOME_PLACED
-    ] * 3
+    # Under bug 1's per-leg law the account's 10 funds nothing the plan
+    # grows, so the two reducing legs leave and C — the one increasing leg,
+    # needing 30 — is deferred rather than the whole plan being refused.
+    assert outcomes["A-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    assert outcomes["B-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    assert outcomes["C-USDT"].outcome == MIRROR_OUTCOME_REFUSED
+    assert outcomes["C-USDT"].code == MARGIN_DEFERRED_CODE
     sent = [order.symbol for order in client.placed]
-    assert set(sent) == {"A-USDT", "B-USDT", "C-USDT"}
-    assert sent.index("C-USDT") > sent.index("A-USDT")
-    assert sent.index("C-USDT") > sent.index("B-USDT")
+    assert sent == ["A-USDT", "B-USDT"]
 
 
 def test_the_send_order_is_stable_within_each_group(test_database_url):
-    """Reducing legs first, increasing legs after, each in the plan's order.
+    """A funded plan sends its legs in the plan's own reducing-first order.
 
     A plan spelled [C increase, A reduce, D increase, B reduce] is sent
-    [A, B, C, D]: the two groups keep the plan's own order inside them,
-    so a re-run of the same plan sends the same sequence — the only
-    change the fix makes to the placement path.
+    [A, B, C, D] when the account can fund it whole (1000 against the 40
+    the two increasing legs need): the two groups keep the plan's own
+    order inside them, so a re-run of the same plan sends the same
+    sequence.  The *admission* is judged largest requirement first (bug
+    1), but a funded plan admits every leg, and this is the placement
+    order that falls out of it — byte-for-byte the order this verb sent
+    before bug 1's per-leg law existed.
     """
-    client = _NettingClient(positions=HELD)
+    client = _NettingClient(
+        positions=HELD,
+        balance={"balance": {"asset": "USDT", "availableMargin": "1000"}},
+    )
     plan = [
         _leg(symbol="C-USDT", side=BINGX_BUY, quantity="30"),
         _leg(symbol="A-USDT", side=BINGX_SELL, quantity="50"),
@@ -462,18 +488,25 @@ def test_the_send_order_is_stable_within_each_group(test_database_url):
     ]
 
 
-def test_the_live_shortfall_passes_once_netted_and_refuses_without_the_release(
+def test_the_live_shortfall_sends_its_reducing_leg_and_defers_the_increasing_one(
     test_database_url,
 ):
     """The live case, as Decimals: 1164.35 available, an increasing side
     of 1173.5 (1179.3675 at the door's headroom — the log's 1179.03
     shape) and a reducing leg that releases 15.
 
-    Netted, the term answers 1164.2925 and the plan the door refused at
-    20:05 and 00:05 UTC places.  The same plan with releases 0 — its
-    increasing leg unchanged and no reducing leg beside it — is refused
-    with the same message the door answered before the fix, naming the
-    un-netted 1179.3675, and nothing is asked of the venue.
+    The netted term (:func:`plan_required_margin`) still answers 1164.2925
+    — the reducing quantity's release is netted against the increase, and
+    that is what the door's *own* one-check judgement passes on.  But the
+    venue frees that release only as the reducing leg fills, so under bug
+    1's per-leg law the plan is placed in two halves: the reducing leg is
+    **sent** (the deadlock's broken half — under the old law the whole plan
+    was refused before it left, so nothing ever filled and the figure never
+    moved), and the increasing leg, needing 1173.5 the account's 1164.35
+    cannot cover, is reported ``refused`` under
+    :data:`MARGIN_DEFERRED_CODE` with both figures in its message.  The
+    same plan with no reducing leg beside it behaves identically for the
+    increasing half and sends nothing at all.
     """
     balance = {"balance": {"asset": "USDT", "availableMargin": LIVE_AVAILABLE}}
     increase_leg = _leg(
@@ -488,27 +521,20 @@ def test_the_live_shortfall_passes_once_netted_and_refuses_without_the_release(
 
     netted = _NettingClient(positions=held, balance=balance)
     outcomes = _place(netted, [reduce_leg, increase_leg], test_database_url)
-    assert [outcome.outcome for outcome in outcomes.values()] == [
-        MIRROR_OUTCOME_PLACED
-    ] * 2
+    assert outcomes["A-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    assert [order.symbol for order in netted.placed] == ["A-USDT"]
+    deferred = outcomes["C-USDT"]
+    assert deferred.outcome == MIRROR_OUTCOME_REFUSED
+    assert deferred.code == MARGIN_DEFERRED_CODE
+    # The operator reads both figures off the one message: the leg's own
+    # 1173.5 against the 1164.35 the account answers.
+    assert "1173.5" in (deferred.message or "")
+    assert "1164.35" in (deferred.message or "")
 
     increase_only = _NettingClient(positions=held, balance=balance)
-    with pytest.raises(RouterBingXInsufficientBalanceError) as raised:
-        _place(increase_only, [increase_leg], test_database_url)
-
-    message = str(raised.value)
-    assert message.startswith(
-        "insufficient_balance: available USDT 1164.35 is below the "
-        "1179.3675 this plan's orders need"
-    )
-    assert "fund the VST account and run the preflight again" in message
+    outcomes = _place(increase_only, [increase_leg], test_database_url)
+    assert outcomes["C-USDT"].code == MARGIN_DEFERRED_CODE
     assert increase_only.placed == []
-    # The refusal names what was netted: the term it carries states both
-    # sides, so an operator reading the refusal sees the zero release and
-    # the increase it failed to cover — no re-derivation from the plan.
-    assert raised.value.required_usdt == Decimal("1179.3675")
-    assert raised.value.required_usdt.increase_usdt == Decimal("1173.5")
-    assert raised.value.required_usdt.release_usdt == Decimal(0)
 
 
 def test_the_preflights_report_carries_both_sides_of_the_netted_term():

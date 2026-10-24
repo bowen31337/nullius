@@ -82,6 +82,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -96,6 +97,7 @@ from urllib.parse import unquote, urlparse
 from .bingx_alert import INFO, URGENT, WARNING, scrub_bot_path, send_alert
 from .bingx_client import BingXClient, RouterBingXRefusedError
 from .bingx_mirror import (
+    MARGIN_DEFERRED_CODE,
     MIRROR_OUTCOME_PLACED,
     MIRROR_OUTCOME_PRIOR,
     MIRROR_OUTCOME_REFUSED,
@@ -1096,6 +1098,44 @@ def _log_step_refusal(step: str, exc: BaseException) -> None:
     )
 
 
+def _deferred_figures(refused: Sequence[Mapping[str, str]]) -> tuple[str, str]:
+    """The available margin and the deferred legs' total requirement.
+
+    Read back off the margin-deferred legs' own messages — the mirror states
+    each leg's requirement and the available figure it was measured against
+    (see :func:`router.bingx_mirror._deferred_leg`) — so this module reports
+    the two figures the judgement was actually made on without re-deriving
+    either from a plan it did not price.  Each leg's requirement is the
+    number its message names right after ``needs``; the available figure is
+    the last number in the message, which is the one that sentence ends on.
+    A message that does not parse answers ``"?"`` rather than a number this
+    module invented.
+    """
+    available = "?"
+    total = Decimal(0)
+    parsed = True
+    for entry in refused:
+        if entry.get("placement") != MARGIN_DEFERRED_CODE:
+            continue
+        message = entry.get("message", "")
+        match = _DEFERRED_NEED.search(message)
+        numbers = _DECIMAL_IN_TEXT.findall(message)
+        if match is None or not numbers:
+            parsed = False
+            continue
+        total += Decimal(match.group(1))
+        available = numbers[-1]
+    return (available, _decimal_text(total)) if parsed else (available, "?")
+
+
+#: The requirement a margin-deferred message states, and the decimal-shaped
+#: runs beside it — the figures :func:`_deferred_figures` reads back.  The
+#: broad pattern only ever sees the mirror's own message, and a run that is
+#: not a decimal fails the ``Decimal`` parse above.
+_DEFERRED_NEED = re.compile(r"needs\s+(\d+(?:\.\d+)?)")
+_DECIMAL_IN_TEXT = re.compile(r"\d+(?:\.\d+)?")
+
+
 def _run_step(
     step: str, act: Callable[[], Any], *, skip_on_rate_limit: bool
 ) -> tuple[Any, bool]:
@@ -1263,6 +1303,27 @@ def _run_slot(
                 entry["message"] = outcome.message
             refused.append(entry)
             every_landed = False
+
+    # The margin-deferred legs, counted apart from the venue's refusals
+    # (``bug_spec_vst_margin_partial_placement.xml``, bug 1): a leg the
+    # *account* could not afford this slot is not a fault the venue
+    # answered, and the operator paging on a slot that deferred legs needs
+    # the count and the two figures beside it rather than a walk of the
+    # refusal list.  One greppable line, the shape feature 329's step
+    # refusals already use.
+    deferred = [
+        entry for entry in refused if entry["placement"] == MARGIN_DEFERRED_CODE
+    ]
+    if deferred:
+        available, required_total = _deferred_figures(refused)
+        log.info(
+            "%s: step=%s deferred=%d available=%s required_total=%s",
+            BINGX_REBALANCE_CODE,
+            _STEP_PLACEMENT,
+            len(deferred),
+            available,
+            required_total,
+        )
 
     # 5 — persist the rebalance when the book names its provenance.
     persisted, persist_skipped = _persist_target_weights(

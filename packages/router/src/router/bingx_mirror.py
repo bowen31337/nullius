@@ -251,7 +251,11 @@ from .bingx_orders import (
     cancel_rebalance_orders,
     read_back_orders,
 )
-from .bingx_preflight import PREFLIGHT_LEVERAGE, run_bingx_preflight
+from .bingx_preflight import (
+    PREFLIGHT_LEVERAGE,
+    read_available_usdt,
+    run_bingx_preflight,
+)
 from .client_order_id import derive_client_order_id
 from .errors import RouterError
 from .limiter import (
@@ -269,6 +273,9 @@ from .submission_result import PlacementOrder, RouterOrderPlacementStore
 __all__ = [
     "DATABASE_URL_ENV",
     "DATABASE_URL_MISSING_CODE",
+    "MARGIN_DEFERRED_CODE",
+    "MARGIN_SETTLE_INTERVAL",
+    "MARGIN_SETTLE_POLLS",
     "MIRROR_CODE",
     "MIRROR_OUTCOME_PLACED",
     "MIRROR_OUTCOME_PRIOR",
@@ -326,6 +333,31 @@ NO_BOOK_CODE = "no_book"
 MIRROR_OUTCOME_PLACED = "placed"
 MIRROR_OUTCOME_PRIOR = "prior"
 MIRROR_OUTCOME_REFUSED = "refused"
+
+#: The code word for a position-increasing leg the slot judged the account
+#: cannot yet fund and left unsent (``bug_spec_vst_margin_partial_placement.xml``,
+#: bug 1).  A *value* the placements carry — a ``refused`` outcome like any
+#: venue refusal, so the slot reports it and exits 1 — never an error: the
+#: plan was affordable in part, the legs that fit were sent, and this leg is
+#: deferred to the next slot rather than deadlocking the one that refused
+#: the whole plan.  It is the mirror's own word, not the venue's: the venue
+#: never saw this order.
+MARGIN_DEFERRED_CODE = "margin_deferred"
+
+#: How many times the mirror re-reads the account's available margin after
+#: sending the plan's position-reducing legs, waiting
+#: :data:`MARGIN_SETTLE_INTERVAL` between reads (bug 1).  The venue frees a
+#: reducing fill's margin as the fill settles, not the instant the order is
+#: accepted, so one read immediately after the legs leave could still show
+#: the pre-fill figure and defer legs the account can in fact afford.  Six
+#: reads five seconds apart is half a minute of patience, well inside the
+#: slot's own budget and each other slot's head start.
+MARGIN_SETTLE_POLLS = 6
+
+#: The wait between two of the reads above — the ``timedelta`` the mirror's
+#: injected ``sleep`` is called with, so a test's ``sleep`` lambda sees a
+#: real request and the suite waits for nothing.
+MARGIN_SETTLE_INTERVAL = timedelta(seconds=5)
 
 #: The key a placed leg's plan object carries its placement outcome under.
 #: Every other key of that object is the request's own parameter spelling,
@@ -933,22 +965,48 @@ def _reducing_size(order: BingXOrder, held: Decimal) -> Decimal:
     return min(size, abs(held))
 
 
-def _margin_sides(
-    *, client: Any, orders: Sequence[BingXOrder]
+def _priced_margin(
+    order: BingXOrder, position: Decimal, reference: Decimal
 ) -> tuple[Decimal, Decimal]:
-    """The door's two sides over one walk: what binds, and what releases.
+    """One leg's ``(increase, release)`` in USDT, at the door's own leverage.
 
-    The shared arithmetic of :func:`plan_required_margin` and nothing
-    else: the account's positions are read once through
-    :func:`live_positions`, the premiumIndex document only when a MARKET
-    leg needs it, and each order's increasing and reducing quantities
-    (see :func:`_increasing_size` and :func:`_reducing_size`) are priced
-    at the same reference — the order's own limit price for a passive
-    leg, the symbol's mark for a MARKET one — at the preflight's own
-    leverage, so both sides of the netting answer in the same terms and
-    no float enters either.
+    The per-leg term of the arithmetic :func:`_margin_sides` sums:
+    :func:`_increasing_size` and :func:`_reducing_size` partition the
+    order's size between the part that binds new margin and the part that
+    closes held exposure, each priced at ``reference`` (the order's own
+    limit price for a passive leg, its symbol's mark for a MARKET one) and
+    divided by :data:`PREFLIGHT_LEVERAGE`, so a sum of these answers the
+    same two sides the netted term nets — no float anywhere.  Stated once
+    so :func:`plan_required_margin` and the mirror's per-leg admission
+    (``bug_spec_vst_margin_partial_placement.xml``, bug 1) price a leg
+    identically: the admission's running total must be the very term the
+    door would have compared, or a leg admitted here could still be one
+    the door refuses.
     """
-    held = live_positions(client)
+    increase = (
+        _increasing_size(order, position) * reference / PREFLIGHT_LEVERAGE
+    )
+    release = (
+        _reducing_size(order, position) * reference / PREFLIGHT_LEVERAGE
+    )
+    return increase, release
+
+
+def _mark_prices(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> dict[str, Decimal]:
+    """The mark price of every MARKET leg's symbol, read once.
+
+    A MARKET leg carries no price of its own, so the margin it binds is
+    read at its symbol's mark — the same read the plan was sized through.
+    The premiumIndex document is fetched only when the plan holds a MARKET
+    leg at all (an all-passive plan costs nothing beyond the positions
+    read), and a symbol the document does not price is refused by name
+    rather than guessed at.  Stated once so every caller that prices a leg
+    for funding — :func:`_margin_sides` and the mirror's per-leg admission
+    (``bug_spec_vst_margin_partial_placement.xml``, bug 1) — reads the
+    venue through one spelling.
+    """
     market_symbols = sorted(
         {
             order.symbol
@@ -956,44 +1014,83 @@ def _margin_sides(
             if order.type == BINGX_MARKET_ORDER
         }
     )
-    marks: dict[str, Decimal] = {}
-    if market_symbols:
-        if not callable(getattr(client, "premium_index", None)):
-            raise RouterBingXMirrorError(
-                f"{MIRROR_CODE}: the injected client exposes no callable "
-                "premium_index(); a MARKET leg carries no price of its "
-                "own, so the margin it needs is read at its symbol's mark "
-                "price, and a client that cannot ask for the document "
-                "cannot be asked to fund one (feature 2)"
-            )
-        try:
-            marks = resolve_bingx_mark_prices(
-                _document(client.premium_index(), "BingX premiumIndex"),
-                market_symbols,
-            )
-        except RouterMarkPriceError as refusal:
-            raise RouterBingXMirrorError(
-                f"{MIRROR_CODE}: the venue's premiumIndex document states "
-                f"no mark price for {refusal.symbol!r}; a MARKET leg's "
-                "required margin is read at its symbol's mark price, and a "
-                "leg the plan ordered cannot be priced for funding by a "
-                "document that does not price it (feature 2)"
-            ) from refusal
-    increase = Decimal(0)
-    release = Decimal(0)
+    if not market_symbols:
+        return {}
+    if not callable(getattr(client, "premium_index", None)):
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the injected client exposes no callable "
+            "premium_index(); a MARKET leg carries no price of its "
+            "own, so the margin it needs is read at its symbol's mark "
+            "price, and a client that cannot ask for the document "
+            "cannot be asked to fund one (feature 2)"
+        )
+    try:
+        return resolve_bingx_mark_prices(
+            _document(client.premium_index(), "BingX premiumIndex"),
+            market_symbols,
+        )
+    except RouterMarkPriceError as refusal:
+        raise RouterBingXMirrorError(
+            f"{MIRROR_CODE}: the venue's premiumIndex document states "
+            f"no mark price for {refusal.symbol!r}; a MARKET leg's "
+            "required margin is read at its symbol's mark price, and a "
+            "leg the plan ordered cannot be priced for funding by a "
+            "document that does not price it (feature 2)"
+        ) from refusal
+
+
+def _leg_margins(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> list[tuple[Decimal, Decimal]]:
+    """Each leg's ``(increase, release)`` in USDT, one entry per order.
+
+    The per-leg walk the door's netted term sums and the one the mirror's
+    admission judges, taken together so the two can never diverge: the
+    account's positions are read once through :func:`live_positions`, the
+    premiumIndex document once through :func:`_mark_prices` and only when
+    a MARKET leg needs it, and each order's increasing and reducing
+    quantities (see :func:`_increasing_size` and :func:`_reducing_size`)
+    are priced at the same reference — the order's own limit price for a
+    passive leg, the symbol's mark for a MARKET one — at the preflight's
+    own leverage (see :func:`_priced_margin`).  The answer is a list,
+    parallel to ``orders``, rather than a mapping: the plan holds at most
+    one leg per symbol, but a caller must never have two legs' terms
+    silently collide on one key.
+    """
+    held = live_positions(client)
+    marks = _mark_prices(client=client, orders=orders)
+    terms: list[tuple[Decimal, Decimal]] = []
     for order in orders:
         reference = (
             Decimal(order.price)
             if order.type == BINGX_LIMIT_ORDER
             else marks[order.symbol]
         )
-        position = held.get(order.symbol, Decimal(0))
-        increase += (
-            _increasing_size(order, position) * reference / PREFLIGHT_LEVERAGE
+        terms.append(
+            _priced_margin(
+                order, held.get(order.symbol, Decimal(0)), reference
+            )
         )
-        release += (
-            _reducing_size(order, position) * reference / PREFLIGHT_LEVERAGE
-        )
+    return terms
+
+
+def _margin_sides(
+    *, client: Any, orders: Sequence[BingXOrder]
+) -> tuple[Decimal, Decimal]:
+    """The door's two sides over one walk: what binds, and what releases.
+
+    The shared arithmetic of :func:`plan_required_margin` and nothing
+    else: :func:`_leg_margins` prices every leg, and the two sides are its
+    sums — so the term the door nets and the per-leg terms the mirror's
+    admission judges are the same numbers, to the last digit.
+    """
+    increase = Decimal(0)
+    release = Decimal(0)
+    for leg_increase, leg_release in _leg_margins(
+        client=client, orders=orders
+    ):
+        increase += leg_increase
+        release += leg_release
     return increase, release
 
 
@@ -2000,6 +2097,103 @@ def _place_one(
     )
 
 
+def _prior_symbols(
+    *, store: Any, book: Mapping[str, Any], orders: Sequence[BingXOrder]
+) -> frozenset[str]:
+    """The symbols whose order this store already holds for this rebalance.
+
+    A leg the store already recorded was placed by an earlier run of the
+    same slot, so the venue's ``availableMargin`` already has its margin
+    taken out.  The admission must therefore know it, for two reasons:
+    such a leg must not consume the running total *a second time* — the
+    account is not being asked to find that margin again — and it must
+    never be reported as deferred, because it is already placed and a
+    ``prior`` leg reported ``refused`` would be the slot lying about an
+    order the venue holds (``bug_spec_vst_margin_partial_placement.xml``,
+    bug 1: *a second run in the same slot places nothing and defers
+    nothing*).
+
+    Read through feature 317's own ``prior_result``, which is a pure read
+    of the row the placement would be answered from.  A store that does
+    not expose it — a double carrying only ``place`` — answers the empty
+    set, and the admission then judges every leg as if fresh; the one
+    store this member ships (:class:`router.submission_result.
+    RouterOrderPlacementStore`) always carries the face.
+    """
+    reader = getattr(store, "prior_result", None)
+    if not callable(reader):
+        return frozenset()
+    return frozenset(
+        order.symbol
+        for order in orders
+        if reader(_full_identifier(book, order.symbol)) is not None
+    )
+
+
+def _settled_available(
+    *,
+    client: Any,
+    first: Decimal,
+    sleep: Callable[[timedelta], Any],
+) -> Decimal:
+    """The available margin after the reducing legs have had time to settle.
+
+    The venue frees a reducing order's margin as its fill settles, not the
+    instant the order is accepted, so the figure read straight after those
+    legs leave can still be the pre-fill one.  This walks the same public
+    read (:func:`router.bingx_preflight.read_available_usdt`) up to
+    :data:`MARGIN_SETTLE_POLLS` times, waiting
+    :data:`MARGIN_SETTLE_INTERVAL` on the caller's own ``sleep`` between
+    reads, and answers as soon as the figure **rises above** ``first`` —
+    the release has landed — or with the last reading once the polls run
+    out.  Only ever called when a reducing leg was placed this run: with
+    nothing having filled there is nothing to wait for, and the mirror
+    does not spend half a minute of the slot's budget on an account that
+    is not going to move.
+    """
+    available = first
+    for _ in range(MARGIN_SETTLE_POLLS):
+        sleep(MARGIN_SETTLE_INTERVAL)
+        available = read_available_usdt(client)
+        if available > first:
+            return available
+    return available
+
+
+def _deferred_leg(
+    *,
+    order: BingXOrder,
+    need: Decimal,
+    admitted: Decimal,
+    available: Decimal,
+) -> MirrorLeg:
+    """One increasing leg the account cannot yet fund, reported not sent.
+
+    A ``refused`` outcome carrying :data:`MARGIN_DEFERRED_CODE`, named so
+    the slot counts it, the summary line and the alert state it and the
+    exit code is 1 — *a leg not sent is reported, never silently dropped*
+    (``bug_spec_vst_margin_partial_placement.xml``, bug 1).  The message
+    names all three figures the judgement was made on: the leg's own
+    requirement, the running total of the legs already admitted beside it,
+    and the available figure that total is measured against, so an
+    operator reads the gap without re-deriving any of the three.  No order
+    was sent, so :attr:`MirrorLeg.order` is ``None`` — the same as any
+    other refusal.
+    """
+    return MirrorLeg(
+        symbol=order.symbol,
+        outcome=MIRROR_OUTCOME_REFUSED,
+        code=MARGIN_DEFERRED_CODE,
+        message=(
+            f"margin_deferred: this leg needs {need} USDT; {admitted} USDT "
+            f"of the {available} USDT the account answered is already "
+            "committed to the increasing legs admitted ahead of it; the "
+            "rest of the plan was sent, and this leg is deferred to the "
+            "next slot, which re-reads the balance"
+        ),
+    )
+
+
 def mirror_place(
     *,
     client: Any,
@@ -2019,29 +2213,51 @@ def mirror_place(
     """Feature 4's placement half: preflight, then place every order once.
 
     Runs :func:`router.bingx_preflight.run_bingx_preflight` over the
-    symbols the plan will order and the margin those orders need (see
-    :func:`plan_required_margin`) — so a killed order layer, a skewed
-    clock, a hedge-mode account or an unfunded one refuses here, before
-    a single order leaves — and then places each order leg through the
-    store, the limiter and the backoff (see :func:`_place_one`),
-    repricing every passive leg at its own side of the live book just
-    before it leaves (see :func:`_passive_repricer`).  The legs are sent
-    **position-reducing first**: every leg whose increasing quantity is
-    zero — it only closes exposure, so it binds none of the account's
-    money — leaves before any leg that grows a position anywhere
-    (including one that crosses through zero, whose beyond-zero part
-    binds), each group keeping the plan's own order inside it
-    (``bug_spec_vst_slot_resilience.xml``, bug 1).  The door's term
-    already nets the margin the reducing legs release, and the venue
-    frees that margin only as they fill, so sending them first is what
-    makes the netted term true at the venue by the time each increasing
-    leg posts and binds it — nothing else about the placement changes:
-    one order per leg, the store's idempotency, the per-order record and
-    the refusal handling are exactly as they were.  The repricer and the
-    margin are built *before* the preflight runs: their client face
-    checks and their public reads are side-effect-free, so a wiring
-    fault refuses before the preflight's first venue POST rather than
-    after it.
+    symbols the plan will order — so a killed order layer, a skewed
+    clock or a hedge-mode account refuses here, before a single order
+    leaves — and then places each order leg through the store, the
+    limiter and the backoff (see :func:`_place_one`), repricing every
+    passive leg at its own side of the live book just before it leaves
+    (see :func:`_passive_repricer`).
+
+    **The legs are sent position-reducing first, and the increasing legs
+    are admitted against what the account can then afford.**  Every leg
+    whose increasing quantity is zero — it only closes exposure, so it
+    binds none of the account's money — leaves before any leg that grows
+    a position anywhere (including one that crosses through zero, whose
+    beyond-zero part binds), each group keeping the plan's own order
+    inside it (``bug_spec_vst_slot_resilience.xml``, bug 1).  The
+    preflight is then handed :class:`~decimal.Decimal` ``0`` as its
+    required margin (``bug_spec_vst_margin_partial_placement.xml``, bug
+    1) — its kill, skew, hedge and per-symbol preparation checks are
+    unchanged, but *the mirror itself* judges funding, because a check
+    that refuses the whole plan before any leg is sent can never be made
+    true by the margin the plan's own reducing legs would release: the
+    venue frees that margin only as they fill, so a fully invested book
+    that fell a few USDT short was refused in ten seconds every slot
+    while its available figure never moved.  After the reducing legs have
+    left, the account is re-read with
+    :func:`router.bingx_preflight.read_available_usdt` — polled up to
+    :data:`MARGIN_SETTLE_POLLS` times at :data:`MARGIN_SETTLE_INTERVAL`
+    while a reducing leg placed *this* run, so a settling fill can
+    release its margin — and the increasing legs are walked in
+    **descending order of their own requirement** (ties by symbol),
+    each admitted while the running total of admitted requirements stays
+    at or below the available figure.  A leg that does not fit is not
+    sent: it is reported as a ``refused`` :class:`MirrorLeg` carrying
+    :data:`MARGIN_DEFERRED_CODE` and a message naming its requirement,
+    the running total and the available figure, so the account is never
+    over-committed and the next slot — with a fresh balance — picks up
+    what this one could not fund.  When the available figure covers the
+    whole plan every increasing leg is admitted in the same stable order
+    as before and the placement is byte-for-byte what it was.
+
+    The repricer, the recorder's quotes and the per-leg margin terms are
+    built *before* the preflight runs: their client face checks and their
+    public reads are side-effect-free, so a wiring fault refuses before
+    the preflight's first venue POST rather than after it.  The positions
+    read behind those terms is the same one the send order is decided
+    with, so one run judges every leg against one snapshot of the account.
 
     Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol.  A leg
     the plan itself refused (a gate's code word, a document's) is not an
@@ -2063,8 +2279,31 @@ def mirror_place(
     recorder = _order_recorder(
         store=store, book=book, client=client, orders=orders, quotes=quotes
     )
+    # The margin the plan needs, leg by leg, taken before anything is
+    # written: the same walk the door's netted term is summed from, and
+    # the read the admission below judges.  One positions snapshot and one
+    # premiumIndex read serve both, so a run prices and sends against one
+    # account state.
+    leg_margins = _leg_margins(client=client, orders=orders)
+    requirement = {
+        order.symbol: increase for order, (increase, _release) in zip(
+            orders, leg_margins, strict=True
+        )
+    }
+    increasing = {
+        order.symbol
+        for order, (increase, _release) in zip(
+            orders, leg_margins, strict=True
+        )
+        if increase > 0
+    }
     preflight_kwargs: dict[str, Any] = {
-        "required_usdt": plan_required_margin(client=client, orders=orders),
+        # Zero, deliberately: the four ordered checks still run — a killed
+        # order layer, a skewed clock and a hedge-mode account all refuse
+        # here — while the balance door passes vacuously, because the
+        # mirror judges funding itself, per leg, after the reducing legs
+        # have had their chance to release margin at the venue (bug 1).
+        "required_usdt": Decimal(0),
         "symbols": [order.symbol for order in orders],
         "database_url": database_url,
         "env": env,
@@ -2073,22 +2312,18 @@ def mirror_place(
         preflight_kwargs["clock"] = clock
     run_bingx_preflight(client, **preflight_kwargs)
 
-    # Reducing legs first (bug_spec_vst_slot_resilience.xml, bug 1): the
-    # door's term nets the margin these legs release, and the venue frees
-    # it only as they fill, so they leave before any leg that grows a
-    # position.  The sort is stable, so each group keeps the plan's own
-    # order inside it and nothing else about the loop below changed.
-    held = live_positions(client) if orders else {}
-
-    def binds(order: BingXOrder) -> bool:
-        """Whether this leg grows its symbol's position anywhere."""
-        return _increasing_size(order, held.get(order.symbol, Decimal(0))) > 0
-
-    ordered = sorted(orders, key=binds)
+    # Reducing legs first (bug_spec_vst_slot_resilience.xml, bug 1): they
+    # bind none of the account's money and their fills are what releases
+    # the margin the increasing legs below are admitted against.  The sort
+    # is stable, so each group keeps the plan's own order inside it.
+    reducing = [order for order in orders if order.symbol not in increasing]
+    growing = [order for order in orders if order.symbol in increasing]
 
     outcomes: dict[str, MirrorLeg] = {}
-    for order in ordered:
-        outcomes[order.symbol] = _place_one(
+
+    def place(order: BingXOrder) -> MirrorLeg:
+        """Place one leg through the store, the limiter and the backoff."""
+        return _place_one(
             client=client,
             order=order,
             store=store,
@@ -2101,6 +2336,78 @@ def mirror_place(
             jitter_rng=jitter_rng,
             on_retry=on_retry,
             on_placed=recorder,
+        )
+
+    for order in reducing:
+        outcomes[order.symbol] = place(order)
+
+    # The balance door, re-read after the reducing legs had their chance:
+    # the venue frees a reducing fill's margin as it settles, so read, and
+    # when a leg actually left this run, wait and read again until the
+    # figure moves or the polls run out.
+    available = read_available_usdt(client)
+    if any(
+        outcomes[order.symbol].outcome == MIRROR_OUTCOME_PLACED
+        for order in reducing
+    ):
+        available = _settled_available(
+            client=client, first=available, sleep=sleep
+        )
+
+    # Which increasing legs the account can afford: the legs are *judged*
+    # largest requirement first, so the ones that bind most of the account
+    # are given their chance and a leg is deferred only when the running
+    # total of the legs already admitted beside it leaves no room.  Ties
+    # are settled by symbol so two runs of the same plan defer the same
+    # leg.  A plan the account can fund whole admits every leg, which is
+    # why the *placement* below keeps the plan's own order and a funded
+    # run is byte-for-byte the run this verb always made.
+    #
+    # A leg this store already holds contributes nothing: its margin is
+    # already out of the venue's available figure, so it neither consumes
+    # the running total again nor can be deferred — a replay defers
+    # nothing, whatever the balance reads.
+    prior = _prior_symbols(store=store, book=book, orders=growing)
+    admitted = Decimal(0)
+    refused_here: dict[str, Decimal] = {}
+    for order in sorted(
+        growing, key=lambda leg: (-requirement[leg.symbol], leg.symbol)
+    ):
+        if order.symbol in prior:
+            continue
+        need = requirement[order.symbol]
+        if admitted + need > available:
+            # Held back, not rejected: the walk continues, so a smaller leg
+            # that still fits keeps its place — the descending order is what
+            # makes a plan spend what it can afford rather than stop at its
+            # first leg that does not fit.
+            refused_here[order.symbol] = need
+            continue
+        admitted += need
+
+    # The message is worded *after* the walk, from the total finally
+    # admitted: a leg's operator wants the figure the account ends up
+    # committed to — the number the deferred leg was measured against —
+    # not the partial total that happened to stand when the walk reached it.
+    deferred = {
+        symbol: _deferred_leg(
+            order=next(o for o in growing if o.symbol == symbol),
+            need=need,
+            admitted=admitted,
+            available=available,
+        )
+        for symbol, need in refused_here.items()
+    }
+
+    for order in growing:
+        # The store decides first: an order it already recorded is answered
+        # ``prior`` whatever the balance says, so a replay can never be
+        # reported deferred for a leg the venue already holds.
+        outcomes[order.symbol] = (
+            deferred[order.symbol]
+            if order.symbol in deferred
+            and order.symbol not in prior
+            else place(order)
         )
     return outcomes
 

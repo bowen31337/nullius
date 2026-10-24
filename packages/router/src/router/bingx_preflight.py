@@ -47,6 +47,24 @@ Sizing is untouched — the book's ``equity_usdt`` still sizes every order
 through Stage 0's sizer; it just stops doubling as the account's
 sufficiency term.
 
+**And why the mirror then judges the balance itself, one leg at a time.**
+``bug_spec_vst_margin_partial_placement.xml`` bug 1 removed the last way
+this one check could deadlock a book: the term nets the margin the plan's
+position-reducing legs *release*, but the venue frees that margin only as
+they fill — and a check that refuses the whole plan before a single leg
+leaves never lets them fill, so a fully invested book that fell a few
+USDT short was refused in under ten seconds every slot for a day while
+its available figure never moved (Addenda 9 and 10 of the forward
+shadow).  The mirror therefore runs this preflight with
+``required_usdt`` :class:`~decimal.Decimal` ``0`` — the kill, skew, hedge
+and preparation checks unchanged — sends the reducing legs first,
+re-reads the account through :func:`read_available_usdt`, and admits the
+increasing legs it can then afford, deferring the rest with a named code
+rather than refusing the plan.  This module keeps its signature, its four
+refusals and its one sufficiency law; it simply no longer pretends the
+release is money the account already holds, which is the fiction the
+netted term had to carry to be checkable *before* any leg was sent.
+
 **Why the refusals are raised, and why they are ordered.**  The four are
 answers a preflight exists to give *before* a single order leaves, so
 each is a typed refusal whose message opens with its own greppable code
@@ -144,6 +162,7 @@ __all__ = [
     "RouterBingXOrdersKilledError",
     "RouterBingXPreflightError",
     "is_already_set_answer",
+    "read_available_usdt",
     "run_bingx_preflight",
 ]
 
@@ -664,6 +683,30 @@ def is_already_set_answer(refusal: Any) -> bool:
     return any(marker in lowered for marker in ALREADY_SET_MSG_MARKERS)
 
 
+def read_available_usdt(client: Any) -> Decimal:
+    """The account's available USDT, read through the client, exactly.
+
+    The public spelling of the balance read ``run_bingx_preflight``'s
+    fourth check makes, exposed for the caller that must judge a plan's
+    funding *itself*: the mirror
+    (``bug_spec_vst_margin_partial_placement.xml``, bug 1) sends a plan's
+    position-reducing legs first, re-reads this figure after they fill —
+    the venue frees their margin only as they fill — and admits each
+    position-increasing leg against what the account can then afford,
+    because a deadlocked book whose whole plan is refused before any leg
+    leaves never releases anything at all.  The preflight itself keeps its
+    one balance check over ``required_usdt``; a caller passing
+    :class:`~decimal.Decimal` ``0`` runs the kill, skew, hedge and
+    preparation checks and never trips that check, and reads this itself.
+    Every venue fact still arrives through the client — this opens nothing
+    — and the amount is an exact
+    :class:`~decimal.Decimal` under the same law
+    :func:`_available_usdt` holds (see :func:`_venue_decimal`): the
+    venue's own string, or a whole ``int``, never a ``float``.
+    """
+    return _available_usdt(client.balance())
+
+
 def _prepare(call: Callable[[], Any]) -> None:
     """Make one preparation write, absorbing only the already-set answer.
 
@@ -740,7 +783,14 @@ def run_bingx_preflight(
       to).  The mirror derives it from the orders about to be sent —
       never from the book's whole ``equity_usdt``, which the margin the
       book's own open positions already use puts beyond an
-      ``availableMargin``'s reach.
+      ``availableMargin``'s reach.  The mirror now hands
+      :class:`~decimal.Decimal` ``0`` here
+      (``bug_spec_vst_margin_partial_placement.xml``, bug 1): it judges
+      margin itself, per leg, after sending the reducing legs first and
+      re-reading the balance with :func:`read_available_usdt`, so the
+      four checks above still run while the balance door below passes
+      vacuously.  A caller with the whole plan's requirement to hand in
+      still gets the one balance check it always did.
     * ``symbols`` — the symbols the plan will order, any iterable;
       normalized to the sorted unique tuple and prepared one margin
       arrangement each (``ISOLATED``, leverage
@@ -826,7 +876,10 @@ def run_bingx_preflight(
         raise RouterBingXHedgeModeError(dual_side)
 
     # 4 — insufficient_balance: the plan's funding, before its writes.
-    available = _available_usdt(client.balance())
+    # The read is the public verb's own (see :func:`read_available_usdt`),
+    # so a caller that judges margin per leg inside :func:`mirror_place`
+    # and this check read the venue through the same one spelling.
+    available = read_available_usdt(client)
     if available < required:
         raise RouterBingXInsufficientBalanceError(available, required)
 

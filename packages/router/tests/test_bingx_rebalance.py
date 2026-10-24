@@ -94,6 +94,7 @@ from test_bingx_mirror import (  # isort: skip
     _book,
     _clock,
     _CountingLimiter,
+    _live_positions_data,
     _MirrorClient,
 )
 import test_bingx_reconcile as reconcile_fixtures  # isort: skip
@@ -930,15 +931,24 @@ def test_a_venue_refusal_on_one_leg_exits_one(
     assert list(outcomes.values()).count(MIRROR_OUTCOME_PLACED) == 4
 
 
-def test_a_preflight_refusal_of_the_whole_plan_exits_one(
+def test_a_deferred_leg_exits_one_and_the_slot_still_places_what_it_can(
     tmp_path, test_database_url, capsys
 ) -> None:
-    """A refusal of the *ask* — the account cannot fund the plan — exits 1.
+    """An account that cannot fund the whole plan defers legs, not the slot.
 
-    The preflight's balance door judges the margin the orders need before a
-    single order leaves, so an unfunded account refuses the whole run: no
-    summary line, the refusal's own message on stderr, and the spec's
-    *"1 when any leg is refused"*.
+    ``bug_spec_vst_margin_partial_placement.xml``, bug 1 reverses this
+    test's original expectation.  The preflight's balance door used to judge
+    the whole plan's netted margin before a single order left, so an
+    unfunded account refused the *whole run*: no summary line, the
+    refusal's own message on stderr, nothing placed.  That is the deadlock
+    the live Addenda record — the plan's own position-reducing leg, whose
+    fill would release the margin the plan needs, was never sent, so the
+    available figure never moved and every slot was refused identically.
+
+    The slot now places the reducing leg, reports each increasing leg the
+    account cannot afford as ``refused`` under ``margin_deferred``, exits 1
+    under the spec's *"1 when any leg is refused"*, and still prints its
+    summary line — the record the heartbeat reads.
     """
     unfunded = {
         "balance": {
@@ -947,15 +957,29 @@ def test_a_preflight_refusal_of_the_whole_plan_exits_one(
             "availableMargin": "100",
         }
     }
-    client = _client(balance=unfunded)
+    # The recorded account, holding its BTC long and DOGE short: the plan's
+    # DOGE leg is a BUY against the short — it closes exposure and binds no
+    # margin, so it is the position-reducing leg whose fill the next slot's
+    # balance read is waiting for.
+    client = _client(balance=unfunded, positions=_live_positions_data())
     code, lines = _run(
         _write_book(tmp_path), client=client, url=test_database_url
     )
 
     assert code == EXIT_REFUSED
-    assert lines == []
-    assert client.placed == []
-    assert "insufficient_balance" in capsys.readouterr().err
+    assert len(lines) == 1
+    assert lines[0]["exit_code"] == EXIT_REFUSED
+    refused = lines[0]["refused"]
+    assert refused, "the unfunded slot deferred no leg and exited 1"
+    assert {entry["placement"] for entry in refused} == {"margin_deferred"}
+    for entry in refused:
+        assert "margin_deferred" in entry["message"]
+    # The plan's position-reducing leg was sent: that fill is the margin the
+    # next slot's read will see.
+    outcomes = {o["symbol"]: o["outcome"] for o in lines[0]["orders"]}
+    assert outcomes["DOGE-USDT"] == MIRROR_OUTCOME_PLACED
+    assert "DOGE-USDT" in {order.symbol for order in client.placed}
+    assert capsys.readouterr().err == ""
 
 
 def test_the_three_exit_codes_are_the_specs_own_numbers() -> None:

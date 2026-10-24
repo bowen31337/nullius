@@ -42,6 +42,7 @@ from router.bingx_client import (
 )
 from router.bingx_mirror import (
     DATABASE_URL_MISSING_CODE,
+    MARGIN_DEFERRED_CODE,
     MIRROR_CODE,
     MIRROR_OUTCOME_PLACED,
     MIRROR_OUTCOME_PRIOR,
@@ -68,7 +69,6 @@ from router.bingx_order import (
     BingXOrder,
     BingXRefusedLeg,
 )
-from router.bingx_preflight import RouterBingXInsufficientBalanceError
 from router.errors import RouterRateLimitedError
 from router.limiter import (
     DEFAULT_WEIGHT_SCOPE,
@@ -845,16 +845,23 @@ def test_rebalancing_a_book_that_already_holds_positions_passes_the_balance_door
     assert {o.symbol for o in client.placed} == set(outcomes)
 
 
-def test_the_balance_door_refuses_when_the_account_cannot_fund_the_plan(
+def test_a_margin_shortfall_defers_the_increasing_legs_not_the_whole_plan(
     test_database_url,
 ):
-    """Below the required margin the door refuses, and nothing is asked.
+    """The deadlock the corrected law removes: a short account places what it can.
 
-    The same recorded account with its availableMargin read down to 100 —
-    below the about-2800 the remaining legs need — refuses with the
-    correction's own message, naming both decimals and the one repair,
-    and the door closes before the venue is asked to hold a single margin
-    arrangement or book a single order.
+    ``bug_spec_vst_margin_partial_placement.xml``, bug 1.  The same recorded
+    account with its availableMargin read down to 100 — below the about-2800
+    the increasing legs need — used to refuse the *whole plan* at the
+    preflight, before a single leg was sent, so the plan's own
+    position-reducing leg (the DOGE leg, which closes the recorded short and
+    binds no margin) never left and the margin its fill would release was
+    never released: the account answered 100 every slot and every slot was
+    refused within ten seconds (Addenda 9 and 10 of the forward shadow).
+    The reducing leg is sent; every increasing leg the 100 cannot afford is
+    reported ``refused`` under :data:`MARGIN_DEFERRED_CODE` rather than
+    raising, so the slot places what it can and the next slot re-reads the
+    balance.
     """
     client = _MirrorClient(
         positions=_live_positions_data(),
@@ -863,17 +870,25 @@ def test_the_balance_door_refuses_when_the_account_cannot_fund_the_plan(
     limiter = _CountingLimiter()
     store = RouterOrderPlacementStore(test_database_url)
 
-    with pytest.raises(RouterBingXInsufficientBalanceError) as raised:
-        _place(client, _plan(client), store, limiter, database_url=test_database_url)
-
-    message = str(raised.value)
-    assert message.startswith(
-        "insufficient_balance: available USDT 100 is below the "
+    outcomes = _place(
+        client, _plan(client), store, limiter, database_url=test_database_url
     )
-    assert "this plan's orders need; fund the VST account and run the " \
-        "preflight again" in message
-    assert client.placed == []
-    assert not [call for call in client.calls if call[0] == "set_margin_type"]
+
+    # The one position-reducing leg is sent — and with it only the
+    # increasing legs the 100 actually covers (the BTC top-up needs about
+    # 33; the 1000PEPE, ETH and SOL legs need hundreds each).
+    assert [order.symbol for order in client.placed] == ["DOGE-USDT", "BTC-USDT"]
+    assert outcomes["DOGE-USDT"].outcome == MIRROR_OUTCOME_PLACED
+    deferred = {
+        symbol: outcome
+        for symbol, outcome in outcomes.items()
+        if outcome.code == MARGIN_DEFERRED_CODE
+    }
+    assert set(deferred) == {"1000PEPE-USDT", "ETH-USDT", "SOL-USDT"}
+    for outcome in deferred.values():
+        assert outcome.outcome == MIRROR_OUTCOME_REFUSED
+        assert "margin_deferred" in (outcome.message or "")
+        assert "100" in (outcome.message or "")
 
 
 def test_the_required_margin_counts_only_what_grows_a_position():
