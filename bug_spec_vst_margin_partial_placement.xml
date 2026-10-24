@@ -1,0 +1,70 @@
+<bug_specification mode="brownfield">
+  <project_name>nullius — the VST slot places what the account can afford, and the heartbeat keeps alerting while a stall persists</project_name>
+  <bug_summary>
+    docs/preregistration/2026-10-15-shadow-v1.ADDENDUM.md, Addenda 9 and 10:
+    six consecutive four-hour slots (2026-10-22 12:00 UTC to 2026-10-23 08:00 UTC)
+    were refused at the margin preflight within ten seconds each, with the
+    message "insufficient_balance: available USDT 636.2532 is below the N this
+    plan's orders need" for N between 700 and 828. The available figure did not
+    move in 24 hours while opening equity rose from 9792 to 9942, because the
+    venue's availableMargin changes only when an order fills or margin is
+    released. The preflight runs before any order is sent, so the plan's
+    position-reducing legs, which need no new margin and whose fills would
+    release margin, are never sent, and nothing ever changes the figure. The
+    slot is deadlocked by its own ordering. No order has been placed since
+    2026-10-22 00:06 UTC. The heartbeat has reported stale since 05:35 UTC on
+    2026-10-22 and sent exactly one alert, because its dedupe key is the stale
+    slot and that slot never changes while nothing completes.
+  </bug_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest. Router member: PYTHONPATH src:packages/router/src:packages/book/src:packages/ingest/src:packages/risk/src.</stack>
+    <test_baseline>main at f21f9154: router 1480 passing (packages/router/tests, -n 4); root tests/ 1671; orchestrator 987.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams: packages/router/src/router/bingx_mirror.py mirror_place(*, client, book, plan, store, limiter, database_url=None, env=None, clock=None, retries, reposts, sleep, jitter_rng, on_retry) runs run_bingx_preflight once with required_usdt = plan_required_margin(client=client, orders=orders) (a NettedRequiredMargin Decimal carrying increase_usdt and release_usdt), then sorts orders so reducing legs (where _increasing_size(order, held) == 0) are placed before increasing ones, placing each through _place_one with on_placed=recorder. packages/router/src/router/bingx_preflight.py run_bingx_preflight(client, *, required_usdt, symbols, database_url, env, clock) does four checks in order (orders_killed, clock_skew, hedge_mode, insufficient_balance strictly below required) and then the per-symbol margin and leverage preparation; _available_usdt(payload) reads availableMargin or availableBalance from client.balance(). packages/router/src/router/bingx_rebalance.py builds RebalanceReport (fields placed, prior, refused, skipped, cancelled, cancel_skipped, reconciled, halt, exit code 0 placed-or-prior, 1 any leg refused, 3 halted) and writes router_bingx_slot_completion; _run_step logs "step=... venue_code=... symbol=...". packages/router/src/router/bingx_heartbeat.py: a marker row per stale_key (book_id:slot, UNIQUE) in router_bingx_heartbeat_alert; already_alerted(stale_key) suppresses the alert; mark_alerted(stale_key, alerted_at=...). Fixtures for live venue shapes live in packages/router/tests/fixtures/bingx_vst/live/. Decimal everywhere for money; floats refused by name. Tests use fake clients (see test_mirror_margin_netting.py and test_bingx_heartbeat.py).
+    </conventions>
+    <constraints>
+      - Never edit deploy/**, packages/orchestrator/**, packages/contract/**, src/app/** or docs/preregistration/**.
+      - Only bingx_flatten --confirm and the daily-loss guard close positions; this fix places and skips orders, it never closes or reduces beyond the plan's own reducing legs.
+      - The plan itself (targets, sizes, prices) is unchanged; only which of its legs are sent in a slot changes. A leg not sent is reported, never silently dropped, and the slot still exits 1 when any leg is deferred.
+      - Idempotence: a second run in the same slot still places nothing new (the store's prior rows win).
+      - With enough margin for the whole plan, mirror_place's behaviour and outputs are identical to today (every existing router test passes unchanged).
+      - Lint only the touched files.
+    </constraints>
+  </existing_context>
+  <bugs>
+    <bug index="1" shape="core" severity="high" depends_on=""
+         touches_files="packages/router/src/router/bingx_mirror.py,packages/router/src/router/bingx_preflight.py,packages/router/src/router/bingx_rebalance.py"
+         creates="packages/router/tests/test_mirror_margin_partial.py,packages/router/tests/fixtures/bingx_vst/live/balance_after_reducing_fill.json">
+      <title>The margin preflight refuses the whole plan when the netted requirement exceeds available margin, so a fully invested book deadlocks after any drawdown; the slot must send the reducing legs first, re-read the balance, and place the increasing legs the account can afford</title>
+      <symptoms>Six consecutive slots refused in under ten seconds with insufficient_balance; available USDT identical to four decimals across 24 hours; no order placed since 2026-10-22 00:06 UTC; positions open and unrebalanced; heartbeat stale 33 hours.</symptoms>
+      <reproduction_steps>
+        1. Build a plan from a fully invested book (gross 1.0 at leverage 1) whose increasing legs need more margin than availableMargin while its reducing legs would release more than the shortfall; a fake client answering balance() with a fixed availableMargin and positions() with the held sizes reproduces it (see test_mirror_margin_netting.py's fakes).
+        2. Call mirror_place: run_bingx_preflight raises RouterBingXInsufficientBalanceError before any order is sent; no reducing leg is placed; the store holds no row.
+        3. Call it again in the next slot with the same balance answer: the same refusal, forever.
+      </reproduction_steps>
+      <actual>run_bingx_preflight's step 4 compares the whole plan's netted requirement against availableMargin before any order is sent. The requirement nets the reducing legs' release on paper, but the venue releases that margin only when the reducing legs fill, and they are never sent because the preflight refuses first. The increasing legs' requirement moves with prices while the available figure is frozen until something fills, so once the account is short by any amount the refusal repeats every slot.</actual>
+      <expected>
+        - bingx_preflight.py: expose read_available_usdt(client) -> Decimal (the existing _available_usdt over client.balance()) as a public helper; run_bingx_preflight keeps its signature and its four checks, but step 4 compares available against required_usdt exactly as today, so a caller passing Decimal(0) runs the kill, skew, hedge and preparation checks and never trips the balance check. Document that the mirror now calls it this way and judges margin itself per leg.
+        - bingx_mirror.py mirror_place: run the preflight with required_usdt=Decimal(0) (kill guard, skew, hedge mode and per-symbol preparation unchanged). Split orders into reducing legs (where _increasing_size is 0) and increasing legs. Place every reducing leg first exactly as today. Then read the available margin with read_available_usdt(client); if the reducing legs placed anything this run, poll the balance up to MARGIN_SETTLE_POLLS (default 6) times with the injected sleep of MARGIN_SETTLE_INTERVAL (default 5 s) until the available figure exceeds its first reading or the polls run out, so filled reducing legs can release margin. Then walk the increasing legs in descending order of their own margin requirement (the per-leg term plan_required_margin already computes; ties by symbol), admitting each leg while the running total of admitted requirements stays at or below the available figure, and placing admitted legs through _place_one as today. A leg not admitted is recorded as a MirrorLeg with outcome "refused" and code MARGIN_DEFERRED_CODE = "margin_deferred", message naming its requirement, the running total and the available figure, and is never sent. The outcomes mapping still has one entry per order. When the available figure covers the whole plan the admitted set is every increasing leg in the same stable order as today and the outputs are identical.
+        - bingx_rebalance.py: the report's refused entries already carry a placement code; a margin_deferred leg appears there with that code, the summary log line counts deferred legs separately ("deferred=N available=... required_total=..."), and the exit code is 1 when any leg is deferred (the existing rule: any leg refused). The slot completion row is written as today.
+        - Fixture balance_after_reducing_fill.json: a venue balance document pair (before and after) in the live fixture directory's shape, used by the tests below.
+        - Tests (new file test_mirror_margin_partial.py, fake client and store in the style of test_mirror_margin_netting.py): (a) two reducing legs and three increasing legs needing 300, 200 and 100 USDT with available 450 after the reducing legs fill: the reducing legs place, the 300 and 100 legs place (descending admission keeps 300, skips 200 because 300+200 is above 450, then admits 100), the 200 leg is refused with code margin_deferred and a message naming 200, 400 and 450; outcomes has five entries. (b) available 50: reducing legs place, every increasing leg deferred, nothing raised. (c) available 1000: all five place and the placement order and outcomes equal the pre-fix behaviour on the same fixture (compare against the existing netting test's expectations). (d) the balance poll: the fake client's balance returns 400 on the first read and 450 on the third; with two reducing legs placed the mirror polls, sees the rise, and admits as in (a); with no reducing legs it does not poll (sleep not called). (e) required_usdt Decimal(0) runs the preflight's kill, skew, hedge and preparation checks (a killed order layer still refuses; a hedge-mode account still refuses). (f) a second run in the same slot with the store holding prior rows places nothing and defers nothing. (g) bingx_rebalance: a run whose mirror defers one leg exits 1, reports it under refused with code margin_deferred, and writes the slot completion row with exit_code 1. Run the router member suite once at the end.
+      </expected>
+    </bug>
+    <bug index="2" shape="core" severity="medium" depends_on=""
+         touches_files="packages/router/src/router/bingx_heartbeat.py"
+         creates="">
+      <title>The heartbeat alerts once per stale slot and then never again, so a stall that persists for days produces a single page</title>
+      <symptoms>Stale since 2026-10-22 05:35 UTC (newest slot 2026-10-22T00:00), one alert at 05:35 UTC, none in the following 28 hours while every slot kept failing.</symptoms>
+      <reproduction_steps>
+        1. Insert a router_bingx_heartbeat_alert marker for stale_key K with alerted_at 20 hours ago.
+        2. Run the heartbeat with the newest completed slot still K's slot and age above max_age_hours: it prints stale and sends no alert because already_alerted(K) is true.
+      </reproduction_steps>
+      <actual>The dedupe key is book_id:slot of the newest completed slot. While nothing completes, that key is constant, already_alerted answers true, and no further alert is sent.</actual>
+      <expected>
+        - bingx_heartbeat.py: add REALERT_HOURS = 12 (a module constant, documented). already_alerted(stale_key) becomes already_alerted(stale_key, *, now) and answers true only when a marker for that key exists with alerted_at within the last REALERT_HOURS; mark_alerted inserts or updates the row's alerted_at (the UNIQUE constraint stays; use an upsert on stale_key). The printed JSON gains "alert": one of "sent", "deduped", "not_configured" (whatever vocabulary the module already uses, extended with the re-alert case named "resent" when a marker existed and was older than REALERT_HOURS). Behaviour inside the first 12 hours of a stall is unchanged.
+        - Tests in the existing test_bingx_heartbeat.py (add cases): a marker 1 hour old dedupes; a marker 13 hours old re-alerts and updates alerted_at; the no-completion key follows the same rule; the first alert for a new key is unchanged. Run the router member suite once at the end (shared with bug 1).
+      </expected>
+    </bug>
+  </bugs>
+</bug_specification>
