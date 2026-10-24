@@ -142,9 +142,13 @@ def _pin(monkeypatch: pytest.MonkeyPatch, digest: str) -> None:
 #: pinned :data:`m3_verdict.M3_COST_MODEL_HASH` either: a criterion test's
 #: rows must be filed under the pin, so the pin itself is monkeypatched onto
 #: this value the same way ``M3_EVALUATION_CONFIG_SHA256`` is pointed at a
-#: fixture file's digest.  Nothing in the version helper validates a hash's
-#: shape, and no test here reads a real cost-model file or ``~/.config``.
-FIXTURE_COST_MODEL_HASH = "fixture-cost-model-hash"
+#: fixture file's digest.  It is a 64-hex sha256 because the verdict refuses a
+#: pin that is not one (``--pin-cost-model-hash``), and both the
+#: monkeypatched-constant path and the explicit-flag path flow through that
+#: refusal; the *version strings* still validate nothing, so a decoy arm may
+#: keep an arbitrary hash.  No test here reads a real cost-model file or
+#: ``~/.config``.
+FIXTURE_COST_MODEL_HASH = "feed" * 16
 
 
 def _pin_cost_model(monkeypatch: pytest.MonkeyPatch, value: str = FIXTURE_COST_MODEL_HASH) -> str:
@@ -357,10 +361,19 @@ def test_verdict_table_written_before_addendum_2_is_upgraded_in_place(
     recorded, and inventing one would name a fee schedule nobody measured.
     """
     database_url = _database_url(tmp_path)
+    # A table written under Addendum 1's schema predates the two pin-flag
+    # columns as surely as it predates cost_model_hash, so the legacy fixture
+    # strips all three identity columns the probe-then-ALTER below brings
+    # forward.
     heredoc = m3_verdict._VERDICT_SCHEMA.replace(
         "    cost_model_hash                 TEXT NOT NULL,\n", ""
+    ).replace(
+        "    pin_config_sha256               TEXT,\n", ""
+    ).replace(
+        "    pin_cost_model_hash             TEXT,\n", ""
     )
-    assert "cost_model_hash" not in heredoc
+    for column in ("cost_model_hash", "pin_config_sha256", "pin_cost_model_hash"):
+        assert column not in heredoc
     with closing(sqlite3.connect(_sqlite_path(database_url))) as connection, connection:
         connection.executescript(heredoc)
         connection.execute(
@@ -1285,3 +1298,153 @@ def test_main_passes_the_incumbent_flag_through_to_run_verdict(
 def test_main_defaults_the_incumbent_to_the_module_default() -> None:
     arguments = m3_verdict._build_parser().parse_args(["--iteration-id", "it-x"])
     assert Path(arguments.incumbent_path) == m3_verdict.DEFAULT_INCUMBENT_PATH
+
+
+# -- The two pin flags ---------------------------------------------------------
+#
+# The registered M3 pre-registration pins one evaluation configuration and one
+# cost model, and the module's two constants hold those pins.  A *later*
+# pre-registration on a different evaluation configuration is judged by
+# passing its own pins as flags; the constants stay exactly as they are and
+# default the flags, so an unpinned invocation computes exactly the registered
+# verdict.
+
+
+def test_main_defaults_the_pins_to_the_module_constants() -> None:
+    arguments = m3_verdict._build_parser().parse_args(["--iteration-id", "it-x"])
+    assert arguments.pin_config_sha256 == m3_verdict.M3_EVALUATION_CONFIG_SHA256
+    assert arguments.pin_cost_model_hash == m3_verdict.M3_COST_MODEL_HASH
+
+
+def test_evaluation_config_is_admitted_under_an_explicit_pin(tmp_path: Path) -> None:
+    """The whole defect, at the helper's own level: a configuration the module
+    constants do not pin is admitted when the pin names it, without any
+    monkeypatching of the constant."""
+    config_path, digest = _pinned_config(tmp_path)
+    assert m3_verdict._verify_evaluation_config(config_path, digest) == digest
+
+
+def test_main_default_pins_refuse_a_config_the_constants_do_not_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Default flags reproduce today's refusal: without ``--pin-config-sha256``
+    the pin is the module constant, and a fixture configuration hashing
+    anywhere else is refused, naming the constant."""
+    iteration_id = "it-cli-default-pin-refusal"
+    config_path, _digest = _pinned_config(tmp_path)
+    fixture = _plant_cycle(
+        tmp_path,
+        iteration_id=iteration_id,
+        per_domain=17,
+        n_campaigns=20,
+        winner_commits_reals=True,
+        financial_diffs=([0.65, 0.70, 0.75] * 7)[:20],
+        config_path=config_path,
+    )
+    monkeypatch.setattr(m3_verdict, "bootstrap", _StubBootstrapModule(fixture["pool"]))
+    monkeypatch.setattr(m3_verdict.scoring.NullPickScorer, "resolve", staticmethod(lambda env: fixture["scorer"]))
+    monkeypatch.setattr(m3_verdict.nulloracle.NullSidecar, "resolve", staticmethod(lambda env: object()))
+    monkeypatch.setattr(m3_verdict, "score_on_world", _pass_evaluator(INCUMBENT_SOURCE))
+
+    emitted: list[str] = []
+    exit_code = m3_verdict.main(
+        ["--iteration-id", iteration_id, "--evaluation-config", str(config_path)],
+        env={
+            "DATABASE_URL": fixture["database_url"],
+            "NULL_SIDECAR_PATH": str(tmp_path / "sidecar.json"),
+            "NULL_SIDECAR_KEY_REF": "op://vault/item/key",
+        },
+        emit=emitted.append,
+    )
+    assert exit_code == m3_verdict.EXIT_REFUSED
+    assert emitted == []
+    refusal = capsys.readouterr().err
+    assert "hashes to" in refusal
+    assert m3_verdict.M3_EVALUATION_CONFIG_SHA256 in refusal
+
+
+def test_main_accepts_a_config_pinned_by_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression test for the reported defect: a pre-registration on a
+    different evaluation configuration *can* be judged, by passing its own two
+    pins as flags -- no constant is moved.  The fixture store's rows are filed
+    under the fixture pair, so accepting the config pin alone is not enough:
+    the cost-model flag must thread through too, or criterion 1 refuses on the
+    missing rows filed under the pinned pair."""
+    iteration_id = "it-cli-pinned-by-flag"
+    diffs = ([0.65, 0.70, 0.75] * 7)[:20]
+    config_path, digest = _pinned_config(tmp_path)
+    fixture = _plant_cycle(
+        tmp_path,
+        iteration_id=iteration_id,
+        per_domain=17,
+        n_campaigns=20,
+        winner_commits_reals=True,
+        financial_diffs=diffs,
+        config_path=config_path,
+    )
+    monkeypatch.setattr(m3_verdict, "bootstrap", _StubBootstrapModule(fixture["pool"]))
+    monkeypatch.setattr(m3_verdict.scoring.NullPickScorer, "resolve", staticmethod(lambda env: fixture["scorer"]))
+    monkeypatch.setattr(m3_verdict.nulloracle.NullSidecar, "resolve", staticmethod(lambda env: object()))
+    monkeypatch.setattr(m3_verdict, "score_on_world", _pass_evaluator(INCUMBENT_SOURCE))
+
+    emitted: list[str] = []
+    exit_code = m3_verdict.main(
+        [
+            "--iteration-id",
+            iteration_id,
+            "--evaluation-config",
+            str(config_path),
+            "--pin-config-sha256",
+            digest,
+            "--pin-cost-model-hash",
+            FIXTURE_COST_MODEL_HASH,
+        ],
+        env={
+            "DATABASE_URL": fixture["database_url"],
+            "NULL_SIDECAR_PATH": str(tmp_path / "sidecar.json"),
+            "NULL_SIDECAR_KEY_REF": "op://vault/item/key",
+        },
+        emit=emitted.append,
+    )
+    assert exit_code == m3_verdict.EXIT_OK
+    payload = json.loads(emitted[0])
+    assert payload["verdict"] == "PASS"
+    assert payload["pin_config_sha256"] == digest
+    assert payload["pin_cost_model_hash"] == FIXTURE_COST_MODEL_HASH
+
+    with closing(sqlite3.connect(_sqlite_path(fixture["database_url"]))) as connection:
+        row = connection.execute(
+            "SELECT pin_config_sha256, pin_cost_model_hash FROM m3_verdict "
+            "WHERE iteration_id = ?",
+            (iteration_id,),
+        ).fetchone()
+    # The row records the two pins the verdict was judged under.
+    assert row == (digest, FIXTURE_COST_MODEL_HASH)
+
+
+def test_main_refuses_a_malformed_pin_naming_the_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A pin that is not a 64-hex sha256 is refused naming its flag, before
+    any criterion is computed."""
+    monkeypatch.setattr(m3_verdict.scoring.NullPickScorer, "resolve", staticmethod(lambda env: object()))
+    monkeypatch.setattr(m3_verdict.nulloracle.NullSidecar, "resolve", staticmethod(lambda env: object()))
+    env = {
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'pins.db'}",
+        "NULL_SIDECAR_PATH": str(tmp_path / "sidecar.json"),
+        "NULL_SIDECAR_KEY_REF": "op://vault/item/key",
+    }
+    for flag, value in (
+        ("--pin-config-sha256", "deadbeef"),
+        ("--pin-cost-model-hash", "not-a-sha256"),
+    ):
+        capsys.readouterr()
+        exit_code = m3_verdict.main(["--iteration-id", "it-x", flag, value], env=env)
+        assert exit_code == m3_verdict.EXIT_REFUSED
+        assert flag in capsys.readouterr().err

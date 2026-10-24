@@ -32,10 +32,23 @@ a missing row; and (b) the verdict records the cost-model hash in its own
 column, so what a recorded verdict was judged under is readable from the row
 the verdict file rather than inferred from the version strings it read.
 
+**The two pins are flags, not only constants.**  A later dreaming
+pre-registration on a *different* evaluation configuration is judged by
+passing its own pins: ``--pin-config-sha256`` and ``--pin-cost-model-hash``,
+defaulting to :data:`M3_EVALUATION_CONFIG_SHA256` and
+:data:`M3_COST_MODEL_HASH` so an unpinned invocation computes exactly the
+registered M3 verdict -- the constants are the defaults, never the rule.
+Each pin must be a 64-hex sha256, and a malformed one is refused naming its
+flag.  The row and the printed JSON line record the two pins actually used
+(``pin_config_sha256``/``pin_cost_model_hash``), so a recorded verdict says
+what it was pinned to without a reader reconstructing it from the version
+strings it read.
+
 **Refusals are checked before any criterion is computed**, in the
 pre-registration's own order: the document's sha256 against its sidecar
-``.sha256`` file; the pinned evaluation config's sha256 against
-:data:`M3_EVALUATION_CONFIG_SHA256`; the bootstrap pool's size (>= 50 worlds,
+``.sha256`` file; the pinned evaluation config's sha256 against the
+``--pin-config-sha256`` pin (:data:`M3_EVALUATION_CONFIG_SHA256` by
+default); the bootstrap pool's size (>= 50 worlds,
 >= 10 per domain of ``hpo``/``featsel``/``symreg``); the admitted
 financial-world count (>= 20); and a prior verdict already filed under this
 same document.  Each opens with its own greppable code word and exits 1.
@@ -110,6 +123,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import statistics
 import sys
@@ -284,6 +298,8 @@ class VerdictResult:
     prereg_sha256: str
     evaluation_config_sha256: str
     cost_model_hash: str
+    pin_config_sha256: str
+    pin_cost_model_hash: str
     verdict: str
     criterion1_pass: bool
     criterion1_mean_difference: float
@@ -315,6 +331,8 @@ class VerdictResult:
             "prereg_sha256": self.prereg_sha256,
             "evaluation_config_sha256": self.evaluation_config_sha256,
             "cost_model_hash": self.cost_model_hash,
+            "pin_config_sha256": self.pin_config_sha256,
+            "pin_cost_model_hash": self.pin_cost_model_hash,
             "verdict": self.verdict,
             "criterion1_pass": self.criterion1_pass,
             "criterion1_mean_difference": self.criterion1_mean_difference,
@@ -371,18 +389,49 @@ def _verify_prereg_hash(prereg_path: Path) -> str:
     return digest
 
 
-def _verify_evaluation_config(config_path: Path) -> str:
+#: A pin's own law -- both flags name a sha256, so a value that is not a
+#: 64-character lowercase hex string is refused by flag name before any
+#: criterion is computed.  Lowercase because :meth:`hashlib.sha256.hexdigest`
+#: is lowercase: an uppercase pin could never match any file's digest, so
+#: refusing it here names the operator's mistake rather than masquerading as
+#: a drifted file later.
+_PIN_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _verify_pin(flag: str, value: str) -> str:
+    """Refuse, naming the flag, a pin that is not a 64-hex sha256.
+
+    Both pins arrive from ``main``'s ``--pin-config-sha256`` and
+    ``--pin-cost-model-hash`` flags (their defaults being the two registered
+    constants), so the refusal names the flag an operator typed wrong, before
+    any other check runs -- the same stance the ``--iteration-id`` check
+    below takes.
+    """
+    if not isinstance(value, str) or _PIN_HEX.fullmatch(value) is None:
+        raise M3VerdictError(
+            f"{M3_CODE}: {flag} must be a 64-character lowercase hex string "
+            f"(a sha256) -- got {value!r}"
+        )
+    return value
+
+
+def _verify_evaluation_config(config_path: Path, pin: str | None = None) -> str:
     """The pinned evaluation config's sha256, refused if it differs.
 
     docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: *"The verdict
     records the config's sha256, and refuses if the file it is given hashes
-    differently."*  The pin is :data:`M3_EVALUATION_CONFIG_SHA256` -- the
-    digest the addendum states -- rather than whatever file happens to sit at
-    a path, so a configuration edited in place after the addendum was filed is
-    refused exactly as a different file would be.  A path that cannot be read
-    is refused too, and *before* the comparison: a missing file and a drifted
-    one are different facts, and the message names which happened.
+    differently."*  The pin is ``--pin-config-sha256``'s value --
+    :data:`M3_EVALUATION_CONFIG_SHA256`, the digest the addendum states, by
+    default -- rather than whatever file happens to sit at a path, so a
+    configuration edited in place after the addendum was filed is refused
+    exactly as a different file would be, and a later pre-registration on a
+    different configuration is judged by passing its own pin.  A path that
+    cannot be read is refused too, and *before* the comparison: a missing
+    file and a drifted one are different facts, and the message names which
+    happened.
     """
+    if pin is None:
+        pin = M3_EVALUATION_CONFIG_SHA256
     try:
         content = config_path.expanduser().read_bytes()
     except OSError as exc:
@@ -394,12 +443,13 @@ def _verify_evaluation_config(config_path: Path) -> str:
             "(docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md)"
         ) from exc
     digest = hashlib.sha256(content).hexdigest()
-    if digest != M3_EVALUATION_CONFIG_SHA256:
+    if digest != pin:
         raise M3VerdictError(
             f"{M3_CODE}: the evaluation configuration at {str(config_path)!r} "
-            f"hashes to {digest!r}, but the pre-registration's first addendum "
-            f"pins {M3_EVALUATION_CONFIG_SHA256!r}; criterion 1 is computed "
-            "under that pinned configuration and under no other, so a file "
+            f"hashes to {digest!r}, but the verdict is pinned to {pin!r} "
+            "(the pre-registration's first addendum by default, "
+            "--pin-config-sha256 otherwise); criterion 1 is computed "
+            "under the pinned configuration and under no other, so a file "
             "that hashes differently names no config this verdict may compare "
             "over -- docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md: "
             "\"The verdict records the config's sha256, and refuses if the "
@@ -531,15 +581,19 @@ def _criterion1(
     winner_version: str,
     revision_cap: int,
     evaluation_config_path: Path = DEFAULT_EVALUATION_CONFIG_PATH,
+    pin_config_sha256: str | None = None,
+    pin_cost_model_hash: str | None = None,
 ) -> tuple[Any, float, float, bool]:
     """The paired ΔIR over the financial holdout, under the pinned config.
 
     docs/preregistration/2026-10-17-m3-dreaming.md's criterion 1, computed as
     its two addenda fix it: the pinned configuration is verified by digest
     first, and *both* arms are then named by versions carrying **both pinned
-    identities** -- the config's :data:`M3_EVALUATION_CONFIG_SHA256` and the
-    cost model's :data:`M3_COST_MODEL_HASH` (Addendum 2's *"Rows carry both
-    identities"*).  The winner's own fresh ``#financial`` sweep
+    identities** -- the config's pin (:data:`M3_EVALUATION_CONFIG_SHA256`
+    unless ``--pin-config-sha256`` names another) and the cost model's
+    (:data:`M3_COST_MODEL_HASH` unless ``--pin-cost-model-hash`` does) --
+    Addendum 2's *"Rows carry both identities"*.  The winner's own fresh
+    ``#financial`` sweep
     (:func:`orchestrator.dream.financial_policy_version`) is paired against the
     **re-scored** M2 baseline arm's
     (:data:`orchestrator.dream.M2_INCUMBENT_POLICY_VERSION`, written by the
@@ -558,12 +612,13 @@ def _criterion1(
     refuses, as Addendum 1 already requires for a missing row, when either arm
     lacks them"*).
     """
-    config_sha256 = _verify_evaluation_config(evaluation_config_path)
+    config_sha256 = _verify_evaluation_config(evaluation_config_path, pin_config_sha256)
+    cost_model_hash = M3_COST_MODEL_HASH if pin_cost_model_hash is None else pin_cost_model_hash
     financial_version = financial_policy_version(
-        winner_version, config_sha256, M3_COST_MODEL_HASH
+        winner_version, config_sha256, cost_model_hash
     )
     baseline_version = financial_policy_version(
-        M2_INCUMBENT_POLICY_VERSION, config_sha256, M3_COST_MODEL_HASH
+        M2_INCUMBENT_POLICY_VERSION, config_sha256, cost_model_hash
     )
     try:
         difference = dreaming.paired_pool_difference(
@@ -622,12 +677,15 @@ def _criterion2(
     campaigns: tuple[str, ...],
     scorer: Any,
     config_sha256: str,
+    cost_model_hash: str | None = None,
 ) -> tuple[float, float, bool]:
+    if cost_model_hash is None:
+        cost_model_hash = M3_COST_MODEL_HASH
     financial_version = financial_policy_version(
-        winner_version, config_sha256, M3_COST_MODEL_HASH
+        winner_version, config_sha256, cost_model_hash
     )
     baseline_version = financial_policy_version(
-        M2_INCUMBENT_POLICY_VERSION, config_sha256, M3_COST_MODEL_HASH
+        M2_INCUMBENT_POLICY_VERSION, config_sha256, cost_model_hash
     )
     oracle = SubtreeOracle(_NoPostEndpoint(), database_url=database_url)
     population: list[str] = []
@@ -735,13 +793,18 @@ def _criterion3(
 
 #: The verdict table's DDL -- created idempotently by this command on first
 #: write, the same ``CREATE TABLE IF NOT EXISTS`` stance
-#: :class:`discovery.CampaignManifests` takes for its own table.
+#: :class:`discovery.CampaignManifests` takes for its own table.  The two pin
+#: columns are nullable for the same reason :func:`_upgrade_verdict_table`
+#: adds its own nullable: a row filed before the pin flags existed names no
+#: pin, and none is invented for it -- this module always writes both.
 _VERDICT_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
     iteration_id                    TEXT NOT NULL UNIQUE,
     prereg_sha256                   TEXT NOT NULL,
     evaluation_config_sha256        TEXT NOT NULL,
     cost_model_hash                 TEXT NOT NULL,
+    pin_config_sha256               TEXT,
+    pin_cost_model_hash             TEXT,
     verdict                         TEXT NOT NULL,
     criterion1_pass                 BOOLEAN NOT NULL,
     criterion1_mean_difference      REAL NOT NULL,
@@ -767,7 +830,7 @@ CREATE TABLE IF NOT EXISTS {VERDICT_TABLE} (
 
 
 def _upgrade_verdict_table(connection: sqlite3.Connection) -> None:
-    """Bring a verdict table written before Addendum 2 up to the current schema.
+    """Bring a verdict table written before a later identity column up to date.
 
     ``CREATE TABLE IF NOT EXISTS`` cannot evolve a table that already exists,
     so a database whose ``m3_verdict`` row was written under Addendum 1's
@@ -781,26 +844,30 @@ def _upgrade_verdict_table(connection: sqlite3.Connection) -> None:
     hash invented here would name a fee schedule nobody measured -- and there
     is no safe default to invent, because an unset ``NULLIUS_COST_MODEL_PATH``
     resolves to the **spot** schedule while every M3 row is pinned to
-    ``binance_usdm``.  Idempotent by construction: a table that already holds
-    the column is left untouched.  No row is rewritten -- an ``ALTER TABLE …
-    ADD COLUMN`` is a schema change, so every recorded verdict keeps exactly
-    the values it was filed with.
+    ``binance_usdm``.  The two pin columns (``pin_config_sha256``,
+    ``pin_cost_model_hash``, a later change again) ride the same probe-then-
+    ``ALTER`` for the same reason: a row filed before the flags existed names
+    no pin, and none is invented for it.  Idempotent by construction: a table
+    that already holds a column is left untouched.  No row is rewritten -- an
+    ``ALTER TABLE … ADD COLUMN`` is a schema change, so every recorded
+    verdict keeps exactly the values it was filed with.
     """
     columns = {
         row[1]
         for row in connection.execute(f"PRAGMA table_info({VERDICT_TABLE})")
     }
-    if "cost_model_hash" not in columns:
-        connection.execute(
-            f"ALTER TABLE {VERDICT_TABLE} ADD COLUMN cost_model_hash TEXT"
-        )
+    for column in ("cost_model_hash", "pin_config_sha256", "pin_cost_model_hash"):
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE {VERDICT_TABLE} ADD COLUMN {column} TEXT"
+            )
 
 
 def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
     connection.execute(
         f"INSERT INTO {VERDICT_TABLE} ("
         "iteration_id, prereg_sha256, evaluation_config_sha256, "
-        "cost_model_hash, verdict, "
+        "cost_model_hash, pin_config_sha256, pin_cost_model_hash, verdict, "
         "criterion1_pass, criterion1_mean_difference, criterion1_one_sided_p, "
         "criterion1_bar, criterion1_paired_worlds, "
         "criterion2_pass, criterion2_winner_fdr_deploy, criterion2_baseline_fdr_deploy, "
@@ -808,12 +875,14 @@ def _persist(connection: sqlite3.Connection, result: VerdictResult) -> None:
         "winner_commit_rate, baseline_commit_rate, "
         "n_bootstrap, n_bootstrap_by_domain, n_financial, campaign_ids, "
         "winner_module_id, created_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             result.iteration_id,
             result.prereg_sha256,
             result.evaluation_config_sha256,
             result.cost_model_hash,
+            result.pin_config_sha256,
+            result.pin_cost_model_hash,
             result.verdict,
             result.criterion1_pass,
             result.criterion1_mean_difference,
@@ -850,6 +919,8 @@ def run_verdict(
     prereg_path: Path = DEFAULT_PREREG_PATH,
     incumbent_path: Path = DEFAULT_INCUMBENT_PATH,
     evaluation_config_path: Path = DEFAULT_EVALUATION_CONFIG_PATH,
+    pin_config_sha256: str | None = None,
+    pin_cost_model_hash: str | None = None,
     evaluator: Callable[..., Any] | None = None,
     round_cap: int = 30,
 ) -> VerdictResult:
@@ -863,6 +934,16 @@ def run_verdict(
     score_on_world` (read as this module's own current attribute, resolved
     at call time rather than bound as a default, so a test may replace it by
     name) when ``evaluator`` is not given.
+
+    ``pin_config_sha256`` and ``pin_cost_model_hash`` are the two identities
+    the verdict judges under, resolved at call time from
+    :data:`M3_EVALUATION_CONFIG_SHA256` and :data:`M3_COST_MODEL_HASH` when
+    not given -- the registered M3 pre-registration's own pins, so an
+    unpinned call computes exactly the registered verdict.  ``main`` threads
+    its ``--pin-config-sha256``/``--pin-cost-model-hash`` flags through here,
+    which is how a later pre-registration on a different evaluation
+    configuration is judged; each pin must be a 64-hex sha256, and a
+    malformed one is refused naming its flag before any other check.
     """
     if evaluator is None:
         evaluator = score_on_world
@@ -872,11 +953,19 @@ def run_verdict(
             f"{iteration_id!r}"
         )
     iteration_id = iteration_id.strip()
+    pin_config_sha256 = (
+        M3_EVALUATION_CONFIG_SHA256 if pin_config_sha256 is None else pin_config_sha256
+    )
+    pin_cost_model_hash = (
+        M3_COST_MODEL_HASH if pin_cost_model_hash is None else pin_cost_model_hash
+    )
+    _verify_pin("--pin-config-sha256", pin_config_sha256)
+    _verify_pin("--pin-cost-model-hash", pin_cost_model_hash)
 
     prereg_sha256 = _verify_prereg_hash(prereg_path)
     census = _verify_bootstrap_pool(pool)
     campaigns = _verify_financial_pool(database_url)
-    config_sha256 = _verify_evaluation_config(evaluation_config_path)
+    config_sha256 = _verify_evaluation_config(evaluation_config_path, pin_config_sha256)
 
     path = _sqlite_path(database_url)
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -905,6 +994,8 @@ def run_verdict(
             winner_version=winner.module_id,
             revision_cap=revision_cap,
             evaluation_config_path=evaluation_config_path,
+            pin_config_sha256=pin_config_sha256,
+            pin_cost_model_hash=pin_cost_model_hash,
         )
         winner_fdr, baseline_fdr, criterion2_pass = _criterion2(
             database_url=database_url,
@@ -912,6 +1003,7 @@ def run_verdict(
             campaigns=campaigns,
             scorer=scorer,
             config_sha256=config_sha256,
+            cost_model_hash=pin_cost_model_hash,
         )
         mean_transfer, domain_transfers, criterion3_pass = _criterion3(
             iteration_id,
@@ -933,7 +1025,9 @@ def run_verdict(
             iteration_id=iteration_id,
             prereg_sha256=prereg_sha256,
             evaluation_config_sha256=config_sha256,
-            cost_model_hash=M3_COST_MODEL_HASH,
+            cost_model_hash=pin_cost_model_hash,
+            pin_config_sha256=pin_config_sha256,
+            pin_cost_model_hash=pin_cost_model_hash,
             verdict=verdict,
             criterion1_pass=criterion1_pass,
             criterion1_mean_difference=difference.mean_difference,
@@ -1003,8 +1097,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "the evaluation configuration criterion 1 is computed under "
             f"(default {DEFAULT_EVALUATION_CONFIG_PATH}); its sha256 must be "
-            "the one docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md "
-            "pins, or the verdict refuses"
+            "the pin --pin-config-sha256 names (the one "
+            "docs/preregistration/2026-10-17-m3-dreaming.ADDENDUM.md pins by "
+            "default), or the verdict refuses"
+        ),
+    )
+    parser.add_argument(
+        "--pin-config-sha256",
+        dest="pin_config_sha256",
+        default=M3_EVALUATION_CONFIG_SHA256,
+        metavar="SHA256",
+        help=(
+            "the evaluation-configuration pin the verdict judges under "
+            f"(default {M3_EVALUATION_CONFIG_SHA256}, the registered M3 "
+            "pre-registration's own); a later pre-registration on a different "
+            "configuration passes its own"
+        ),
+    )
+    parser.add_argument(
+        "--pin-cost-model-hash",
+        dest="pin_cost_model_hash",
+        default=M3_COST_MODEL_HASH,
+        metavar="SHA256",
+        help=(
+            "the cost-model pin the verdict judges under "
+            f"(default {M3_COST_MODEL_HASH}, the registered M3 "
+            "pre-registration's own); must be a 64-hex sha256"
         ),
     )
     return parser
@@ -1064,6 +1182,8 @@ def main(
             prereg_path=Path(arguments.prereg_path),
             incumbent_path=Path(arguments.incumbent_path),
             evaluation_config_path=Path(arguments.evaluation_config_path),
+            pin_config_sha256=arguments.pin_config_sha256,
+            pin_cost_model_hash=arguments.pin_cost_model_hash,
         )
     except Exception as exc:  # noqa: BLE001 - every collaborator's own
         # refusal (dreaming, scoring, closeout, bootstrap) already opens its
