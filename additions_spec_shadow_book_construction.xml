@@ -1,0 +1,55 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — the forward shadow book honours the config's weighting, caps per-name weight and can scale each node's book to equal risk</project_name>
+  <addition_summary>
+    The daily forward shadow (orchestrator.shadow, run by deploy/shadow/shadow_daily.sh
+    and shadow_paper.sh) builds each node's book with the plain z weighting whatever
+    the evaluation config's book.weighting says, combines nodes by an equal-weight
+    mean of their weight vectors, and applies no per-name cap. Every research series
+    since 2026-10-19 evaluated its nodes under inverse_vol, tail_decile or short_tail
+    books, so a forward shadow of those nodes today trades a construction the research
+    never measured. docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md and the two
+    RESULTs before it also show why a cap matters: the losses of every short-tail book
+    sat on a handful of squeeze dates in a few names.
+
+    This addition makes the shadow's per-node book use book_weights with the config's
+    weighting (passing the vols panel the inverse_vol spelling needs, computed from the
+    snapshot's own closes over book.vol_window_days exactly as the evaluation chain
+    computes them), adds an optional per-name cap applied to the combined book with
+    iterative renormalisation to the requested gross, and adds an optional node
+    weighting that scales each node's weight vector by the inverse of its trailing
+    realised book volatility before combining. All three are opt-in: with a config whose
+    book has no weighting key (the two live shadows' evaluation-config-archive-perp-bn.json)
+    and without the new flags, book.json is byte-identical to today, and the shadow
+    byte-reproducibility check (shadow v1 Addendum 7) is the enforcement.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest.</stack>
+    <test_baseline>main at 04338874: orchestrator 987 (5 skipped, -n 2), evaluator 730, router 1480, root tests/ 1671, all passing.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams: packages/orchestrator/src/orchestrator/_shadow.py shadow_weights(context, code, *, as_of, allowed_symbols=None) calls book_weights(day_scores, betas if context.book.beta_neutral else None) at about line 250 with no vols and no weighting; packages/evaluator/src/evaluator/_metrics.py book_weights(scores, betas=None, *, vols=None, weighting="z") accepts "z", "inverse_vol", "tail_decile", "short_tail" and refuses "inverse_vol" without vols; the evaluation chain's vols come from orchestrator._context.compute_vols (trailing vol_window_days of daily closes) and its betas from compute_betas. packages/orchestrator/src/orchestrator/shadow.py: _combine(weights_by_node, *, gross) takes the equal-weight mean across nodes, rescales to gross, drops weights below 1e-6; _build_parser flags --snapshot, --node, --out, --contracts, --ticker, --equity-usdt, --gross, --grid-anchor, --grid-days, --require-stream; main writes book.json atomically and prints one JSON line (as_of, decision_date, held, book_path, nodes, n_long, n_short, gross, book_beta, n_dropped_unmapped, n_dropped_price_mismatch). The book_id is shadow-DATE-sha256(sorted node ids)[:12] and a held book writes nothing. Tests for the shadow live in packages/orchestrator/tests/test_shadow*.py with small synthetic snapshots. Exact reproduction tests use 1e-12.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/contract/**, src/app/**, deploy/**, packages/router/**, packages/evaluator/**, orchestrator/shadow_eval.py, orchestrator/closeout.py, nulloracle/** or docs/preregistration/**.
+      - Byte-identical default: with a config whose book block has no weighting key (or weighting "z") and none of the new flags, shadow-book writes exactly the bytes it writes today for the same snapshot and nodes, and prints the same JSON line plus nothing new unless a flag is given. Add a test that pins this on the existing synthetic fixture.
+      - The weighting spelling comes only from the evaluation config (never a CLI flag), so the shadow trades the construction the research measured; the cap and the node weighting are CLI flags because they are execution-side choices a registration names.
+      - No change to book_id derivation, hold rule, decision-date rule, the output file's key set other than two optional informational keys named below, or the history/switch shell wrappers.
+      - Lint only the touched files.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Forward Shadow">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/_shadow.py,packages/orchestrator/src/orchestrator/shadow.py"
+               creates="packages/orchestrator/tests/test_shadow_construction.py">
+        System builds each shadow node's book with the evaluation config's book.weighting (computing the vols panel inverse_vol needs from the snapshot's closes over book.vol_window_days), caps any single name's absolute weight in the combined book at --max-name-weight with renormalisation to --gross, optionally scales each node's weight vector by the inverse of its trailing realised book volatility before combining under --node-weighting inverse_vol, prints the cap and node-weighting settings and the number of capped names in the JSON line, and writes byte-identical output when none of this is configured.
+        <steps>
+          - _shadow.py shadow_weights: when context.book.weighting is "inverse_vol", compute vols with the same function and window the evaluation chain uses (orchestrator._context.compute_vols over the snapshot's daily closes ending at as_of, vol_window_days from the config) restricted to the day's scored symbols, and pass vols=vols, weighting=context.book.weighting to book_weights; for "tail_decile" and "short_tail" pass weighting through with no vols; for "z" or an absent key pass exactly what is passed today (no weighting keyword, no vols) so the call is unchanged. A symbol the vols panel cannot price is dropped before book_weights as the evaluation chain drops it (vol_dropped), and the count is returned on the per-node result for the JSON line. The returned object keeps its current fields and gains weighting (the spelling used) and n_vol_dropped.
+          - shadow.py: two new optional flags. --max-name-weight FLOAT (default None): after _combine's mean and before the gross rescale, clip every |w_i| to the cap, renormalise to the requested gross, and repeat until no weight exceeds the cap or 20 passes have run (then refuse with a clear message naming the cap, the gross and the number of names, because a cap below gross/n cannot be met). --node-weighting {equal,inverse_vol} (default equal): under inverse_vol, each node's weight vector is multiplied by 1/sigma_node where sigma_node is the population standard deviation of that node's book returns over the trailing 60 as_of-anchored daily dates computed from the same closes the weights come from (the node's own dollar-neutral book applied to next-day returns; a node with fewer than 20 priced dates or zero variance is refused by name), then the vectors are averaged as today. The JSON line gains max_name_weight, node_weighting and n_capped (0 when no cap); book.json gains the two optional keys construction (the weighting spelling) and max_name_weight only when a non-default is in force, so the default file is byte-identical.
+          - Docstrings in both modules state the construction, cite this spec and the RESULT, and say why the weighting comes from the config and the cap from the flag.
+          - Tests (new file test_shadow_construction.py, synthetic snapshot in the style of the existing shadow tests): (a) default path: a config with no weighting key and no new flags produces bytes equal to today's output on the existing fixture (pin the current bytes in the test from the unchanged code path, or compare against a call with the flags explicitly at their defaults); (b) config weighting inverse_vol: per-node weights equal book_weights(scores, betas, vols=compute_vols(...), weighting="inverse_vol") to 1e-12 and a symbol without 60 days of closes is dropped and counted; (c) config weighting short_tail: weights equal book_weights(..., weighting="short_tail"); (d) --max-name-weight 0.05 on a combined book with one name at 0.12: that name reads 0.05 after the loop, gross equals --gross to 1e-12, n_capped 1, and no other name exceeds 0.05; a cap of 0.001 on 40 names is refused naming cap, gross and count; (e) --node-weighting inverse_vol with two nodes whose trailing book vols are 1 % and 2 %: the first node's vector carries twice the second's weight before averaging (1e-12), and a node with 10 priced dates is refused; (f) the JSON line carries the three new keys with their defaults when nothing is set, and book.json has no construction or max_name_weight key in that case. The orchestrator member suite passes.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
