@@ -21,16 +21,23 @@ One test per claim the feature sentence makes:
 * **a node with no metrics is not revealed** — ``ic_mean IS NULL`` (never
   evaluated, or a failed attempt) is absent from both ``revealed`` and
   ``observed()``, while remaining a legal structural move
-  (:meth:`~policy_runtime.PolicyQuestion.legal_actions`) and answering a
-  family-less :meth:`~policy_runtime.PolicyQuestion.meta` rather than
-  raising.
+  (:meth:`~policy_runtime.PolicyQuestion.legal_actions`) and answering
+  :meth:`~policy_runtime.PolicyQuestion.meta` — stating its row's own
+  ``theme_root`` — rather than raising.
 * **the tree is rebuilt from the rows on every call** — a child planted
   between two calls is invisible to the first question and visible to the
   second.
-* **the module reads only id, parent_id, depth and two metric columns** — a
-  database carrying none of the identity/provenance/authoring-model columns
-  still answers correctly, and the source holds no reference to the sidecar
-  or an ``is_null`` bit.
+* **the module reads only id, parent_id, depth, two metric columns and the
+  theme column** — a database carrying none of the
+  identity/provenance/authoring-model columns still answers correctly, and
+  the source holds no reference to the sidecar or an ``is_null`` bit.
+* **``theme_root`` is carried from the row onto every cell's payload** (the
+  family-conditioning fix) — under the one key
+  :func:`~policy_runtime.cell_meta` reads, so a financial tree states the
+  family each cell's branch was planted in the way bootstrap worlds state
+  ``BOOTSTRAP_THEME_ROOT``; a table without the column (or a ``NULL`` value)
+  answers ``None``, and the four metric keys the feature names keep their
+  names and their values.
 * **``ic_insample`` falls back to ``ic_tstat``, not ``ic_mean``, for a node
   with no ``ir_tstat``** — close-out's own fallback selection value
   (:func:`orchestrator.closeout._selection_value`) reads ``ic_tstat``, and a
@@ -70,6 +77,7 @@ from policy_runtime import (
     PolicyBudgetError,
     PolicyObservation,
     budget_account,
+    cell_meta,
 )
 
 # conftest-less suite: this file is under packages/orchestrator/tests, so the
@@ -143,6 +151,7 @@ def _plant_node(
     depth: int = 0,
     ic_mean: float | None = None,
     ic_tstat: float | None = None,
+    theme_root: str | None = "macro",
 ) -> str:
     """Insert one node row directly — the state a live campaign would write.
 
@@ -153,14 +162,18 @@ def _plant_node(
     with no measured ``ic_tstat`` at all — a test fixture, never a real
     evaluation — leaves); every other metric column stays ``NULL``
     throughout this suite, which is itself part of the proof that this
-    feature reads no metric column but these two.
+    feature reads no metric column but these two.  ``theme_root`` defaults
+    to the ``macro`` every existing test planted silently, and is written
+    as given — a ``None`` plants the row's value as ``NULL``, which only a
+    table whose column is nullable (one this suite re-``ALTER``s for the
+    ``NULL``-value test) accepts.
     """
     identifier = node_id or str(uuid.uuid4())
     with closing(sqlite3.connect(_path_of(database_url))) as connection, connection:
         connection.execute(
             "INSERT INTO node (id, parent_id, campaign_id, theme_root, depth, "
             "ic_mean, ic_tstat) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (identifier, parent_id, campaign_id, "macro", depth, ic_mean, ic_tstat),
+            (identifier, parent_id, campaign_id, theme_root, depth, ic_mean, ic_tstat),
         )
     return identifier
 
@@ -295,6 +308,150 @@ def test_a_node_ranks_by_ic_tstat_not_ic_mean_when_they_disagree(
     assert observed[high_tstat].ic_insample > observed[high_mean].ic_insample
 
 
+# -- theme_root: the family each cell's branch was planted in -------------------
+#
+# The defect this section pins: _live_tree froze payloads carrying no
+# ``theme_root`` key, so policy_runtime.cell_meta(node).theme_root read None
+# for every cell of a financial tree while bootstrap worlds state
+# BOOTSTRAP_THEME_ROOT on every cell -- family conditioning
+# (policy_runtime/families.py, feature 228) and any dreamed policy had no
+# theme to condition on in a financial world. The fix reads the node
+# table's own ``theme_root`` column (migration 0113's skeleton column,
+# probed exactly as ``ir_tstat`` is) and carries it under the one key
+# cell_meta reads.
+
+
+def test_theme_root_is_carried_from_the_row_to_every_cells_meta(
+    tree_database: str,
+) -> None:
+    # Both an evaluated cell and an unmeasured one: cell_meta reads
+    # theme_root off every node's payload, revealed or not, because the
+    # theme is the structural fact of which root the branch was planted in
+    # -- docs §11.1's own "structure is not the thing the barrier
+    # withholds".
+    campaign_id = str(uuid.uuid4())
+    root = _plant_node(
+        tree_database, campaign_id, ic_mean=0.08, theme_root="low-volatility"
+    )
+    pending = _plant_node(
+        tree_database,
+        campaign_id,
+        parent_id=root,
+        depth=1,
+        ic_mean=None,
+        theme_root="low-volatility",
+    )
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    assert question.meta(root).theme_root == "low-volatility"
+    assert question.meta(pending).theme_root == "low-volatility"
+    # And through the accessor the question itself delegates to, verbatim.
+    assert cell_meta(question.tree, root).theme_root == "low-volatility"
+    # The payload carries the key under the column's own name, and nothing
+    # else changes about the unmeasured cell's metric-free payload.
+    assert question.tree.node(root).content["theme_root"] == "low-volatility"
+    assert question.tree.node(pending).content == {"theme_root": "low-volatility"}
+
+
+def test_theme_root_is_none_when_the_table_carries_no_theme_root_column(
+    tree_database: str,
+) -> None:
+    # The column is migration-guaranteed (0113's skeleton creates it), so a
+    # table without it is not a state the chain can produce -- but it is
+    # read by probe-then-select exactly as ir_tstat is, so a table that
+    # lacks it must still answer, cell by cell, with None: the honest
+    # "this cell states no family" an absent key already answers, never a
+    # ``no such column`` refusal.
+    campaign_id = str(uuid.uuid4())
+    with closing(sqlite3.connect(_path_of(tree_database))) as connection, connection:
+        connection.execute("ALTER TABLE node DROP COLUMN theme_root")
+    identifier = "root"
+    with closing(sqlite3.connect(_path_of(tree_database))) as connection, connection:
+        connection.execute(
+            "INSERT INTO node (id, parent_id, campaign_id, depth, ic_mean, "
+            "ic_tstat) VALUES (?, ?, ?, ?, ?, ?)",
+            (identifier, None, campaign_id, 0, 0.08, 0.3),
+        )
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    assert question.meta(identifier).theme_root is None
+    assert question.tree.node(identifier).content["theme_root"] is None
+
+
+def test_theme_root_is_none_when_the_rows_value_is_null(
+    tree_database: str,
+) -> None:
+    # A row whose own value is NULL (the column present, the reading
+    # absent) answers None too -- the same honest null an absent column
+    # gives, never a reading invented to fill the key.
+    campaign_id = str(uuid.uuid4())
+    with closing(sqlite3.connect(_path_of(tree_database))) as connection, connection:
+        # Re-shape the column as nullable so a NULL value can be planted at
+        # all: the migrated column is NOT NULL, and no row the campaign
+        # writes ever carries NULL -- this is the state an upgraded store's
+        # oldest rows would hold.
+        connection.execute("ALTER TABLE node DROP COLUMN theme_root")
+        connection.execute("ALTER TABLE node ADD COLUMN theme_root TEXT")
+    root = _plant_node(tree_database, campaign_id, ic_mean=0.08, theme_root=None)
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    assert question.meta(root).theme_root is None
+    assert question.tree.node(root).content["theme_root"] is None
+
+
+def test_theme_root_joins_a_payload_whose_existing_keys_are_unchanged(
+    tree_database: str,
+) -> None:
+    # The four metric keys the feature names keep their names and their
+    # values: ic_insample is still the ir_tstat-or-ic_tstat-or-ic_mean
+    # reading, r2_insample is still ic_mean's own square, n_periods is
+    # still the call's own, n_features is still 1 -- theme_root joins as a
+    # fifth key and moves none of them.
+    campaign_id = str(uuid.uuid4())
+    root = _plant_node(
+        tree_database,
+        campaign_id,
+        ic_mean=0.08,
+        ic_tstat=0.3,
+        theme_root="low-volatility",
+    )
+
+    question = live_question(
+        campaign_id,
+        database_url=tree_database,
+        evaluation_periods=EVALUATION_PERIODS,
+    )
+
+    assert question.observed()[root] == PolicyObservation(
+        node_id=root,
+        r2_insample=0.08**2,
+        ic_insample=0.3,
+        n_periods=EVALUATION_PERIODS,
+        n_features=1,
+    )
+    payload = question.tree.node(root).content
+    assert payload["ic_insample"] == pytest.approx(0.3)
+    assert payload["r2_insample"] == pytest.approx(0.08**2)
+    assert payload["n_periods"] == EVALUATION_PERIODS
+    assert payload["n_features"] == 1
+    assert payload["theme_root"] == "low-volatility"
+
+
 # -- A node with no metrics is not revealed, but is still a legal move ---------
 
 
@@ -336,12 +493,16 @@ def test_unevaluated_node_is_still_a_legal_structural_move(tree_database: str) -
     assert question.legal_actions(root) == [pending]
 
 
-def test_unevaluated_node_answers_a_family_less_meta_rather_than_raising(
+def test_unevaluated_node_answers_meta_rather_than_raising(
     tree_database: str,
 ) -> None:
     # meta() is a structural read, answered for revealed and unrevealed
-    # nodes alike (docs §11.1) -- an empty-dict payload must not turn that
-    # into a crash for a node this feature never reveals.
+    # nodes alike (docs §11.1) -- a metric-free payload must not turn that
+    # into a crash for a node this feature never reveals.  Since the
+    # theme_root fix the node states its row's own theme here (the family
+    # its branch was planted in is structural, not a metric the barrier
+    # withholds); the family-less reading is the no-column and NULL-value
+    # cases' own tests above.
     campaign_id = str(uuid.uuid4())
     root = _plant_node(tree_database, campaign_id, ic_mean=None)
 
@@ -352,7 +513,7 @@ def test_unevaluated_node_answers_a_family_less_meta_rather_than_raising(
     )
 
     meta = question.meta(root)
-    assert meta.theme_root is None
+    assert meta.theme_root == "macro"
     assert meta.depth == 0
     assert meta.parent is None
 
