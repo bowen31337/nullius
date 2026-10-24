@@ -27,6 +27,33 @@ instrument's existing rule), drop symbols outside ``allowed_symbols``, *then*
 ``_score_rebalance_dates``'s normalize-and-z-score, then ``compute_betas``,
 then ``book_weights``.
 
+**The book's weighting is the evaluation config's, not this module's own
+choice.** additions_spec_shadow_book_construction.xml, "Forward Shadow"
+feature: *System builds each shadow node's book with the evaluation
+config's ``book.weighting``.* ``context.book.weighting`` is the same
+setting :func:`orchestrator._evaluate.evaluate_node` reads for its own
+book, so a stored node's forward book is built exactly the way its own
+evaluation was — never a second, drifting opinion about what "the book"
+means for that node. Under ``"inverse_vol"`` this module asks
+:func:`orchestrator._context.compute_vols` for the one date's panel,
+restricted to the day's own z-scored symbols, the same call
+``evaluate_node`` makes; a symbol the panel cannot price (too thin a
+trailing window, or a flat close) is dropped before :func:`evaluator.book_weights`
+runs, the same ``vol_dropped`` the evaluation chain counts, and the count
+rides on :class:`ShadowWeights` as ``n_vol_dropped``. Under
+``"tail_decile"`` or ``"short_tail"`` the spelling is passed through with
+no side panel — both are functions of the day's scores alone. Under
+``"z"`` (or an absent key, which resolves to the same default) the
+:func:`evaluator.book_weights` call is the one this module has always
+made — no ``weighting`` keyword, no ``vols`` — so a deployment that never
+configured a weighting gets back the identical book it always has. Every
+research series since 2026-10-19 evaluated its nodes under
+``"inverse_vol"``, ``"tail_decile"`` or ``"short_tail"`` books (see
+``docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md``), so before
+this addition a forward shadow of those nodes traded a construction the
+research never measured — the config's own weighting is what makes the
+forward book and the registered result the same book.
+
 **Every refusal is a single :class:`ShadowError`, naming its cause** — this
 module's own error base, in the one-base-per-member shape every other
 orchestrator module takes for its own concern (:class:`~orchestrator._evaluate.SandboxExecutionError`,
@@ -62,7 +89,14 @@ from evaluator import (
     resolve_window,
 )
 
-from ._context import EvaluationContext, compute_betas, signal_sandbox
+from ._context import (
+    INVERSE_VOL_WEIGHTING,
+    Z_WEIGHTING,
+    EvaluationContext,
+    compute_betas,
+    compute_vols,
+    signal_sandbox,
+)
 from ._evaluate import (
     _END_OF_DAY,
     _drop_unpriced_symbols,
@@ -115,7 +149,16 @@ class ShadowWeights:
     beta-neutral (there is no benchmark to rescale against, so there is no
     figure to report) and otherwise the book's own ``Σ w·β`` over whichever
     symbols a beta was measured for — a float, including a vacuous ``0.0``
-    when no symbol in the book rated one.
+    when no symbol in the book rated one. ``weighting`` is
+    ``context.book.weighting``'s own spelling, the construction actually
+    used; ``n_vol_dropped`` is how many of the day's z-scored symbols the
+    ``"inverse_vol"`` panel could not price (and so were dropped before
+    :func:`evaluator.book_weights` ran) — always ``0`` under any other
+    weighting. Both default to today's plain-book answer (:data:`Z_WEIGHTING`
+    and ``0``), so a caller that hand-constructs a :class:`ShadowWeights` of
+    its own (e.g. a test double standing in for :func:`shadow_weights`)
+    keeps working unchanged; :func:`shadow_weights` itself always passes
+    both explicitly.
     """
 
     as_of: dt.date
@@ -125,6 +168,8 @@ class ShadowWeights:
     n_dropped_unpriced: int
     n_dropped_unmapped: int
     book_beta: float | None
+    weighting: str = Z_WEIGHTING
+    n_vol_dropped: int = 0
 
 
 def _restrict_to_allowed_symbols(
@@ -203,6 +248,14 @@ def shadow_weights(
     ``compute_betas``'s own window never reads a return dated after
     ``as_of``.
 
+    additions_spec_shadow_book_construction.xml, "Forward Shadow": the book
+    is built under ``context.book.weighting`` — the evaluation config's own
+    setting, not a choice this function makes — because the forward book is
+    only honest when it is the same construction the node was scored under.
+    See the module docstring for ``"inverse_vol"``'s ``vols`` panel and drop
+    rule; every other weighting is passed straight through to
+    :func:`evaluator.book_weights`.
+
     Raises :class:`ShadowError` — see that class's own docstring for the
     three causes it names directly, and the rest it wraps.
     """
@@ -247,7 +300,24 @@ def shadow_weights(
                 )
             betas = compute_betas(context, {as_of: day_scores}).get(as_of, {})
 
-        weights = book_weights(day_scores, betas if context.book.beta_neutral else None)
+        weighting = context.book.weighting
+        n_vol_dropped = 0
+        book_scores = day_scores
+        extra_kwargs: dict[str, object] = {}
+        if weighting == INVERSE_VOL_WEIGHTING:
+            row_vols = compute_vols(context, {as_of: day_scores}).get(as_of, {})
+            priced_symbols = [symbol for symbol in day_scores if symbol in row_vols]
+            n_vol_dropped = len(day_scores) - len(priced_symbols)
+            book_scores = {symbol: day_scores[symbol] for symbol in priced_symbols}
+            extra_kwargs = {"vols": row_vols, "weighting": weighting}
+        elif weighting != Z_WEIGHTING:
+            extra_kwargs = {"weighting": weighting}
+
+        weights = book_weights(
+            book_scores,
+            betas if context.book.beta_neutral else None,
+            **extra_kwargs,
+        )
     except ShadowError:
         raise
     except Exception as exc:  # every chain failure becomes one ShadowError
@@ -270,4 +340,6 @@ def shadow_weights(
         n_dropped_unpriced=n_dropped_unpriced,
         n_dropped_unmapped=n_dropped_unmapped,
         book_beta=book_beta,
+        weighting=weighting,
+        n_vol_dropped=n_vol_dropped,
     )

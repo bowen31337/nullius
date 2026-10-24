@@ -40,6 +40,26 @@ same ordering :mod:`orchestrator._shadow` itself holds for its own
 ``allowed_symbols`` restriction, and for the identical reason: a book that
 is dollar- and beta-neutral over symbols it cannot trade is not the book
 that gets traded.
+
+**The per-node book's weighting comes from the evaluation config; the cap
+and the node weighting come from a flag.** additions_spec_shadow_book_construction.xml,
+"Forward Shadow": :func:`orchestrator._shadow.shadow_weights` already builds
+every node's own book under ``context.book.weighting`` (see that module's
+own docstring) — this command never chooses a weighting itself, because the
+evaluation config is the one place that construction is registered, and a
+forward shadow that quietly rebuilt the book under a different weighting
+than the research measured would no longer be trading what was found.
+``--max-name-weight`` (:func:`_cap_name_weights`) and ``--node-weighting``
+(:func:`_node_book_sigma`) are different in kind: neither is a research
+setting any registration names, both are execution-side risk controls this
+command's own operator chooses at run time, so both are flags.
+docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md and the two RESULTs
+before it are why the cap exists at all — a short-tail book's losses sat on
+a handful of squeeze dates in a few names, so capping any one name's share
+of the combined book bounds that concentration directly. With a config
+whose book carries no weighting key and neither new flag given, this
+command writes the identical bytes and prints the identical JSON line
+(plus three keys at their defaults) it always has.
 """
 
 from __future__ import annotations
@@ -70,10 +90,14 @@ from snapshot import SnapshotError, SnapshotMount
 
 from ._context import (
     BARS_STREAM,
+    DEFAULT_BOOK_WEIGHTING,
     EVALUATION_CONFIG_ENV,
     FUTBARS_STREAM,
     EvaluationConfigError,
     EvaluationContext,
+    _beta_window_dates,
+    _close_to_close_returns,
+    _population_std,
     load_evaluation_context,
 )
 from ._shadow import ShadowError, shadow_weights
@@ -108,6 +132,30 @@ _GRID_BENCHMARK_SYMBOL = "BTCUSDT"
 #: contract shares.
 _LAKE_QUOTE_SUFFIX = "USDT"
 _THOUSAND_PREFIX = "1000"
+
+#: ``--node-weighting``'s closed vocabulary and its default — "equal" is
+#: today's plain mean, unchanged; "inverse_vol" is opt-in.
+NODE_WEIGHTINGS = ("equal", "inverse_vol")
+_DEFAULT_NODE_WEIGHTING = "equal"
+#: The trailing window a node's own realised book volatility is measured
+#: over, under ``--node-weighting inverse_vol`` — fixed at 60 calendar days
+#: anchored at the decision date, independent of the evaluation config's own
+#: ``book.vol_window_days`` (which scales a *per-name* vol inside one node's
+#: book, not a node's own book-level vol across nodes).
+_NODE_VOL_WINDOW_DAYS = 60
+#: A node's trailing book-return window must carry at least this many priced
+#: dates before its volatility is trusted enough to divide by — the same
+#: "noise dressed as a scale" concern :data:`orchestrator._context.MIN_VOL_WINDOW_DAYS`
+#: already states for a per-name vol, applied here to the node's own book.
+_MIN_NODE_VOL_PRICED_DATES = 20
+#: ``--max-name-weight``'s clip-and-renormalise loop runs at most this many
+#: passes before refusing — a cap under ``gross / n`` names can never be met,
+#: so a loop that has not settled by here never will.
+_MAX_CAP_PASSES = 20
+#: Float slack the cap loop's own convergence check and its ``n_capped``
+#: count use, well under a cap any caller would set and well over a
+#: ``fsum``/``float`` division's own rounding.
+_CAP_TOLERANCE = 1e-9
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -436,28 +484,35 @@ def _held_book(out: Path, book_id: str) -> Mapping[str, Any] | None:
 # -- combining the nodes' books -----------------------------------------------
 
 
-def _combine(
-    weights_by_node: Sequence[Mapping[str, float]], *, gross: float
-) -> dict[str, float]:
-    """The equal-weight mean of the nodes' weights, renormalised to ``gross``.
+def _mean_weights(weights_by_node: Sequence[Mapping[str, float]]) -> dict[str, float]:
+    """The equal-weight mean of the nodes' weights — before any rescale.
 
     Symbols any node did not score stand in at 0 for that node, so a
     symbol only one node scores is not punished for the others' silence.
-    Refuses a mean with nothing to renormalise (every node answered flat).
-
-    Symbols come out sorted and the gross is an exact ``fsum``, so the same
-    nodes' weights give a byte-identical book in every process: a plain
-    ``set`` iterates in the process's own string-hash order.
+    Symbols come out sorted, so the same nodes' weights give a
+    byte-identical mean in every process: a plain ``set`` iterates in the
+    process's own string-hash order.
     """
     symbols: set[str] = set()
     for weights in weights_by_node:
         symbols.update(weights)
     node_count = len(weights_by_node)
-    combined = {
+    return {
         symbol: sum(weights.get(symbol, 0.0) for weights in weights_by_node)
         / node_count
         for symbol in sorted(symbols)
     }
+
+
+def _rescale_to_gross(
+    combined: Mapping[str, float], *, gross: float
+) -> dict[str, float]:
+    """``combined`` rescaled to ``gross``, dropping any below-dust weight.
+
+    Refuses a book with nothing to renormalise (every node answered flat).
+    The gross is an exact ``fsum``, so the same input gives a byte-identical
+    answer in every process.
+    """
     total = math.fsum(abs(value) for value in combined.values())
     if total <= 0.0:
         raise ShadowCliError(
@@ -470,6 +525,154 @@ def _combine(
         for symbol, value in combined.items()
         if abs(value * scale) >= _MIN_WEIGHT_FRACTION
     }
+
+
+def _combine(
+    weights_by_node: Sequence[Mapping[str, float]], *, gross: float
+) -> dict[str, float]:
+    """The equal-weight mean of the nodes' weights, renormalised to ``gross``.
+
+    additions_spec_shadow_book_construction.xml, "Forward Shadow": unchanged
+    by that addition — :func:`_mean_weights` then :func:`_rescale_to_gross`,
+    exactly the two steps this function has always taken, so a caller who
+    never sets ``--max-name-weight`` gets back the identical book it always
+    has. The per-name cap (:func:`_cap_name_weights`) runs *instead* of this
+    function, over the same :func:`_mean_weights` output, because the cap is
+    an execution-side choice a flag names, never the evaluation config's.
+    """
+    return _rescale_to_gross(_mean_weights(weights_by_node), gross=gross)
+
+
+def _cap_name_weights(
+    combined: Mapping[str, float], *, cap: float, gross: float
+) -> tuple[dict[str, float], int]:
+    """Clip every name's ``|weight|`` to ``cap``, renormalised to ``gross``.
+
+    additions_spec_shadow_book_construction.xml, "Forward Shadow": runs on
+    :func:`_mean_weights`'s own output — *after* the nodes' mean, *before*
+    the plain gross rescale :func:`_rescale_to_gross` would otherwise do —
+    because docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md and the
+    two RESULTs before it show a short-tail book's losses concentrated on a
+    handful of squeeze dates in a few names: a cap on any one name's share of
+    the combined book is a trade-level risk control, not a research setting,
+    which is why it is a flag rather than a config key.
+
+    Each pass clips every ``|w_i|`` exceeding ``cap`` to ``cap`` (keeping its
+    sign) and rescales the whole, now-clipped book back to ``gross`` —
+    clipping first can push a previously clean name over the cap once the
+    freed-up gross is redistributed, so the two steps repeat until a pass
+    leaves nothing over the cap or :data:`_MAX_CAP_PASSES` passes have run.
+    A cap under ``gross`` divided by the number of names can never be met by
+    any number of passes, so that case is refused by name rather than spun
+    forever.
+
+    Returns the converged book (the same below-dust filter
+    :func:`_rescale_to_gross` applies) and how many names are sitting
+    exactly at the cap — ``0`` is impossible once this function returns
+    normally only when ``cap`` was never actually binding.
+    """
+    weights: dict[str, float] = dict(combined)
+    for _pass in range(_MAX_CAP_PASSES):
+        clipped = {
+            symbol: math.copysign(cap, value) if abs(value) > cap else value
+            for symbol, value in weights.items()
+        }
+        total = math.fsum(abs(value) for value in clipped.values())
+        if total <= 0.0:
+            raise ShadowCliError(
+                f"{SHADOW_CLI_CODE}: the combined book is flat across every "
+                "node — there is nothing to renormalise to gross"
+            )
+        scale = gross / total
+        weights = {symbol: value * scale for symbol, value in clipped.items()}
+        if all(abs(value) <= cap + _CAP_TOLERANCE for value in weights.values()):
+            n_capped = sum(
+                1 for value in weights.values() if abs(abs(value) - cap) <= _CAP_TOLERANCE
+            )
+            return (
+                {
+                    symbol: value
+                    for symbol, value in weights.items()
+                    if abs(value) >= _MIN_WEIGHT_FRACTION
+                },
+                n_capped,
+            )
+    raise ShadowCliError(
+        f"{SHADOW_CLI_CODE}: no book honours --max-name-weight {cap!r} at "
+        f"--gross {gross!r} across {len(weights)} name(s) after "
+        f"{_MAX_CAP_PASSES} passes — a cap this far under gross/n cannot be met"
+    )
+
+
+# -- --node-weighting inverse_vol: each node's own trailing book volatility ---
+
+
+def _node_book_returns(
+    weights: Mapping[str, float],
+    closes: Mapping[str, Mapping[dt.date, float]],
+    as_of: dt.date,
+) -> dict[dt.date, float]:
+    """One node's own dollar-neutral book, applied to its trailing returns.
+
+    For each of the trailing :data:`_NODE_VOL_WINDOW_DAYS` calendar dates
+    ending at ``as_of`` (:func:`orchestrator._context._beta_window_dates`'s
+    own window), the book's return is ``Σ w_i · r_i`` over ``weights``' own
+    symbols, where ``r_i`` is that symbol's close-to-close return
+    (:func:`orchestrator._context._close_to_close_returns`) — the same
+    ``closes`` the shadow's own weights were priced from. A date is in the
+    answer only when *every* symbol the book weights has a return for it; a
+    thin date (one symbol's gap) is left out entirely rather than priced on
+    a partial book that is not the book actually held.
+    """
+    window = _beta_window_dates(as_of, _NODE_VOL_WINDOW_DAYS)
+    symbol_returns = {
+        symbol: _close_to_close_returns(closes.get(symbol, {}), window)
+        for symbol in weights
+    }
+    book_returns: dict[dt.date, float] = {}
+    for day in window:
+        if all(day in returns for returns in symbol_returns.values()):
+            book_returns[day] = math.fsum(
+                weights[symbol] * symbol_returns[symbol][day] for symbol in weights
+            )
+    return book_returns
+
+
+def _node_book_sigma(
+    weights: Mapping[str, float],
+    closes: Mapping[str, Mapping[dt.date, float]],
+    as_of: dt.date,
+    *,
+    node_id: str,
+) -> float:
+    """A node's own trailing realised book volatility — refused by name.
+
+    additions_spec_shadow_book_construction.xml, "Forward Shadow": the
+    population standard deviation (:func:`orchestrator._context._population_std`,
+    the same ``ddof=0`` the per-name vol panel uses) of
+    :func:`_node_book_returns`' own answer. Refused by name, rather than
+    silently skipped, when fewer than :data:`_MIN_NODE_VOL_PRICED_DATES`
+    dates are priced (too thin a history to trust) or the priced dates carry
+    exactly zero variance (a flat book has no "unit of risk" to equalise
+    against another node's).
+    """
+    returns = _node_book_returns(weights, closes, as_of)
+    if len(returns) < _MIN_NODE_VOL_PRICED_DATES:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: node {node_id!r} carries only "
+            f"{len(returns)} priced date(s) of its own trailing "
+            f"{_NODE_VOL_WINDOW_DAYS}-day book return, fewer than the "
+            f"{_MIN_NODE_VOL_PRICED_DATES} --node-weighting inverse_vol "
+            "needs to trust its realised volatility"
+        )
+    sigma = _population_std(returns.values())
+    if sigma == 0.0:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: node {node_id!r}'s trailing book returns "
+            "carry zero variance; --node-weighting inverse_vol cannot scale "
+            "its weight vector by a 1/sigma of infinity"
+        )
+    return sigma
 
 
 # -- writing the book ----------------------------------------------------------
@@ -586,6 +789,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="a stream (e.g. metrics) that must also carry the decision "
         "date for BTCUSDT; repeatable",
     )
+    parser.add_argument(
+        "--max-name-weight",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="cap any single name's |weight| in the combined book at this "
+        "fraction of gross, renormalising iteratively back to --gross; "
+        "unset (the default) applies no cap",
+    )
+    parser.add_argument(
+        "--node-weighting",
+        choices=NODE_WEIGHTINGS,
+        default=_DEFAULT_NODE_WEIGHTING,
+        help="'equal' (the default) averages the nodes' weight vectors "
+        "as-is; 'inverse_vol' scales each node's vector by the inverse of "
+        "its own trailing realised book volatility first",
+    )
     return parser
 
 
@@ -618,6 +838,9 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
             "gross": gross,
             "book_beta": None,
             "n_dropped_unmapped": n_dropped_unmapped,
+            "max_name_weight": arguments.max_name_weight,
+            "node_weighting": arguments.node_weighting,
+            "n_capped": 0,
         }
 
     allowed_lake_symbols = set(symbol_map)
@@ -646,10 +869,24 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
                 as_of=decision_date,
                 allowed_symbols=allowed_lake_symbols,
             )
-            node_weights.append(result.weights)
+            weights = result.weights
+            if arguments.node_weighting == "inverse_vol":
+                sigma = _node_book_sigma(
+                    weights, context.closes, decision_date, node_id=node_id
+                )
+                weights = {symbol: value / sigma for symbol, value in weights.items()}
+            node_weights.append(weights)
             node_betas.append(result.book_beta)
 
-        combined = _combine(node_weights, gross=arguments.gross)
+        if arguments.max_name_weight is None:
+            combined = _combine(node_weights, gross=arguments.gross)
+            n_capped = 0
+        else:
+            combined, n_capped = _cap_name_weights(
+                _mean_weights(node_weights),
+                cap=arguments.max_name_weight,
+                gross=arguments.gross,
+            )
         # Sorted by the BingX spelling the file carries, so the same book is
         # the same bytes (``_combine`` sorts by the lake spelling).
         bingx_weights = dict(
@@ -675,6 +912,16 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
             "positions": {},
             "originating_signal_ids": node_ids,
         }
+        # Two purely informational keys, added only when a non-default
+        # construction is actually in force — additions_spec_shadow_book_construction.xml,
+        # "Forward Shadow": a config whose book carries no weighting key (or
+        # names the default) and a command with no --max-name-weight write
+        # exactly today's key set, so the byte-identical-default promise
+        # holds with no caller needing to know these keys exist.
+        if context.book.weighting != DEFAULT_BOOK_WEIGHTING:
+            book_document["construction"] = context.book.weighting
+        if arguments.max_name_weight is not None:
+            book_document["max_name_weight"] = arguments.max_name_weight
         _atomic_write(arguments.out, book_document)
 
     n_long, n_short, gross = _book_stats(bingx_weights)
@@ -693,6 +940,9 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
         "book_beta": book_beta,
         "n_dropped_unmapped": n_dropped_unmapped,
         "n_dropped_price_mismatch": n_dropped_price_mismatch,
+        "max_name_weight": arguments.max_name_weight,
+        "node_weighting": arguments.node_weighting,
+        "n_capped": n_capped,
     }
 
 
