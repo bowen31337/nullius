@@ -27,7 +27,7 @@ Environment=SHADOW_METRICS=1
 Environment=SHADOW_NODES_PAPER=%h/.config/nullius/shadow/nodes-v2.txt
 Environment=SHADOW_OUT_PAPER=%h/.local/share/nullius/shadow-v2/book.json
 Environment=ENV_CAMPAIGN_TPL=%h/projects/nullius/.env.campaign-shadow-v2.tpl
-Environment=SHADOW_BOOK_EXTRA_ARGS=--grid-days 7 --max-name-weight 0.04 --node-weighting inverse_vol
+Environment="SHADOW_BOOK_EXTRA_ARGS=--grid-days 7 --max-name-weight 0.04 --node-weighting inverse_vol"
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable}"; exec %h/projects/nullius/deploy/shadow/shadow_paper.sh'
 Restart=no
