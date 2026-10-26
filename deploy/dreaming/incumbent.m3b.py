@@ -1,31 +1,39 @@
-"""M3b incumbent: the M2 fixed commit rule with two tunable knobs, written against the ``question.*`` contract.
+"""M3b incumbent: a scale-free commit rule with two tunable knobs, written against the ``question.*`` contract.
 
-docs/preregistration/2026-10-24-m3b-dreaming-commit-rule.md. The M2 fixed rule
-(deploy/dreaming/incumbent.m2.py) commits the evaluated node with the highest
-``ic_insample`` (the post-cost IR t-statistic, ``ic_tstat`` where a tree carries no
-``ir_tstat``) among the nodes that clear a bar of 2.0, ties by node id. Four archive
-series on the wide perpetual universe found that the node this rule commits is the
-most in-sample-fitted member of a family of near-identical constructs, and that its
-out-of-sample book is no better than its siblings'. This incumbent keeps the bar and
-adds two knobs the jitter reviser can move:
+docs/preregistration/2026-10-24-m3b-dreaming-commit-rule.md and its Addendum 1. The
+registered idea is unchanged: the fixed rule commits the most in-sample-fitted member
+of a family of near-identical constructs, and this incumbent gives the reviser two
+knobs that can move the commit away from that member, a ``depth_penalty`` per level
+of refinement and a ``ceiling`` above which readings tie. Addendum 1 records why the
+first form (an absolute bar of 2.0 on ``ic_insample``, the M2 rule) could not be
+selected: a dreaming cycle selects on the bootstrap pool, whose readings are
+r-squared values on another scale, so an absolute bar abstains on every bootstrap
+world and every candidate ties at 0.0. This form is therefore scale-free, as the M3
+incumbent was: readings are standardised within the world and the knobs act on the
+z-score.
 
-* ``depth_penalty`` -- each level of refinement depth subtracts this much from a
-  node's ranking value (not from its eligibility), so a root that clears the bar
-  outranks a depth-3 refinement of the same idea unless the refinement's reading is
-  higher by more than the penalty. Depth is read from ``question.meta(node_id)``.
-* ``ceiling`` -- a reading above the ceiling counts as the ceiling for ranking, so
-  two nodes both above it tie on value and the tie breaks by depth then node id.
-  The bar and the ceiling together define the band the rule prefers to commit in.
+* ``commit_z`` -- the z-score (population standard deviation above the world's mean
+  reading) a node must clear to be eligible. The M2 bar's analogue.
+* ``depth_penalty`` -- subtracted from the ranking z per level of refinement depth
+  (eligibility is unaffected), so a root outranks a deep refinement unless the
+  refinement's standing is higher by more than the penalty.
+* ``ceiling`` -- a z above the ceiling counts as the ceiling for ranking, so the band
+  between ``commit_z`` and ``ceiling`` is where the rule prefers to commit; ties break
+  by depth ascending, then node id ascending.
+* ``min_observed`` -- how many readings a world must carry before a z-score means
+  anything; below it the policy abstains (and, on a bootstrap world, keeps revealing).
+* ``frontier_cap`` -- how many not-yet-revealed neighbours one round may add, on a
+  bootstrap world; a financial world reveals its whole tree up front and the walk ends
+  after one call.
 
-Eligibility is unchanged from M2: ``ic_insample`` at or above the bar, and a
-positive ``r2_insample`` (the IC's sign). Abstention is unchanged: no eligible node,
-``question.abstain()``. One call, empty batch: a financial world's question reveals
-every evaluated node up front.
-
-Every number lives in ``_schedule``'s literals so the default reviser's jitter
-reaches them and nothing else; comparisons are against the schedule's values, never
-against literals, which is what the admission gate requires.
+The reading is ``ic_insample`` where the observation carries it (a financial world,
+where it is the post-cost IR t-statistic) and ``r2_train`` otherwise (a bootstrap
+world). Every number lives in ``_schedule``'s literals so the default reviser's jitter
+reaches them and nothing else; comparisons are against the schedule's values and
+attributes are read as attributes, which is what the admission gate requires.
 """
+
+import math
 
 CONTRACT = "question"
 
@@ -33,22 +41,31 @@ _BETA = 0.5
 
 
 def _schedule(beta):
-    """The three readings this policy uses, derived from ``beta``.
-
-    ``bar`` is the M2 discovery bar; ``depth_penalty`` and ``ceiling`` are the
-    two knobs. ``beta`` enters with a zero coefficient as in the M2 incumbent,
-    so the schedule is a function of it in shape and fixed in value.
-    """
-    bar = 2.0
-    depth_penalty = 0.25
-    ceiling = 4.0
-    sign_floor = 0.0
+    """Every threshold this policy uses, derived from ``beta``; a fresh dict per call."""
+    explore_weight = beta / (1.0 + beta)
     return {
-        "bar": bar + 0.0 * beta,
-        "depth_penalty": depth_penalty + 0.0 * beta,
-        "ceiling": ceiling + 0.0 * beta,
-        "sign_floor": sign_floor + 0.0 * beta,
+        "commit_z": 0.5 + 1.5 * explore_weight,
+        "depth_penalty": 0.25 + 0.0 * explore_weight,
+        "ceiling": 2.5 + 0.0 * explore_weight,
+        "min_observed": 5,
+        "frontier_cap": max(1, round(2.0 + 6.0 * explore_weight)),
     }
+
+
+def _reading(observation):
+    """The node's in-sample reading, or ``None`` when it carries none that is finite."""
+    try:
+        value = observation.ic_insample
+    except AttributeError:
+        value = None
+    if value is None:
+        try:
+            value = observation.r2_train
+        except AttributeError:
+            value = None
+    if value is None or not math.isfinite(value):
+        return None
+    return value
 
 
 def _depth_of(question, node_id):
@@ -62,30 +79,49 @@ def _depth_of(question, node_id):
 
 
 def select(question):
-    """Commit the best eligible node by banded, depth-penalised reading, or abstain."""
+    """Commit the best eligible node by banded, depth-penalised standing, or abstain; then say whether the walk continues."""
     schedule = _schedule(_BETA)
-    bar = schedule["bar"]
+    commit_z = schedule["commit_z"]
     depth_penalty = schedule["depth_penalty"]
     ceiling = schedule["ceiling"]
-    sign_floor = schedule["sign_floor"]
+    min_observed = schedule["min_observed"]
+    frontier_cap = schedule["frontier_cap"]
+    observed = question.observed()
+    values = {}
+    for node_id, observation in observed.items():
+        value = _reading(observation)
+        if value is not None:
+            values[node_id] = value
     best_id = None
     best_key = None
-    for node_id, observation in question.observed().items():
-        value = observation.ic_insample
-        if value is None or value < bar:
-            continue
-        sign = getattr(observation, "r2_insample", None)
-        if sign is not None and sign <= sign_floor:
-            continue
-        depth = _depth_of(question, node_id)
-        banded = value if value < ceiling else ceiling
-        ranking = banded - depth_penalty * depth
-        key = (-ranking, depth, node_id)
-        if best_key is None or key < best_key:
-            best_id = node_id
-            best_key = key
+    if len(values) >= min_observed:
+        mean = sum(values.values()) / len(values)
+        squared = sum((value - mean) * (value - mean) for value in values.values())
+        deviation = math.sqrt(squared / len(values))
+        if deviation:
+            for node_id, value in values.items():
+                standing = (value - mean) / deviation
+                if standing < commit_z:
+                    continue
+                depth = _depth_of(question, node_id)
+                banded = standing if standing < ceiling else ceiling
+                ranking = banded - depth_penalty * depth
+                key = (-ranking, depth, node_id)
+                if best_key is None or key < best_key:
+                    best_id = node_id
+                    best_key = key
     if best_id is not None:
         question.commit(best_id)
     else:
         question.abstain()
-    return ()
+    for observation in observed.values():
+        if hasattr(observation, "ic_insample"):
+            return ()
+    if not observed:
+        return list(question.legal_roots())
+    frontier = []
+    for node_id in observed:
+        for action in question.legal_actions(node_id):
+            if action not in observed and action not in frontier:
+                frontier.append(action)
+    return frontier[:frontier_cap]
