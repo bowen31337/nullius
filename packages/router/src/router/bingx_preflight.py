@@ -112,10 +112,10 @@ approximately.  "Below" is strict — an account holding exactly the
 margin the plan's orders need passes, since the plan asks for no more
 than the account has.
 
-**The already-set answer is absorbed, and only that.**  A venue asked to
-make true what is already true answers in its own way — some answers are
-a plain success, some are a non-zero code whose message says the
-arrangement is already in force — and feature 1's client raises the
+**The already-set answer is absorbed by the venue's own words.**  A venue
+asked to make true what is already true answers in its own way — some
+answers are a plain success, some are a non-zero code whose message says
+the arrangement is already in force — and feature 1's client raises the
 latter as :class:`~router.bingx_client.RouterBingXRefusedError`, leaving
 the judgement to this module by design.  :func:`is_already_set_answer`
 is that judgement, exposed so feature 4's stand-in serves an answer this
@@ -124,6 +124,31 @@ its own message names the state as already set.  Any other refusal — a
 symbol the venue does not know, a permission the key lacks — propagates
 unchanged, in the client's own vocabulary, because swallowing it would
 report a prepared symbol the venue never agreed to hold.
+
+**Why the preparation reads the arrangement before writing it.**  A
+venue with orders resting cannot re-state a margin arrangement at all:
+it answers even the no-op leverage ask with code
+:data:`LEVERAGE_IN_FORCE_REFUSAL_CODE`, *"Insufficient margin. Please
+adjust the leverage"* — words that name neither marker the message
+judgement reads — so from 2026-10-24 every slot that followed a slot
+which left reducing legs resting aborted at the preparation, before the
+cancel step that would have freed the arrangement could run
+(``bug_spec_vst_reduce_only_legs.xml``, bug 2).  The preparation
+therefore reads each symbol's standing arrangement first — through the
+client's ``positions`` face, whose pinned live capture spells the two
+facts the writes state (the boolean ``isolated`` and the whole-number
+``leverage``; the venue's own GET on ``LEVERAGE_PATH`` answers the same
+current leverage per side) — and a symbol already held exactly as the
+preflight writes it (``ISOLATED`` at :data:`PREFLIGHT_LEVERAGE`) is
+prepared by asking nothing, named in the report's ``prepared_skipped``.
+A leverage write that still goes out and is refused with 101253 is
+forgiven by a second judgement, :func:`is_leverage_in_force`, exactly
+while the leverage the read saw already equals the one asked — a
+current that differs, or one no row answered, leaves the refusal a
+change the venue really declined, and it propagates as before.  The
+margin-type write keeps :func:`_prepare`'s window unchanged: a symbol
+not yet isolated is an arrangement the venue must agree to hold, and no
+margin refusal is silenced for it.
 
 **Nothing here reaches the network itself.**  The module holds no
 transport, no credentials and no host: every venue fact is read through
@@ -151,6 +176,7 @@ __all__ = [
     "CLOCK_SKEW_CODE",
     "HEDGE_MODE_CODE",
     "INSUFFICIENT_BALANCE_CODE",
+    "LEVERAGE_IN_FORCE_REFUSAL_CODE",
     "MAX_CLOCK_SKEW_MILLISECONDS",
     "ONE_WAY_REPAIR",
     "ORDERS_KILLED_CODE",
@@ -162,6 +188,7 @@ __all__ = [
     "RouterBingXOrdersKilledError",
     "RouterBingXPreflightError",
     "is_already_set_answer",
+    "is_leverage_in_force",
     "read_available_usdt",
     "run_bingx_preflight",
 ]
@@ -222,6 +249,20 @@ BALANCE_ASSET = "USDT"
 #: duplicate-clientOrderID refusal, say, whose message also carries the
 #: word) can never reach this test.
 ALREADY_SET_MSG_MARKERS = ("already", "no need to change")
+
+#: The venue's code for a leverage write it cannot make while orders
+#: rest.  BingX answers ``set_leverage`` with 101253 *"Insufficient
+#: margin. Please adjust the leverage"* when the margin the account's
+#: resting orders already reserve leaves no room to re-state the
+#: arrangement — even when the asked leverage is the very one standing,
+#: which is how every slot after a slot that left reducing legs resting
+#: died, in about a second, from 2026-10-24 on
+#: (``bug_spec_vst_reduce_only_legs.xml``, bug 2).  The code is
+#: therefore judged together with the arrangement the preflight read:
+#: while the current leverage already equals the one asked, a 101253
+#: names a no-op the venue cannot re-state, not a change it refused —
+#: the fact :func:`is_leverage_in_force` decides.
+LEVERAGE_IN_FORCE_REFUSAL_CODE = 101253
 
 
 # -- Errors -------------------------------------------------------------------
@@ -396,12 +437,21 @@ class PreflightReport:
     * ``symbols`` — the symbols prepared, as a tuple in the sorted order
       the preparation walked; empty for a flat plan, which prepares
       nothing because it places nothing.
+    * ``prepared_skipped`` — the symbols whose standing arrangement
+      already equalled the preflight's (``ISOLATED`` at
+      :data:`PREFLIGHT_LEVERAGE`) and whose two writes were therefore
+      never made, as a tuple in the same sorted order, so a slot log
+      reading the report sees how many writes the arrangement read
+      saved.  A symbol skipped here is still among ``symbols``: the door
+      asked after the arrangement and found it already prepared — the
+      venue holds it whether this run wrote it or a previous one did.
     """
 
     skew_ms: int
     available_usdt: Decimal
     required_usdt: Decimal
     symbols: tuple[str, ...]
+    prepared_skipped: tuple[str, ...]
 
 
 # -- Helpers --------------------------------------------------------------------
@@ -420,21 +470,25 @@ def _system_clock_millis() -> int:
 
 
 def _require_client_face(client: Any) -> None:
-    """Refuse a client that lacks one of the five endpoints the preflight reads.
+    """Refuse a client that lacks one of the six endpoints the preflight reads.
 
     The preflight holds no transport of its own — every venue fact
     arrives through the client it is handed, which is what makes the
     suite's double a complete stand-in.  ``position_mode`` is among the
-    five since the corrected hedge law: the mode is a fact the account
+    six since the corrected hedge law: the mode is a fact the account
     answers, and a client that cannot ask it cannot preflight at all.
-    A client missing an endpoint is a fault of the ask named here, up
-    front, rather than an :class:`AttributeError` from the middle of
-    the ordered checks.
+    ``positions`` is among them since the resting-order law: the
+    preparation reads each symbol's standing arrangement through it
+    before deciding whether to write, and a client that cannot ask it
+    cannot know a write is a no-op.  A client missing an endpoint is a
+    fault of the ask named here, up front, rather than an
+    :class:`AttributeError` from the middle of the ordered checks.
     """
     for name in (
         "server_time",
         "position_mode",
         "balance",
+        "positions",
         "set_margin_type",
         "set_leverage",
     ):
@@ -445,7 +499,7 @@ def _require_client_face(client: Any) -> None:
                 "preflight reads the venue through and re-implements none "
                 f"of — got {getattr(client, name, None)!r}; hand the "
                 "preflight feature 1's client (or a double carrying its "
-                "five endpoints)"
+                "six endpoints)"
             )
 
 
@@ -683,6 +737,96 @@ def is_already_set_answer(refusal: Any) -> bool:
     return any(marker in lowered for marker in ALREADY_SET_MSG_MARKERS)
 
 
+def is_leverage_in_force(
+    refusal: Any, current_leverage: Any, wanted: int
+) -> bool:
+    """Whether a leverage refusal names an arrangement already standing.
+
+    The second judgement beside :func:`is_already_set_answer`, coined by
+    ``bug_spec_vst_reduce_only_legs.xml`` bug 2: a venue with orders
+    resting cannot re-state an arrangement, and answers the leverage
+    write with code :data:`LEVERAGE_IN_FORCE_REFUSAL_CODE` whatever its
+    message says — the live answer's own words (*"Insufficient margin.
+    Please adjust the leverage"*) name neither marker the message
+    judgement reads.  This judgement instead reads two facts the
+    preflight already holds: the venue's code and the arrangement the
+    read answered.  It holds exactly when the code is that one *and* the
+    current leverage already equals the wanted — the two facts that
+    together say the write was a no-op.  A current that differs, or one
+    the read could not see (``None``), leaves the refusal a change the
+    venue really declined, and it keeps its old path.  Anything that is
+    not a refusal carrying a ``code`` answers ``False``, the same stance
+    the marker judgement takes: a value this cannot judge is not an
+    answer the preflight absorbs.
+    """
+    if getattr(refusal, "code", None) != LEVERAGE_IN_FORCE_REFUSAL_CODE:
+        return False
+    return current_leverage == wanted
+
+
+def _venue_leverage(value: Any) -> int | None:
+    """One position row's ``leverage`` as a whole number, or unread.
+
+    The pinned live capture spells the fact as a JSON number
+    (``"leverage": 1``, ``positions_one_way_short.json``); the venue's
+    string spelling of a whole number reads the same.  A value this
+    cannot read answers ``None`` — unknown, never a number guessed at —
+    because the arrangement read falls back to the writes rather than
+    inventing a fact the row did not spell.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            number = Decimal(value.strip())
+        except InvalidOperation:
+            return None
+        if number == number.to_integral_value():
+            return int(number)
+    return None
+
+
+def _current_arrangement(
+    client: Any, symbol: str
+) -> tuple[bool | None, int | None]:
+    """The symbol's standing margin arrangement, read through the client.
+
+    ``(isolated, leverage)`` — the two facts the preparation writes —
+    read from the venue's own position row for ``symbol`` through the
+    client's ``positions`` face, the one arrangement-bearing read
+    feature 1's client carries: the live capture's rows spell the margin
+    mode as the boolean ``isolated`` and the leverage as a whole number,
+    and the current leverage the venue's own GET on ``LEVERAGE_PATH``
+    answers per side is the same fact the held row carries for the side
+    the account holds.  ``None`` in either place — no row for the symbol
+    (the account holds nothing on it), a row the venue answered without
+    the field, or a payload this cannot read — is *unknown*, never
+    ``False``: an arrangement the read cannot see is one the writes
+    still state, exactly as this preflight always did, because a misread
+    no-op must never skip the write that would have made the symbol safe
+    to place on.
+    """
+    payload = client.positions(symbol)
+    if not isinstance(payload, Sequence) or isinstance(
+        payload, (str, bytes)
+    ):
+        return None, None
+    for entry in payload:
+        if not isinstance(entry, Mapping):
+            continue
+        name = entry.get("symbol")
+        if not isinstance(name, str) or name.strip() != symbol:
+            continue
+        isolated = entry.get("isolated")
+        return (
+            isolated if isinstance(isolated, bool) else None,
+            _venue_leverage(entry.get("leverage")),
+        )
+    return None, None
+
+
 def read_available_usdt(client: Any) -> Decimal:
     """The account's available USDT, read through the client, exactly.
 
@@ -731,6 +875,35 @@ def _prepare(call: Callable[[], Any]) -> None:
         raise
 
 
+def _prepare_leverage(
+    call: Callable[[], Any], current_leverage: int | None
+) -> None:
+    """Make the leverage write, absorbing the two no-op answers.
+
+    :func:`_prepare`'s own window — the refusal whose message names the
+    state as already set — plus the one answer whose words name nothing
+    but whose facts do: code :data:`LEVERAGE_IN_FORCE_REFUSAL_CODE`
+    while the arrangement read already holds the leverage asked
+    (:func:`is_leverage_in_force`).  A venue with orders resting cannot
+    re-state an arrangement, and a slot that follows a slot which left
+    legs resting must still be able to prepare the symbols those legs
+    rest on — the abort-before-the-cancel of
+    ``bug_spec_vst_reduce_only_legs.xml`` bug 2 is the failure this
+    wider window exists to not have.  Every other refusal propagates
+    unchanged, exactly as :func:`_prepare` keeps it.
+    """
+    try:
+        call()
+    except RouterBingXRefusedError as refusal:
+        if is_already_set_answer(refusal):
+            return
+        if is_leverage_in_force(
+            refusal, current_leverage, PREFLIGHT_LEVERAGE
+        ):
+            return
+        raise
+
+
 # -- The verb -------------------------------------------------------------------
 
 
@@ -773,9 +946,11 @@ def run_bingx_preflight(
     Each argument is a keyword:
 
     * ``client`` — feature 1's :class:`~router.bingx_client.BingXClient`,
-      or a double carrying its five endpoints (``position_mode`` among
-      them since the corrected hedge law).  Every venue fact is
-      read through it; this module opens nothing itself.
+      or a double carrying its six endpoints (``position_mode`` among
+      them since the corrected hedge law, ``positions`` since the
+      resting-order law: the preparation reads each symbol's standing
+      arrangement before deciding whether to write).  Every venue fact
+      is read through it; this module opens nothing itself.
     * ``required_usdt`` — the margin the plan's orders need, as the
       caller computed it (a decimal string or a
       :class:`~decimal.Decimal`; a ``float`` is refused by name, the
@@ -794,7 +969,11 @@ def run_bingx_preflight(
     * ``symbols`` — the symbols the plan will order, any iterable;
       normalized to the sorted unique tuple and prepared one margin
       arrangement each (``ISOLATED``, leverage
-      :data:`PREFLIGHT_LEVERAGE`, one-way).
+      :data:`PREFLIGHT_LEVERAGE`, one-way).  A symbol whose standing
+      arrangement already equals that one is prepared without a write
+      and named in the report's ``prepared_skipped``; a symbol whose
+      arrangement the read could not see is written to as this preflight
+      always wrote.
     * ``database_url`` / ``env`` — handed to the kill guard unchanged;
       ``env`` defaults to the process environment, the default the
       guard itself takes.
@@ -884,19 +1063,34 @@ def run_bingx_preflight(
         raise RouterBingXInsufficientBalanceError(available, required)
 
     # The preparation: one margin arrangement per ordered symbol, in the
-    # book's sorted order, each write absorbing only the already-set
-    # answer.  The leverage rides the client's one-way default side —
-    # the hedge check above has proved the account answers one-way.
+    # book's sorted order.  Each symbol's standing arrangement is read
+    # first — the client's positions face, whose rows carry the margin
+    # mode and the leverage the writes would state — and a symbol
+    # already held ISOLATED at the preflight's leverage is prepared by
+    # asking nothing: a venue with orders resting cannot re-state an
+    # arrangement, and the write a previous slot already made is the
+    # no-op it would refuse to repeat (bug_spec_vst_reduce_only_legs.xml,
+    # bug 2).  Each write that does go out absorbs only the already-set
+    # answer, the leverage write additionally the 101253 no-op (see
+    # _prepare_leverage), and the leverage rides the client's one-way
+    # default side — the hedge check above has proved the account
+    # answers one-way.
+    skipped: list[str] = []
     for symbol in prepared:
+        isolated, current_leverage = _current_arrangement(client, symbol)
+        if isolated and current_leverage == PREFLIGHT_LEVERAGE:
+            skipped.append(symbol)
+            continue
         _prepare(
             lambda symbol=symbol: client.set_margin_type(
                 symbol, BINGX_MARGIN_TYPE_ISOLATED
             )
         )
-        _prepare(
+        _prepare_leverage(
             lambda symbol=symbol: client.set_leverage(
                 symbol, PREFLIGHT_LEVERAGE
-            )
+            ),
+            current_leverage,
         )
 
     return PreflightReport(
@@ -904,4 +1098,5 @@ def run_bingx_preflight(
         available_usdt=available,
         required_usdt=required,
         symbols=prepared,
+        prepared_skipped=tuple(skipped),
     )

@@ -36,6 +36,21 @@ against a 10000-equity book whose legs needed about 2800), so the term
 is now the required margin the caller — the mirror — computes for the
 orders about to be sent, and this module judges it strictly.
 
+The resting-order leverage refusal is the third correction.  The
+preparation wrote both of its arrangements unconditionally and absorbed
+only refusals whose own message said "already" — but a venue with orders
+resting cannot re-state an arrangement at all, and answers even the
+no-op ask with code 101253 "Insufficient margin. Please adjust the
+leverage", whose words name neither marker.  Every slot after a slot
+that left reducing legs resting therefore aborted at the preparation,
+before the cancel step could clear the orders that caused it.  The
+preparation now reads each symbol's standing arrangement first — the
+client's ``positions`` face, whose live capture spells ``isolated`` and
+``leverage`` — skips both writes for a symbol already held exactly as
+the preflight would write it, and forgives the 101253 answer only while
+the leverage the read saw already equals the one asked
+(:func:`is_leverage_in_force`, beside the marker judgement it amends).
+
 Every test drives the preflight over an injected client double — the
 suite never opens a socket, and one test patches ``socket.socket`` to
 raise to prove it.  The kill channel is the one seam exercised for real:
@@ -65,6 +80,7 @@ from router.bingx_preflight import (
     CLOCK_SKEW_CODE,
     HEDGE_MODE_CODE,
     INSUFFICIENT_BALANCE_CODE,
+    LEVERAGE_IN_FORCE_REFUSAL_CODE,
     MAX_CLOCK_SKEW_MILLISECONDS,
     ONE_WAY_REPAIR,
     ORDERS_KILLED_CODE,
@@ -76,6 +92,7 @@ from router.bingx_preflight import (
     RouterBingXOrdersKilledError,
     RouterBingXPreflightError,
     is_already_set_answer,
+    is_leverage_in_force,
     run_bingx_preflight,
 )
 
@@ -103,15 +120,17 @@ def _live(name: str) -> object:
 class _DoubleClient:
     """A stand-in for feature 1's client: canned answers, every call recorded.
 
-    Carries the five endpoints the preflight reads the venue through, so
+    Carries the six endpoints the preflight reads the venue through, so
     the double is a complete face and the suite opens no socket.  The
     ``margin_refusals`` and ``leverage_refusals`` mappings let a test
     make one preparation write answer the way a venue answers a
     no-op — by refusing — so the already-set absorption is exercised
     over the client's own exception type, not a fake one.  ``positions``
-    stays a face the double answers — the mirror's own plan read wants
-    it — while the preflight itself asks ``position_mode`` and never the
-    positions, the very distinction the corrected hedge law draws.
+    answers the arrangement the preparation reads — one call per
+    prepared symbol, narrowed as the client's own face narrows — while
+    the mode still comes from ``position_mode`` alone, the very
+    distinction the corrected hedge law draws: a row answers what one
+    symbol holds, never how the account answers for itself.
     """
 
     def __init__(
@@ -277,6 +296,9 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
     a crossed position is a different risk than the same change on an
     isolated one.  The leverage rides the client's one-way default
     side, which the hedge check has already proved the account holds.
+    Each symbol's arrangement is read before its writes — the flat
+    double answers no position row, so nothing is skipped and both
+    writes go out exactly as before the resting-order correction.
     """
     client = _funded_client()
 
@@ -289,12 +311,15 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
     )
 
     assert report.symbols == ("BTC-USDT", "SOL-USDT")
+    assert report.prepared_skipped == ()
     assert client.calls == [
         ("server_time",),
         ("position_mode",),
         ("balance",),
+        ("positions", "BTC-USDT"),
         ("set_margin_type", "BTC-USDT", "ISOLATED"),
         ("set_leverage", "BTC-USDT", PREFLIGHT_LEVERAGE, "BOTH"),
+        ("positions", "SOL-USDT"),
         ("set_margin_type", "SOL-USDT", "ISOLATED"),
         ("set_leverage", "SOL-USDT", PREFLIGHT_LEVERAGE, "BOTH"),
     ]
@@ -924,17 +949,201 @@ def test_the_already_set_markers_are_the_two_spellings_of_the_fact() -> None:
     assert ALREADY_SET_MSG_MARKERS == ("already", "no need to change")
 
 
+# -- The resting-order leverage refusal -------------------------------------------
+# bug_spec_vst_reduce_only_legs.xml, bug 2: a venue with orders resting
+# cannot re-state an arrangement, so every slot after a slot that left
+# reducing legs resting aborted at the preparation.
+
+
+def _resting_order_refusal() -> RouterBingXRefusedError:
+    """The venue's own 101253 answer, spelled as the fixture pinned it.
+
+    Read from the composed capture rather than restated here, so the
+    code and the message the live slots aborted on stay pinned in one
+    place — the directory whose job that is.
+    """
+    document = _live("set_leverage_refused_open_orders.json")
+    return RouterBingXRefusedError(
+        document["set_leverage_refused"]["code"],
+        document["set_leverage_refused"]["msg"],
+    )
+
+
+def test_a_symbol_in_force_behind_resting_orders_is_skipped_not_refused() -> None:
+    """The live bug: already ISOLATED at leverage 1, the write is never made.
+
+    Every slot after a slot that left reducing legs resting aborted in
+    about a second: the venue cannot re-state a leverage arrangement
+    while orders rest, so it answered the preparation's ``set_leverage``
+    with code 101253 "Insufficient margin. Please adjust the leverage"
+    even though the asked arrangement already stood — a message naming
+    neither marker ``is_already_set_answer`` reads, so ``_prepare`` let
+    it abort the slot before the cancel step could clear the resting
+    orders that caused it.  The preparation now reads the symbol's
+    arrangement first — the client's ``positions`` face, whose pinned
+    live capture spells ``isolated`` and ``leverage`` — and a symbol
+    already held ISOLATED at ``PREFLIGHT_LEVERAGE`` is prepared by
+    asking nothing: the venue is never posed the question it cannot
+    answer, the refusal configured here is never reached, and the slot
+    walks on to the cancel that frees the arrangement.
+    """
+    client = _funded_client(
+        positions=_live("positions_one_way_short.json")["data"],
+        leverage_refusals={"DOGE-USDT": _resting_order_refusal()},
+    )
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt=Decimal(0),
+        symbols=["DOGE-USDT"],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+    )
+
+    assert report.symbols == ("DOGE-USDT",)
+    assert report.prepared_skipped == ("DOGE-USDT",)
+    assert ("positions", "DOGE-USDT") in client.calls
+    assert [call for call in client.calls if call[0].startswith("set_")] == []
+
+
+def test_a_refusal_while_the_current_leverage_differs_still_raises() -> None:
+    """101253 with the current leverage genuinely different propagates.
+
+    The tolerance is one fact wide: the refusal counts as already-set
+    only while the arrangement the read saw already holds the leverage
+    asked for.  A symbol held at leverage 2 is a write the venue really
+    declined — the resting orders are not a cause this preflight may
+    forgive — so the refusal propagates unchanged, in the client's own
+    vocabulary with its ``code`` and ``msg`` still on it, exactly as
+    before this correction, and the report is never answered.
+    """
+    refusal = _resting_order_refusal()
+    client = _funded_client(
+        positions=(
+            {
+                "symbol": "DOGE-USDT",
+                "positionSide": "SHORT",
+                "positionAmt": "5402",
+                "isolated": True,
+                "leverage": 2,
+            },
+        ),
+        leverage_refusals={"DOGE-USDT": refusal},
+    )
+
+    with pytest.raises(RouterBingXRefusedError) as raised:
+        run_bingx_preflight(
+            client,
+            required_usdt=Decimal(0),
+            symbols=["DOGE-USDT"],
+            env={},
+            clock=lambda: LOCAL_MILLIS,
+        )
+
+    assert raised.value is refusal
+    assert ("set_leverage", "DOGE-USDT", PREFLIGHT_LEVERAGE, "BOTH") in (
+        client.calls
+    )
+
+
+def test_an_arrangement_already_in_force_makes_no_preparation_writes() -> None:
+    """A symbol already ISOLATED at leverage 1 is prepared by not asking.
+
+    Both writes the feature orders are no-ops the venue would only
+    re-state — and, with the previous slot's legs still resting,
+    re-stating is the one thing it cannot do.  The report still names
+    the symbols among the prepared and now names them among
+    ``prepared_skipped`` too, in the same sorted order, so a slot log
+    reading the report sees how many writes the read saved.
+    """
+    client = _funded_client(
+        positions=_live("positions_one_way_short.json")["data"]
+    )
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt=Decimal(0),
+        symbols=["DOGE-USDT", "BTC-USDT"],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+    )
+
+    assert report.symbols == ("BTC-USDT", "DOGE-USDT")
+    assert report.prepared_skipped == ("BTC-USDT", "DOGE-USDT")
+    assert ("positions", "BTC-USDT") in client.calls
+    assert ("positions", "DOGE-USDT") in client.calls
+    assert [call for call in client.calls if call[0].startswith("set_")] == []
+
+
+def test_is_leverage_in_force_holds_exactly_for_its_code_and_an_equal_current() -> None:
+    """The second judgement's window: the code, and current equals wanted.
+
+    Beside ``is_already_set_answer``, which reads the refusal's own
+    words, this judgement reads two facts the preflight already holds:
+    the venue's code and the arrangement the read answered.  It holds
+    exactly when both say the leverage is already in force — any other
+    code, any other current, an unread current, or a value outside the
+    client's refusal vocabulary answers False, and the refusal keeps its
+    old path.
+    """
+    refused = RouterBingXRefusedError(
+        LEVERAGE_IN_FORCE_REFUSAL_CODE,
+        "Insufficient margin. Please adjust the leverage",
+    )
+    assert is_leverage_in_force(refused, 1, PREFLIGHT_LEVERAGE)
+    assert not is_leverage_in_force(refused, 2, PREFLIGHT_LEVERAGE)
+    assert not is_leverage_in_force(refused, None, PREFLIGHT_LEVERAGE)
+    assert not is_leverage_in_force(refused, 1, 2)
+    assert not is_leverage_in_force(
+        RouterBingXRefusedError(80014, "No need to change the leverage"),
+        1,
+        PREFLIGHT_LEVERAGE,
+    )
+    assert not is_leverage_in_force(
+        RouterBingXRefusedError(109425, "The trading pair does not exist"),
+        1,
+        PREFLIGHT_LEVERAGE,
+    )
+    # Not the client's refusal — no ``code`` to read — so not this
+    # judgement's, the same stance the marker judgement takes.
+    assert not is_leverage_in_force(Exception("101253"), 1, PREFLIGHT_LEVERAGE)
+    assert not is_leverage_in_force("101253", 1, PREFLIGHT_LEVERAGE)
+
+
+def test_the_refused_open_orders_fixture_pins_the_two_documents() -> None:
+    """The composed capture holds the refusal and the leverage answer.
+
+    The refusal document spells the code and message the aborted slots
+    printed; the leverage GET answer — the venue's per-side spelling of
+    the current arrangement — agrees that the leverage already stood at
+    ``PREFLIGHT_LEVERAGE`` on both sides of the symbol those slots died
+    on; and the note marks the file composed, the directory's own
+    honesty about a capture no aborted slot could record.
+    """
+    document = _live("set_leverage_refused_open_orders.json")
+
+    assert document["set_leverage_refused"] == {
+        "code": LEVERAGE_IN_FORCE_REFUSAL_CODE,
+        "msg": "Insufficient margin. Please adjust the leverage",
+    }
+    rows = document["leverage_get"]["data"]
+    assert {row["symbol"] for row in rows} == {"DOGE-USDT"}
+    assert {row["side"] for row in rows} == {"LONG", "SHORT"}
+    assert {row["leverage"] for row in rows} == {PREFLIGHT_LEVERAGE}
+    assert "composed" in document["_note"].lower()
+
+
 # -- The ask ------------------------------------------------------------------------
 
 
 def test_the_client_face_is_required_up_front() -> None:
     """A client missing an endpoint is a fault of the ask, named before any check.
 
-    The preflight reads the venue only through the five endpoints it
-    names — ``position_mode`` among them since the corrected hedge law
-    — and re-implements none of them; a client missing one is refused
-    up front rather than unwinding an AttributeError from the middle of
-    the ordered checks.
+    The preflight reads the venue only through the six endpoints it
+    names — ``position_mode`` among them since the corrected hedge law,
+    ``positions`` since the resting-order law — and re-implements none
+    of them; a client missing one is refused up front rather than
+    unwinding an AttributeError from the middle of the ordered checks.
     """
     from types import SimpleNamespace
 
@@ -942,10 +1151,11 @@ def test_the_client_face_is_required_up_front() -> None:
         "server_time": lambda: LOCAL_MILLIS,
         "position_mode": lambda: False,
         "balance": lambda: {},
+        "positions": lambda symbol=None: (),
         "set_margin_type": lambda symbol, margin_type="ISOLATED": {},
         "set_leverage": lambda symbol, leverage=1, *, side="BOTH": {},
     }
-    for missing in ("position_mode", "set_leverage"):
+    for missing in ("position_mode", "positions", "set_leverage"):
         incomplete = SimpleNamespace(
             **{name: face for name, face in faces.items() if name != missing}
         )

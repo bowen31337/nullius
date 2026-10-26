@@ -1,0 +1,23 @@
+{
+  "_note": "Composed, not captured (bug_spec_vst_reduce_only_legs.xml, bug 2). The 101253 refusal document spells the code and message verbatim as the aborted slots of 2026-10-24/25 printed them (the slot log quoted 'the venue answered code 101253 with Insufficient margin. Please adjust the leverage'); no envelope could be recorded from a slot that died before its first document was read. The leverage GET answer is composed from the quirks already pinned here: the envelope shape every capture carries, one row per side (LONG/SHORT) as the venue's per-side leverage answer spells them, and the integer leverage spelling of positions_one_way_short.json. It answers leverage 1 per side for DOGE-USDT — the arrangement the slots that aborted had already written in earlier, successful slots, and the fact the composed refusal is therefore a no-op the venue could not re-state while the previous slot's reducing legs still rested.",
+  "set_leverage_refused": {
+    "code": 101253,
+    "msg": "Insufficient margin. Please adjust the leverage"
+  },
+  "leverage_get": {
+    "code": 0,
+    "msg": "",
+    "data": [
+      {
+        "symbol": "DOGE-USDT",
+        "side": "LONG",
+        "leverage": 1
+      },
+      {
+        "symbol": "DOGE-USDT",
+        "side": "SHORT",
+        "leverage": 1
+      }
+    ]
+  }
+}
