@@ -67,7 +67,8 @@ position rows the corrected hedge check deliberately does not read).
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -85,6 +86,7 @@ from router.bingx_preflight import (
     ONE_WAY_REPAIR,
     ORDERS_KILLED_CODE,
     PREFLIGHT_LEVERAGE,
+    PREPARATION_RETRY_LIMIT,
     PreflightReport,
     RouterBingXClockSkewError,
     RouterBingXHedgeModeError,
@@ -94,6 +96,12 @@ from router.bingx_preflight import (
     is_already_set_answer,
     is_leverage_in_force,
     run_bingx_preflight,
+)
+from router.errors import RouterRateLimitedError
+from router.limiter import (
+    DEFAULT_WEIGHT_SCOPE,
+    RateLimitHeadroom,
+    VenueWeightSchedule,
 )
 
 #: A local clock the tests pin, so the skew is a fact under the test's
@@ -126,11 +134,19 @@ class _DoubleClient:
     make one preparation write answer the way a venue answers a
     no-op — by refusing — so the already-set absorption is exercised
     over the client's own exception type, not a fake one.  ``positions``
-    answers the arrangement the preparation reads — one call per
-    prepared symbol, narrowed as the client's own face narrows — while
-    the mode still comes from ``position_mode`` alone, the very
-    distinction the corrected hedge law draws: a row answers what one
-    symbol holds, never how the account answers for itself.
+    answers the arrangement the preparation reads — the account-wide
+    document for the ``None`` narrowing the preparation opens with, and
+    the same payload for a per-symbol narrowing, which is what makes one
+    double serve both reads.  The mode still comes from
+    ``position_mode`` alone, the very distinction the corrected hedge
+    law draws: a row answers what one symbol holds, never how the
+    account answers for itself.
+
+    ``positions_refusals`` is the budget's own answer rather than the
+    venue's: a list of exceptions the ``positions`` face raises one per
+    call, in order, before it starts answering ``positions`` — the
+    fixture for the 429 that aborted the 2026-10-26 04:05 UTC slot, and
+    for its retry (``bug_spec_vst_slot_resilience.xml``).
     """
 
     def __init__(
@@ -142,6 +158,8 @@ class _DoubleClient:
         balance: object = None,
         margin_refusals: dict[str, Exception] | None = None,
         leverage_refusals: dict[str, Exception] | None = None,
+        positions_refusals: list[Exception] | None = None,
+        margin_type_refusals: list[Exception] | None = None,
     ) -> None:
         self._server_time = server_time
         self._positions = positions
@@ -149,6 +167,8 @@ class _DoubleClient:
         self._balance = balance
         self._margin_refusals = margin_refusals or {}
         self._leverage_refusals = leverage_refusals or {}
+        self._positions_refusals = list(positions_refusals or [])
+        self._margin_type_refusals = list(margin_type_refusals or [])
         self.calls: list[tuple] = []
 
     def server_time(self) -> int:
@@ -157,7 +177,22 @@ class _DoubleClient:
 
     def positions(self, symbol: str | None = None) -> object:
         self.calls.append(("positions", symbol))
-        return self._positions
+        if self._positions_refusals:
+            raise self._positions_refusals.pop(0)
+        payload = self._positions
+        if symbol is None or not isinstance(payload, Sequence) or isinstance(
+            payload, (str, bytes)
+        ):
+            return payload
+        # The client's face narrows, so the double's must: a per-symbol
+        # read answers only that symbol's row, exactly as the venue's own
+        # does.  A payload that is not the venue's array passes through
+        # untouched, so the malformed-payload tests keep their shape.
+        return tuple(
+            entry
+            for entry in payload
+            if isinstance(entry, Mapping) and entry.get("symbol") == symbol
+        )
 
     def position_mode(self) -> object:
         self.calls.append(("position_mode",))
@@ -171,6 +206,8 @@ class _DoubleClient:
         self, symbol: str, margin_type: str = "ISOLATED"
     ) -> object:
         self.calls.append(("set_margin_type", symbol, margin_type))
+        if self._margin_type_refusals:
+            raise self._margin_type_refusals.pop(0)
         if symbol in self._margin_refusals:
             raise self._margin_refusals[symbol]
         return {}
@@ -296,9 +333,10 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
     a crossed position is a different risk than the same change on an
     isolated one.  The leverage rides the client's one-way default
     side, which the hedge check has already proved the account holds.
-    Each symbol's arrangement is read before its writes — the flat
-    double answers no position row, so nothing is skipped and both
-    writes go out exactly as before the resting-order correction.
+    The account's arrangements are read once — the flat double answers
+    an empty positions document — and each symbol with no row there
+    costs one per-symbol GET, so nothing is skipped and both writes go
+    out exactly as before the resting-order correction.
     """
     client = _funded_client()
 
@@ -312,10 +350,13 @@ def test_preparation_sets_isolated_then_leverage_one_per_symbol() -> None:
 
     assert report.symbols == ("BTC-USDT", "SOL-USDT")
     assert report.prepared_skipped == ()
+    assert report.skipped_from_positions == ()
+    assert report.skipped_by_leverage_get == ()
     assert client.calls == [
         ("server_time",),
         ("position_mode",),
         ("balance",),
+        ("positions", None),
         ("positions", "BTC-USDT"),
         ("set_margin_type", "BTC-USDT", "ISOLATED"),
         ("set_leverage", "BTC-USDT", PREFLIGHT_LEVERAGE, "BOTH"),
@@ -628,9 +669,9 @@ def test_a_one_way_account_passes_whatever_its_positions_label() -> None:
     in ``live/position_mode_one_way.json``) holding the DOGE short of
     ``live/positions_one_way_short.json`` was refused here, because
     BingX labels one-way positions LONG and SHORT as well.  The
-    preflight asks the account, reads its positions not at all, and the
-    plan's symbols are prepared over the very rows the old inference
-    refused — flat, BOTH-labelled, or the live one-way capture's own
+    preflight asks the account — never a row's ``positionSide`` — and
+    the plan's symbols are prepared over the very rows the old inference
+    refused: flat, BOTH-labelled, or the live one-way capture's own
     LONG/SHORT rows.
     """
     one_way_rows = _live("positions_one_way_short.json")["data"]
@@ -651,7 +692,12 @@ def test_a_one_way_account_passes_whatever_its_positions_label() -> None:
         )
 
         assert report.symbols == ("BTC-USDT",)
-        assert ("positions", None) not in client.calls
+        # The mode came from the account's own answer, the six endpoints'
+        # ``position_mode``, whatever the rows label: the read the
+        # preparation makes of the positions document (the arrangements
+        # the writes would state) is never the mode's source, and no
+        # positionSide is read out of it.
+        assert ("position_mode",) in client.calls
 
 
 def test_a_position_mode_answer_that_is_not_the_boolean_is_refused() -> None:
@@ -985,7 +1031,9 @@ def test_a_symbol_in_force_behind_resting_orders_is_skipped_not_refused() -> Non
     already held ISOLATED at ``PREFLIGHT_LEVERAGE`` is prepared by
     asking nothing: the venue is never posed the question it cannot
     answer, the refusal configured here is never reached, and the slot
-    walks on to the cancel that frees the arrangement.
+    walks on to the cancel that frees the arrangement.  The arrangement
+    came off the **one** positions read — the document held a row for
+    the symbol — so not even a per-symbol GET went out for it.
     """
     client = _funded_client(
         positions=_live("positions_one_way_short.json")["data"],
@@ -1002,7 +1050,10 @@ def test_a_symbol_in_force_behind_resting_orders_is_skipped_not_refused() -> Non
 
     assert report.symbols == ("DOGE-USDT",)
     assert report.prepared_skipped == ("DOGE-USDT",)
-    assert ("positions", "DOGE-USDT") in client.calls
+    assert report.skipped_from_positions == ("DOGE-USDT",)
+    assert report.skipped_by_leverage_get == ()
+    assert ("positions", None) in client.calls
+    assert ("positions", "DOGE-USDT") not in client.calls
     assert [call for call in client.calls if call[0].startswith("set_")] == []
 
 
@@ -1054,7 +1105,10 @@ def test_an_arrangement_already_in_force_makes_no_preparation_writes() -> None:
     re-stating is the one thing it cannot do.  The report still names
     the symbols among the prepared and now names them among
     ``prepared_skipped`` too, in the same sorted order, so a slot log
-    reading the report sees how many writes the read saved.
+    reading the report sees how many writes the read saved.  Both
+    symbols were answered by the *one* positions document, so the whole
+    preparation cost exactly that one GET — neither symbol billed a
+    per-symbol read.
     """
     client = _funded_client(
         positions=_live("positions_one_way_short.json")["data"]
@@ -1070,8 +1124,57 @@ def test_an_arrangement_already_in_force_makes_no_preparation_writes() -> None:
 
     assert report.symbols == ("BTC-USDT", "DOGE-USDT")
     assert report.prepared_skipped == ("BTC-USDT", "DOGE-USDT")
-    assert ("positions", "BTC-USDT") in client.calls
-    assert ("positions", "DOGE-USDT") in client.calls
+    assert report.skipped_from_positions == ("BTC-USDT", "DOGE-USDT")
+    assert report.skipped_by_leverage_get == ()
+    assert [call for call in client.calls if call[0] == "positions"] == [
+        ("positions", None)
+    ]
+    assert [call for call in client.calls if call[0].startswith("set_")] == []
+
+
+def test_a_symbol_the_document_has_no_row_for_is_skipped_by_its_own_get() -> None:
+    """The other skip's origin is named apart: the per-symbol GET answered.
+
+    The two skips are kept apart because they cost different things.  A
+    symbol the account-wide document holds no row for keeps the
+    per-symbol GET — the account holds nothing on it, so that document
+    cannot answer — and when the GET answers the arrangement already
+    stands, the write is still saved.  That skip is the one the report
+    names under ``skipped_by_leverage_get``: precisely the request the
+    account-wide read could not save, which is what tells a slot log how
+    many GETs the whole preparation spent.
+    """
+
+    class _TwoFaced(_DoubleClient):
+        """The account-wide read sees nothing; the narrowed one sees the row."""
+
+        def positions(self, symbol: str | None = None) -> object:
+            self.calls.append(("positions", symbol))
+            if symbol is None:
+                return ()
+            return _live("positions_one_way_short.json")["data"]
+
+    client = _TwoFaced(
+        server_time=LOCAL_MILLIS,
+        dual_side_position=False,
+        balance={"balance": {"asset": "USDT", "availableMargin": "10000"}},
+    )
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt=Decimal(0),
+        symbols=["DOGE-USDT"],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+    )
+
+    assert report.prepared_skipped == ("DOGE-USDT",)
+    assert report.skipped_from_positions == ()
+    assert report.skipped_by_leverage_get == ("DOGE-USDT",)
+    assert [call for call in client.calls if call[0] == "positions"] == [
+        ("positions", None),
+        ("positions", "DOGE-USDT"),
+    ]
     assert [call for call in client.calls if call[0].startswith("set_")] == []
 
 
@@ -1131,6 +1234,235 @@ def test_the_refused_open_orders_fixture_pins_the_two_documents() -> None:
     assert {row["side"] for row in rows} == {"LONG", "SHORT"}
     assert {row["leverage"] for row in rows} == {PREFLIGHT_LEVERAGE}
     assert "composed" in document["_note"].lower()
+
+
+# -- The preparation's budget refusals ---------------------------------------------
+# bug_spec_vst_slot_resilience.xml: one GET per symbol put a seventy-leg
+# book over the venue's weight budget, and the first 429 aborted the slot
+# before a single order left.  Two faults — the count, and the refusal's
+# fate — pinned here.
+
+#: The wait the venue's own 429 named for the aborted slot (its message
+#: carried ``0:00:00.100000``).  One weight unit at one tenth of the
+#: one-second window is exactly this, which is why the schedule below
+#: rebuilds it: the floor is the refusal's own arithmetic, never a
+#: number this suite invented.
+REFUSAL_WAIT = timedelta(milliseconds=100)
+
+#: The budget the 429's refusal reading is built from: ten units over a
+#: one-second window — :data:`~router.bingx_client.VST_WEIGHT_SCHEDULE`'s
+#: own figures — so one missing unit refills in exactly
+#: :data:`REFUSAL_WAIT`.
+VST_SCHEDULE = VenueWeightSchedule(
+    allowance=10, window=timedelta(seconds=1), weights={"account": 1}
+)
+
+
+def _rate_limited_refusal() -> RouterRateLimitedError:
+    """The venue's own 429 refusal, reading the wait the live slot printed.
+
+    Built the way feature 1's client builds one: a bucket holding one
+    weight unit less than the request's price, so ``deficit`` is that
+    unit and ``retry_after`` is its refill interval — the *derived*
+    wait, not a number invented here.
+    """
+    reading = RateLimitHeadroom(
+        scope=DEFAULT_WEIGHT_SCOPE,
+        operation="account",
+        weight=1,
+        allowed=False,
+        remaining=0,
+        capacity=VST_SCHEDULE.allowance,
+        accrued=0,
+        observed_at=datetime(2026, 10, 26, 4, 5, 0, tzinfo=UTC),
+        schedule=VST_SCHEDULE,
+    )
+    return RouterRateLimitedError(
+        "rate_limited: the venue answered HTTP 429 for 'account'; ... "
+        f"{reading.retry_after} brings the weight it needs back "
+        "(feature 318)",
+        headroom=reading,
+    )
+
+
+def _held_rows(count: int, *, isolated: bool = True, leverage: object = None) -> tuple:
+    """``count`` held position rows, each spelled as the live capture spells one.
+
+    The seventy-leg book's shape in miniature, from the account's side:
+    the venue's positions document answers one row per symbol the
+    account holds something on — and *no* row for a symbol it holds
+    nothing on, which is why the symbols a test stages no row for are
+    the ones that keep the per-symbol GET.
+    """
+    return tuple(
+        {
+            "symbol": f"HELD{i}-USDT",
+            "positionSide": "LONG",
+            "positionAmt": "10",
+            "isolated": isolated,
+            "leverage": (
+                PREFLIGHT_LEVERAGE if leverage is None else leverage
+            ),
+        }
+        for i in range(count)
+    )
+
+
+def test_the_positions_document_answers_sixty_symbols_without_sixty_get_s() -> None:
+    """The count fault: 60 held symbols cost no per-symbol GET and no write.
+
+    The live bug's first half.  A seventy-leg book spent one GET per
+    symbol, which is what put the account's own budget over the venue's
+    limit.  The positions document answers every symbol the account
+    holds in *one* read, so sixty symbols held ISOLATED at
+    ``PREFLIGHT_LEVERAGE`` are prepared by asking nothing further — the
+    ten the document holds no row for are the only ones that still cost
+    a GET, so the whole preparation makes at most ten of them against
+    the sixty it used to make, and no ``set_*`` write goes out for the
+    sixty.
+    """
+    held = [f"HELD{i}-USDT" for i in range(60)]
+    flat = [f"FLAT{i}-USDT" for i in range(10)]
+    client = _funded_client(positions=_held_rows(60))
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt=Decimal(0),
+        symbols=held + flat,
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+        sleep=lambda _wait: None,
+    )
+
+    leverage_gets = [
+        call for call in client.calls if call[0] == "positions"
+    ]
+    # One account-wide read, then one narrowed GET per flat symbol.
+    assert leverage_gets == [("positions", None)] + [
+        ("positions", symbol) for symbol in sorted(flat)
+    ]
+    assert len(leverage_gets) - 1 == 10
+    writes = [call for call in client.calls if call[0].startswith("set_")]
+    assert writes == [
+        call
+        for symbol in sorted(flat)
+        for call in (
+            ("set_margin_type", symbol, "ISOLATED"),
+            ("set_leverage", symbol, PREFLIGHT_LEVERAGE, "BOTH"),
+        )
+    ]
+    # The sixty are prepared by the document alone; the ten with no row
+    # are prepared by the writes, exactly as this preflight always
+    # prepared a symbol the account holds nothing on.
+    assert report.prepared_skipped == tuple(sorted(held))
+    assert report.skipped_from_positions == tuple(sorted(held))
+    assert report.skipped_by_leverage_get == ()
+
+
+def test_a_429_on_the_first_get_is_slept_out_and_the_report_answered() -> None:
+    """The fate fault: a budget refusal is slept for its own wait and re-asked.
+
+    The live bug's second half.  The first slot after the per-symbol
+    read merged aborted on a 429 whose own message named a wait of
+    ``0:00:00.100000`` — a refusal by the venue's *budget*, not by the
+    venue about an arrangement — and the preparation treated it as
+    fatal.  The refusal now names the wait, the wait is slept through
+    the injectable sleeper, the one call is re-asked, and the slot walks
+    on: the report is answered, and the sleeper saw exactly the delay
+    the refusal derived.
+    """
+    slept: list[timedelta] = []
+    client = _funded_client(
+        positions=_live("positions_one_way_short.json")["data"],
+        positions_refusals=[_rate_limited_refusal()],
+    )
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt=Decimal(0),
+        symbols=["DOGE-USDT"],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+        sleep=slept.append,
+    )
+
+    assert slept == [REFUSAL_WAIT]
+    assert report.skipped_from_positions == ("DOGE-USDT",)
+    # The refused call was re-asked, not replaced: two reads, one row.
+    assert [call for call in client.calls if call[0] == "positions"] == [
+        ("positions", None),
+        ("positions", None),
+    ]
+
+
+def test_a_429_on_a_preparation_write_is_slept_out_too() -> None:
+    """The window is reads *and* writes, as the feature's own sentence has it.
+
+    The preparation's writes reach the same shared budget the reads do, so
+    a margin-type write the budget refuses is retried by the same law —
+    and, crucially, only that *one* call: the refusal comes back from
+    ``set_margin_type``, is slept out for its own wait, and is re-asked
+    alone, so the symbol's leverage write below never sees the refusal and
+    the symbol still ends up prepared.
+    """
+    slept: list[timedelta] = []
+    client = _funded_client(
+        margin_type_refusals=[_rate_limited_refusal()],
+    )
+
+    report = run_bingx_preflight(
+        client,
+        required_usdt="10000",
+        symbols=["BTC-USDT"],
+        env={},
+        clock=lambda: LOCAL_MILLIS,
+        sleep=slept.append,
+    )
+
+    assert slept == [REFUSAL_WAIT]
+    assert report.symbols == ("BTC-USDT",)
+    assert report.prepared_skipped == ()
+    # The refused write was re-asked alone: two margin writes, then the
+    # leverage write the refusal never reached.
+    assert [call for call in client.calls if call[0] == "set_margin_type"] == [
+        ("set_margin_type", "BTC-USDT", "ISOLATED"),
+        ("set_margin_type", "BTC-USDT", "ISOLATED"),
+    ]
+    assert ("set_leverage", "BTC-USDT", PREFLIGHT_LEVERAGE, "BOTH") in (
+        client.calls
+    )
+
+
+def test_a_budget_that_refuses_every_attempt_propagates() -> None:
+    """Exhaustion keeps the refusal's old fatal path, with the freshest value.
+
+    :data:`PREPARATION_RETRY_LIMIT` attempts, then the standing refusal
+    propagates untouched — the same value, headroom and all, a caller
+    would have caught without the retries.  A budget that answers six
+    consecutive 429s is a budget still spent, and placing against an
+    account state the venue would not let this door read is the one
+    thing the preflight must not do.
+    """
+    slept: list[timedelta] = []
+    refusals = [_rate_limited_refusal() for _ in range(PREPARATION_RETRY_LIMIT + 1)]
+    client = _funded_client(positions_refusals=list(refusals))
+
+    with pytest.raises(RouterRateLimitedError) as raised:
+        run_bingx_preflight(
+            client,
+            required_usdt=Decimal(0),
+            symbols=["BTC-USDT"],
+            env={},
+            clock=lambda: LOCAL_MILLIS,
+            sleep=slept.append,
+        )
+
+    assert raised.value is refusals[PREPARATION_RETRY_LIMIT - 1]
+    # Five attempts, four sleeps between them.
+    assert len([call for call in client.calls if call[0] == "positions"]) == (
+        PREPARATION_RETRY_LIMIT
+    )
+    assert slept == [REFUSAL_WAIT] * (PREPARATION_RETRY_LIMIT - 1)
 
 
 # -- The ask ------------------------------------------------------------------------

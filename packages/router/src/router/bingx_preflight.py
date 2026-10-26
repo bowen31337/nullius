@@ -150,6 +150,37 @@ margin-type write keeps :func:`_prepare`'s window unchanged: a symbol
 not yet isolated is an arrangement the venue must agree to hold, and no
 margin refusal is silenced for it.
 
+**Why that read is the whole document, not one row per symbol.**  The
+first cut of the resting-order correction asked after each symbol's
+arrangement one symbol at a time, so a seventy-leg book spent about
+seventy venue GETs inside the preflight — and on 2026-10-26 04:05 UTC,
+the first slot after that merge, the venue answered the account's own
+budget with HTTP 429 and the preparation aborted the slot on a refusal
+that named a wait of ``0:00:00.100000``, before a single order left
+(``bug_spec_vst_slot_resilience.xml``).  Two faults, fixed here
+together because each hides the other.  The first is the count: the
+positions document is *one* read that answers every symbol the account
+holds — each row carries the same two facts a per-symbol read would
+(the margin type as the boolean ``isolated``, the leverage as the whole
+number ``leverage``) — so :func:`_positions_by_symbol` reads it once
+and the preparation consults it per symbol; only a symbol with *no row*
+there — the account holds nothing on it, so the document cannot answer
+for it — keeps the per-symbol leverage GET, and each of those paces
+itself through the client's own weight budget like every other venue
+request.  The report keeps the two skips apart
+(``skipped_from_positions`` and ``skipped_by_leverage_get``, beside the
+``prepared_skipped`` that names their union) so a slot log shows the
+request count fell.  The second fault is the refusal's fate: a
+:class:`~router.errors.RouterRateLimitedError` is not a venue refusal
+about an arrangement — it is the budget's own answer, naming the wait
+that brings the weight back — so a preparation read or write that
+raises one is slept for exactly that wait and re-asked, up to
+:data:`PREPARATION_RETRY_LIMIT` attempts (:func:`_retry_preparation`),
+and only a budget that refuses every attempt propagates.  The wait is
+read off the refusal's own headroom and slept through the injectable
+``sleep``, so no test ever waits and the delay is never a number this
+module invented.
+
 **Nothing here reaches the network itself.**  The module holds no
 transport, no credentials and no host: every venue fact is read through
 the client it is handed, and the client's own host guard has already
@@ -163,11 +194,13 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .bingx_client import BINGX_MARGIN_TYPE_ISOLATED, RouterBingXRefusedError
-from .errors import RouterError
+from .errors import RouterError, RouterRateLimitedError
+from .retry import _sleep
 
 __all__ = [
     "ALREADY_SET_MSG_MARKERS",
@@ -181,6 +214,7 @@ __all__ = [
     "ONE_WAY_REPAIR",
     "ORDERS_KILLED_CODE",
     "PREFLIGHT_LEVERAGE",
+    "PREPARATION_RETRY_LIMIT",
     "PreflightReport",
     "RouterBingXClockSkewError",
     "RouterBingXHedgeModeError",
@@ -263,6 +297,20 @@ ALREADY_SET_MSG_MARKERS = ("already", "no need to change")
 #: names a no-op the venue cannot re-state, not a change it refused —
 #: the fact :func:`is_leverage_in_force` decides.
 LEVERAGE_IN_FORCE_REFUSAL_CODE = 101253
+
+#: How many attempts one preparation read or write may make while the
+#: venue's own weight budget refuses it, before the refusal propagates.
+#: ``5`` — a first attempt and four re-asks — because the wait each
+#: refusal names is the venue's own arithmetic (:attr:`~router.errors.
+#: RouterRateLimitedError.retry_after`, read off the carried headroom and
+#: never a number this module invented) and the budget's window is one
+#: second wide, so a handful of attempts outlast the refusal without
+#: letting a genuinely spent budget hold the slot open.  A refusal that
+#: survives every attempt is the budget still saying no, and it keeps its
+#: old fatal path: placing against an account state the venue would not
+#: let this door read is the one thing the preflight must not do
+#: (``bug_spec_vst_slot_resilience.xml``).
+PREPARATION_RETRY_LIMIT = 5
 
 
 # -- Errors -------------------------------------------------------------------
@@ -445,6 +493,20 @@ class PreflightReport:
       saved.  A symbol skipped here is still among ``symbols``: the door
       asked after the arrangement and found it already prepared — the
       venue holds it whether this run wrote it or a previous one did.
+      It names the union of the two fields below, in the same order.
+    * ``skipped_from_positions`` — the subset of ``prepared_skipped``
+      the *one* positions read answered: the symbol had a row there
+      carrying ``ISOLATED`` at :data:`PREFLIGHT_LEVERAGE`, so neither
+      a write nor a per-symbol GET went out for it.  Kept apart from
+      the field below because these are the symbols the account-wide
+      read saved a venue request for, which is the count an operator
+      watching the budget reads.
+    * ``skipped_by_leverage_get`` — the subset whose arrangement came
+      from the per-symbol leverage GET, because the positions document
+      carried *no row* for the symbol (the account holds nothing on
+      it, so that document cannot answer for it).  Each of these cost
+      one more GET, so the two fields together tell an operator how
+      many requests the whole preparation sent.
     """
 
     skew_ms: int
@@ -452,6 +514,8 @@ class PreflightReport:
     required_usdt: Decimal
     symbols: tuple[str, ...]
     prepared_skipped: tuple[str, ...]
+    skipped_from_positions: tuple[str, ...] = ()
+    skipped_by_leverage_get: tuple[str, ...] = ()
 
 
 # -- Helpers --------------------------------------------------------------------
@@ -788,30 +852,68 @@ def _venue_leverage(value: Any) -> int | None:
     return None
 
 
-def _current_arrangement(
-    client: Any, symbol: str
-) -> tuple[bool | None, int | None]:
-    """The symbol's standing margin arrangement, read through the client.
+def _row_arrangement(entry: Any) -> tuple[bool | None, int | None]:
+    """One position row's ``(isolated, leverage)``, or *unknown* in either place.
 
-    ``(isolated, leverage)`` — the two facts the preparation writes —
-    read from the venue's own position row for ``symbol`` through the
-    client's ``positions`` face, the one arrangement-bearing read
-    feature 1's client carries: the live capture's rows spell the margin
-    mode as the boolean ``isolated`` and the leverage as a whole number,
-    and the current leverage the venue's own GET on ``LEVERAGE_PATH``
-    answers per side is the same fact the held row carries for the side
-    the account holds.  ``None`` in either place — no row for the symbol
-    (the account holds nothing on it), a row the venue answered without
-    the field, or a payload this cannot read — is *unknown*, never
-    ``False``: an arrangement the read cannot see is one the writes
-    still state, exactly as this preflight always did, because a misread
-    no-op must never skip the write that would have made the symbol safe
-    to place on.
+    The two facts the preparation writes, read off the venue's own row
+    the way :func:`_venue_leverage` reads one of them: the live capture's
+    rows spell the margin mode as the boolean ``isolated`` and the
+    leverage as a whole number.  ``None`` in either place — a row the
+    venue answered without the field, or a payload this cannot read — is
+    *unknown*, never ``False``: an arrangement the read cannot see is one
+    the writes still state, because a misread no-op must never skip the
+    write that would have made the symbol safe to place on.
     """
-    payload = client.positions(symbol)
-    if not isinstance(payload, Sequence) or isinstance(
-        payload, (str, bytes)
-    ):
+    if not isinstance(entry, Mapping):
+        return None, None
+    isolated = entry.get("isolated")
+    return (
+        isolated if isinstance(isolated, bool) else None,
+        _venue_leverage(entry.get("leverage")),
+    )
+
+
+def _positions_by_symbol(payload: Any) -> dict[str, tuple[bool | None, int | None]]:
+    """The positions document as ``{symbol: (isolated, leverage)}``.
+
+    The **one** account-wide read the preparation consults: the venue's
+    positions document answers one row per symbol the account holds
+    something on, each carrying the same two facts a per-symbol read
+    would (see :func:`_row_arrangement`), so the whole preparation can be
+    decided from it instead of spending one GET per leg — the count that
+    put a seventy-leg book over the venue's weight budget at 2026-10-26
+    04:05 UTC (``bug_spec_vst_slot_resilience.xml``).  A symbol with *no
+    row* here is absent from the mapping, which is the whole point: the
+    account holds nothing on it, so this document cannot answer for it
+    and the caller falls back to the per-symbol GET.  A payload this
+    cannot read as the venue's array answers ``{}`` — no arrangement
+    known, so every symbol falls back to the GET-and-write path this
+    preflight always had, rather than a skip read into a malformed
+    document.
+    """
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
+        return {}
+    rows: dict[str, tuple[bool | None, int | None]] = {}
+    for entry in payload:
+        if not isinstance(entry, Mapping):
+            continue
+        name = entry.get("symbol")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        rows[name.strip()] = _row_arrangement(entry)
+    return rows
+
+
+def _row_arrangement_from_payload(
+    payload: Any, symbol: str
+) -> tuple[bool | None, int | None]:
+    """The one row naming ``symbol`` in a positions payload, or *unknown*.
+
+    A payload that is not the venue's array, and a payload holding no row
+    whose ``symbol`` is this one, both answer ``(None, None)`` — unknown,
+    never a guess.
+    """
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
         return None, None
     for entry in payload:
         if not isinstance(entry, Mapping):
@@ -819,12 +921,74 @@ def _current_arrangement(
         name = entry.get("symbol")
         if not isinstance(name, str) or name.strip() != symbol:
             continue
-        isolated = entry.get("isolated")
-        return (
-            isolated if isinstance(isolated, bool) else None,
-            _venue_leverage(entry.get("leverage")),
-        )
+        return _row_arrangement(entry)
     return None, None
+
+
+def _current_arrangement(
+    client: Any, symbol: str
+) -> tuple[bool | None, int | None]:
+    """The symbol's standing arrangement, from the per-symbol leverage GET.
+
+    The **fallback** read, taken only for a symbol the account-wide
+    positions document carried *no row* for: the account holds nothing on
+    it, so that document cannot answer, and this asks after the one
+    symbol through the client's own narrowed ``positions`` face — the
+    same face, and the same client-owned request path, every other venue
+    read in this member uses.  Each call is one venue GET, which is why
+    the preparation prefers :func:`_positions_by_symbol` and reaches for
+    this only where it must.  ``None`` in either fact means *unknown*:
+    the writes still state the arrangement, exactly as this preflight
+    always did.
+    """
+    return _row_arrangement_from_payload(client.positions(symbol), symbol)
+
+
+def _retry_preparation[T](
+    call: Callable[[], T],
+    *,
+    sleep: Callable[[timedelta], Any],
+    limit: int = PREPARATION_RETRY_LIMIT,
+) -> T:
+    """Make one preparation read or write, sleeping out the budget's refusal.
+
+    :class:`~router.errors.RouterRateLimitedError` is not a venue refusal
+    about an arrangement — it is the venue's *weight budget* answering,
+    and its own message names the wait that brings the weight back (*"...
+    0:00:00.100000 brings the weight it needs back"*).  So a preparation
+    call that raises one is slept for exactly that wait — the refusal's
+    own arithmetic, read off the
+    :attr:`~router.errors.RouterRateLimitedError.retry_after` derived from
+    the headroom it carries, never a number this module invented — through
+    the injectable ``sleep``, and re-asked; up to ``limit`` *attempts*
+    total (``limit`` 5 means a first attempt and four re-asks), because a
+    budget that answers the same refusal to every one of them is a budget
+    still spent, and placing against an account state the venue would not
+    let this door read is the one thing a preflight must not do.  Only
+    then does the standing refusal propagate, exactly as it would have
+    without this helper — the caller catches the same value, headroom and
+    all, the stance :func:`router.retry.retry_rate_limited` states for its
+    own exhaustion.
+
+    Only the rate-limit refusal is caught.  Every other exception — the
+    venue's own arrangement refusal, a fault of the ask — propagates on
+    the attempt it happened on, which is what keeps this helper from
+    widening :func:`_prepare`'s window.
+
+    A refusal naming no wait this could sleep propagates: ``retry_after``
+    is ``None`` only for a reading that refused nothing, and a value this
+    cannot pace is not one to sleep on.
+    """
+    attempt = 0
+    while True:
+        try:
+            return call()
+        except RouterRateLimitedError as refusal:
+            attempt += 1
+            wait = refusal.retry_after
+            if attempt >= limit or not isinstance(wait, timedelta):
+                raise
+            sleep(wait)
 
 
 def read_available_usdt(client: Any) -> Decimal:
@@ -915,6 +1079,7 @@ def run_bingx_preflight(
     database_url: str | None = None,
     env: Mapping[str, str] | None = None,
     clock: Callable[[], int] = _system_clock_millis,
+    sleep: Callable[[timedelta], Any] = _sleep,
 ) -> PreflightReport:
     """Feature 2's verb: run the preflight, answer the report or the first refusal.
 
@@ -969,11 +1134,18 @@ def run_bingx_preflight(
     * ``symbols`` — the symbols the plan will order, any iterable;
       normalized to the sorted unique tuple and prepared one margin
       arrangement each (``ISOLATED``, leverage
-      :data:`PREFLIGHT_LEVERAGE`, one-way).  A symbol whose standing
-      arrangement already equals that one is prepared without a write
-      and named in the report's ``prepared_skipped``; a symbol whose
-      arrangement the read could not see is written to as this preflight
-      always wrote.
+      :data:`PREFLIGHT_LEVERAGE`, one-way).  The account's arrangements
+      are read **once**, through the client's own ``positions`` document
+      (see :func:`_positions_by_symbol`), and a symbol that document
+      answers ``ISOLATED`` at :data:`PREFLIGHT_LEVERAGE` is prepared
+      without asking anything further — named in the report's
+      ``skipped_from_positions``.  Only a symbol with *no row* there
+      keeps the per-symbol leverage GET, because the account holds
+      nothing on it and that document cannot answer for it; such a symbol
+      already held exactly as the preflight writes it is named in
+      ``skipped_by_leverage_get`` instead.  Both are among
+      ``prepared_skipped``, their union.  A symbol whose arrangement no
+      read could see is written to as this preflight always wrote.
     * ``database_url`` / ``env`` — handed to the kill guard unchanged;
       ``env`` defaults to the process environment, the default the
       guard itself takes.
@@ -981,6 +1153,11 @@ def run_bingx_preflight(
       milliseconds; injectable so a test pins the measurement, and
       stated separately from the client's own signing clock because the
       preflight measures the host, not the signature.
+    * ``sleep`` — how a preparation read or write waits out the venue's
+      own weight-budget refusal (:func:`_retry_preparation`), receiving
+      the exact :class:`~datetime.timedelta` the refusal names; the
+      default is the real sleeper, and a test injects its own so no test
+      ever waits (``bug_spec_vst_slot_resilience.xml``).
     """
     _require_client_face(client)
     required = _as_decimal(
@@ -997,6 +1174,15 @@ def run_bingx_preflight(
             "the skew is measured between the venue's server time and this "
             "host's clock, and a value that is not a callable names no "
             "clock to measure against (feature 2)"
+        )
+    if not callable(sleep):
+        raise RouterBingXPreflightError(
+            f"{BINGX_PREFLIGHT_CODE}: sleep must be callable receiving one "
+            f"timedelta, got {sleep!r} ({type(sleep).__name__}); a "
+            "preparation read or write refused by the venue's own weight "
+            "budget is re-asked after exactly the wait the refusal names, "
+            "and a wait that cannot be slept is a number this preflight "
+            "would never spend (feature 2)"
         )
 
     # 1 — orders_killed: the kill switch outranks every venue question.
@@ -1063,34 +1249,59 @@ def run_bingx_preflight(
         raise RouterBingXInsufficientBalanceError(available, required)
 
     # The preparation: one margin arrangement per ordered symbol, in the
-    # book's sorted order.  Each symbol's standing arrangement is read
-    # first — the client's positions face, whose rows carry the margin
-    # mode and the leverage the writes would state — and a symbol
-    # already held ISOLATED at the preflight's leverage is prepared by
-    # asking nothing: a venue with orders resting cannot re-state an
-    # arrangement, and the write a previous slot already made is the
-    # no-op it would refuse to repeat (bug_spec_vst_reduce_only_legs.xml,
-    # bug 2).  Each write that does go out absorbs only the already-set
-    # answer, the leverage write additionally the 101253 no-op (see
-    # _prepare_leverage), and the leverage rides the client's one-way
-    # default side — the hedge check above has proved the account
-    # answers one-way.
+    # book's sorted order.  The account's arrangements are read *once* —
+    # the client's positions document, whose rows carry the margin mode
+    # and the leverage the writes would state — and a symbol it answers
+    # ISOLATED at the preflight's leverage is prepared by asking nothing:
+    # a venue with orders resting cannot re-state an arrangement, and the
+    # write a previous slot already made is the no-op it would refuse to
+    # repeat (bug_spec_vst_reduce_only_legs.xml, bug 2).  A symbol that
+    # document holds *no row* for is the only one that still costs a
+    # per-symbol GET — the account holds nothing on it, so that document
+    # cannot answer for it — and each of those paces itself through the
+    # client's own weight budget.  Every read and every write is made
+    # through _retry_preparation, so a refusal by the venue's *budget*
+    # rather than by the venue's arrangement is slept out for exactly the
+    # wait it names and re-asked, instead of aborting a slot before a
+    # single order left (bug_spec_vst_slot_resilience.xml).  Each write
+    # that does go out absorbs only the already-set answer, the leverage
+    # write additionally the 101253 no-op (see _prepare_leverage), and
+    # the leverage rides the client's one-way default side — the hedge
+    # check above has proved the account answers one-way.
+    rows = _retry_preparation(
+        lambda: _positions_by_symbol(client.positions()), sleep=sleep
+    )
     skipped: list[str] = []
+    from_positions: list[str] = []
+    by_leverage_get: list[str] = []
     for symbol in prepared:
-        isolated, current_leverage = _current_arrangement(client, symbol)
+        if symbol in rows:
+            isolated, current_leverage = rows[symbol]
+            source = from_positions
+        else:
+            isolated, current_leverage = _retry_preparation(
+                lambda symbol=symbol: _current_arrangement(client, symbol),
+                sleep=sleep,
+            )
+            source = by_leverage_get
         if isolated and current_leverage == PREFLIGHT_LEVERAGE:
             skipped.append(symbol)
+            source.append(symbol)
             continue
-        _prepare(
-            lambda symbol=symbol: client.set_margin_type(
-                symbol, BINGX_MARGIN_TYPE_ISOLATED
-            )
-        )
-        _prepare_leverage(
-            lambda symbol=symbol: client.set_leverage(
-                symbol, PREFLIGHT_LEVERAGE
+        _retry_preparation(
+            lambda symbol=symbol: _prepare(
+                lambda: client.set_margin_type(
+                    symbol, BINGX_MARGIN_TYPE_ISOLATED
+                )
             ),
-            current_leverage,
+            sleep=sleep,
+        )
+        _retry_preparation(
+            lambda symbol=symbol, current=current_leverage: _prepare_leverage(
+                lambda: client.set_leverage(symbol, PREFLIGHT_LEVERAGE),
+                current,
+            ),
+            sleep=sleep,
         )
 
     return PreflightReport(
@@ -1099,4 +1310,6 @@ def run_bingx_preflight(
         required_usdt=required,
         symbols=prepared,
         prepared_skipped=tuple(skipped),
+        skipped_from_positions=tuple(from_positions),
+        skipped_by_leverage_get=tuple(by_leverage_get),
     )
