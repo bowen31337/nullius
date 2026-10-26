@@ -29,6 +29,37 @@ slot:
    ``originating_signal_ids``**, so the record is written only for a book
    that carries its provenance.
 
+**The slot sizes from a utilisation of the equity it has already read.**
+The book's own ``equity_usdt`` is the *construction's* equity — the
+figure the paper book's weights are fractions of — and a book at gross
+1.0 holding its whole notional needs exactly that much margin at the
+preflight's own leverage of one.  Against a real account that is the
+whole pool: the forward shadow v1 book (fixed ``equity_usdt`` 10000,
+gross 1.0) needed 10000 USDT of a 10040 USDT wallet, so every slot from
+2026-10-22 finished exit 1 with its increasing legs deferred
+(``margin_deferred``) and the account drifting from the registered book
+(docs/preregistration/2026-10-15-shadow-v1.ADDENDUM.md, Addendum 14).  After
+step 1's guard has run — the one venue read of the account's equity the
+slot makes — and before :func:`router.bingx_mirror.build_mirror_plan` is
+called, the slot therefore stamps the *slot's own book* (the same
+``stamped`` mapping, never the file on disk) with a sized equity::
+
+    sized = min(Decimal(book["equity_usdt"]), guard.current_equity) * utilisation
+
+All three terms are exact :class:`~decimal.Decimal`: the book's own
+spelling, the venue's own spelling off the guard's check, and
+``utilisation`` read from :data:`MARGIN_UTILISATION_ENV` in the ``env``
+mapping the slot already receives, defaulting to
+:data:`DEFAULT_MARGIN_UTILISATION`.  No float touches the arithmetic, and
+the stamped value is the exact Decimal's own string.  The *same* stamped
+book is handed to the plan, to the placement and to the target-weights
+record, so the sizer and the fidelity recompute in
+:mod:`router.bingx_mirror` see one equity.  The book file on disk, its
+weights and the paper book are untouched.  A utilisation that is not a
+finite Decimal in ``(0, 1]`` is refused by name *before* the plan is
+built and before any venue write, in the shape every other malformed
+input of this module takes.
+
 The command exits **0** when every order is ``placed`` or ``prior``, **1**
 when any leg is ``refused``, and **3** on a daily-loss refusal.  It refuses
 to start without ``DATABASE_URL``, because every step above reads or writes
@@ -89,7 +120,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -125,9 +156,11 @@ from .submission_result import RouterOrderPlacementStore
 __all__ = [
     "BINGX_REBALANCE_CODE",
     "DATABASE_URL_MISSING_CODE",
+    "DEFAULT_MARGIN_UTILISATION",
     "EXIT_DAILY_LOSS_HALT",
     "EXIT_OK",
     "EXIT_REFUSED",
+    "MARGIN_UTILISATION_ENV",
     "REBALANCE_SLOT_HOURS",
     "ROUTER_SLOT_COMPLETION_TABLE",
     "SLOT_LOOKBACK_HOURS",
@@ -152,6 +185,27 @@ BINGX_REBALANCE_CODE = "bingx_rebalance"
 #: placement's rows — so a run with nowhere to keep them would be a
 #: rebalance nobody could re-run idempotently.
 DATABASE_URL_MISSING_CODE = "database_url_missing"
+
+#: The environment variable that names the fraction of the account's own
+#: equity a slot sizes its plan from — the one lever the execution-side
+#: fix of shadow v1 Addendum 14 turns.  Read from the ``env`` mapping the
+#: slot already receives, never from a CLI flag: the figure decides how
+#: much of the account a registered book holds, which is an operator's
+#: choice on the execution side rather than a property of the book.
+MARGIN_UTILISATION_ENV = "BINGX_VST_MARGIN_UTILISATION"
+
+#: The utilisation a slot sizes with when nothing names one: ``0.90``, so
+#: a book at gross 1.0 leaves a tenth of the account's equity as headroom
+#: for the ordering of a rebalance and the drift between slots — the
+#: figure Addendum 14 declares, chosen because the book's whole margin at
+#: a utilisation of 1 is exactly the whole pool, leaving none.
+DEFAULT_MARGIN_UTILISATION = "0.90"
+
+#: The one exact value a utilisation must be strictly inside of (and the
+#: only one it may equal): the account cannot hold more than its own
+#: equity at the preflight's leverage of one, so a fraction above 1 sizes
+#: a plan the venue cannot fund by construction.
+_UTILISATION_MAX = Decimal(1)
 
 #: The width of one slot: the spec's own *"floored to a 4-hour boundary"*.
 REBALANCE_SLOT_HOURS = 4
@@ -410,6 +464,101 @@ def _slot_book(book: Mapping[str, Any], rebalance_ts: datetime) -> dict[str, Any
     return stamped
 
 
+def _margin_utilisation(env: Mapping[str, str] | None) -> Decimal:
+    """The fraction of the account's equity a slot sizes its plan from.
+
+    Read from :data:`MARGIN_UTILISATION_ENV` in the ``env`` mapping the
+    slot already receives — never from a CLI flag, and never in a spelling
+    the process invents — as an exact :class:`~decimal.Decimal`, defaulting
+    to :data:`DEFAULT_MARGIN_UTILISATION` when the variable is unset or
+    empty.  A value that is not a finite Decimal strictly inside
+    ``(0, 1]`` — ``"0"``, ``"1.5"``, ``"-0.5"``, ``"abc"``, ``"NaN"`` —
+    is refused here, by name and by value, *before* the plan is built and
+    before any venue write: a utilisation outside that interval sizes a
+    plan the account cannot fund at the preflight's own leverage of one,
+    and a value that will not parse sizes nothing.
+
+    The refusal wears :class:`RouterBingXRebalanceError`, the module's own
+    class for a fault of the *ask*, so the command answers it with the
+    same exit code and the same shape as its other malformed inputs.
+    """
+    source = os.environ if env is None else env
+    raw = str(source.get(MARGIN_UTILISATION_ENV) or "").strip()
+    if not raw:
+        raw = DEFAULT_MARGIN_UTILISATION
+    try:
+        utilisation = Decimal(raw)
+    except (InvalidOperation, ValueError) as exc:
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: {MARGIN_UTILISATION_ENV}={raw!r} is "
+            "not a decimal; the utilisation is the fraction of the "
+            "account's equity a slot sizes its plan from, and a value that "
+            "will not parse sizes nothing (shadow v1 Addendum 14)"
+        ) from exc
+    if not utilisation.is_finite() or not (0 < utilisation <= _UTILISATION_MAX):
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: {MARGIN_UTILISATION_ENV}={raw!r} is "
+            "not a utilisation; it must be a finite decimal in (0, 1] — "
+            "0.90 leaves a tenth of the equity as headroom and 1 sizes "
+            "against the whole of it — and a fraction outside that "
+            "interval sizes a plan the account cannot fund at the "
+            "preflight's leverage of one (shadow v1 Addendum 14)"
+        )
+    return utilisation
+
+
+def _sized_book(
+    book: Mapping[str, Any],
+    *,
+    current_equity: Decimal,
+    utilisation: Decimal,
+) -> dict[str, Any]:
+    """The slot's book, re-stamped with the equity this slot sizes from.
+
+    ``min(book equity, the account's own equity) × utilisation``, every
+    term an exact :class:`~decimal.Decimal` and the answer stamped as the
+    exact Decimal's own string — so the sizer and the fidelity recompute
+    in :mod:`router.bingx_mirror` read one figure, and no float touches
+    the arithmetic.  The floor at the book's own equity is what keeps the
+    floor honest the other way: a venue that reads *above* the book —
+    an account funded beyond the construction — sizes at the book, never
+    at its own balance, because the weights are fractions of the book's
+    equity and a larger base would trade a book nobody registered.
+
+    ``book`` is the *slot's* own mapping (the :func:`_slot_book` copy,
+    never the document on disk); this is a second shallow copy with one
+    further field replaced, so the caller's mapping and the file are both
+    left exactly as they read.
+    """
+    book_equity = book.get("equity_usdt")
+    try:
+        spelled = Decimal(str(book_equity))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: the book document states "
+            f"equity_usdt={book_equity!r}, which is not a decimal; the "
+            "slot sizes its plan from that figure and a book that states "
+            "no usable equity sizes nothing (feature 4)"
+        ) from exc
+    if not spelled.is_finite():
+        raise RouterBingXRebalanceError(
+            f"{BINGX_REBALANCE_CODE}: the book document states "
+            f"equity_usdt={book_equity!r}, which is not a finite decimal; "
+            "the slot sizes its plan from that figure and a book that "
+            "states no usable equity sizes nothing (feature 4)"
+        )
+    sized = min(spelled, current_equity) * utilisation
+    stamped = dict(book)
+    # Normalized before it is spelled, so the stamped figure is the exact
+    # Decimal's own shortest spelling — ``9688.8247 × 0.90`` reads
+    # ``8719.94223`` rather than the trailing zero the product's 6-place
+    # scale would otherwise carry.  The arithmetic is unchanged either way;
+    # only the spelling is, and one spelling is what the record and the
+    # sizer must agree on.
+    stamped["equity_usdt"] = _decimal_text(sized.normalize())
+    return stamped
+
+
 @dataclass(frozen=True)
 class RebalanceReport:
     """One slot's outcome, as the command prints and returns it.
@@ -431,6 +580,11 @@ class RebalanceReport:
     which Stage 1's mirror reports informationally; ``persisted`` whether the
     rebalance was written into the book member's store, and ``persist_skipped``
     the reason it was not (a book naming no ``originating_signal_ids``).
+    ``book_equity_usdt`` is the equity the book document spelled,
+    ``sized_equity_usdt`` the figure this slot actually sized from
+    (``min(book, live) × utilisation``) and ``margin_utilisation`` the
+    fraction applied — the three terms of the sizing rule, each as the
+    exact Decimal string it was computed from (shadow v1 Addendum 14).
     ``exit_code`` is the number the command returns — 0, 1 or 3, the spec's
     own three.
 
@@ -454,6 +608,9 @@ class RebalanceReport:
     skipped: tuple[dict[str, str], ...]
     persisted: bool
     persist_skipped: str | None
+    book_equity_usdt: str
+    sized_equity_usdt: str
+    margin_utilisation: str
     exit_code: int
 
     def as_line(self) -> dict[str, Any]:
@@ -464,6 +621,9 @@ class RebalanceReport:
             "slot": floor_to_slot(self.rebalance_ts).isoformat(),
             "opening_equity": _decimal_text(self.guard.opening_equity),
             "current_equity": _decimal_text(self.guard.current_equity),
+            "book_equity_usdt": self.book_equity_usdt,
+            "sized_equity_usdt": self.sized_equity_usdt,
+            "margin_utilisation": self.margin_utilisation,
             "daily_loss": _decimal_text(self.guard.daily_loss),
             "daily_loss_limit": _decimal_text(self.guard.daily_loss_limit),
             "cancelled": list(self.cancelled),
@@ -1244,6 +1404,13 @@ def _run_slot(
     book_id, _ = _book_identity(book)
     stamped = _slot_book(book, rebalance_ts)
 
+    # The sizing lever is judged first, before the guard reads the venue and
+    # long before a plan is built: a utilisation outside (0, 1] sizes a plan
+    # the account cannot fund, and a value that will not parse sizes
+    # nothing, so both are refused by name with nothing sent (shadow v1
+    # Addendum 14).
+    utilisation = _margin_utilisation(env)
+
     # 1 — the daily-loss guard, before anything is placed.  A breach raises
     #     feature 2's own refusal, which the command answers with exit 3.
     #     The guard is handed *the slot's own instant* as its moment, never
@@ -1263,6 +1430,19 @@ def _run_slot(
             now=lambda: rebalance_ts,
         ),
         skip_on_rate_limit=False,
+    )
+
+    # The guard has read the account's equity — one venue call, already made
+    # — so the slot now re-stamps *its own* book with the equity it sizes
+    # from: min(the book's figure, the account's) × the utilisation.  The
+    # same mapping goes to the plan, the placement and the record below, so
+    # the sizer and the fidelity recompute read one figure; the document on
+    # disk, its weights and the paper book are untouched (shadow v1
+    # Addendum 14).
+    sized = _sized_book(
+        stamped,
+        current_equity=guard.current_equity,
+        utilisation=utilisation,
     )
 
     # 2 — cancel the book's resting orders from the trailing day's slots.
@@ -1310,14 +1490,14 @@ def _run_slot(
     #     answer for is not a plan to place blind.
     plan, _ = _run_step(
         _STEP_PLACEMENT,
-        lambda: build_mirror_plan(book=stamped, client=client),
+        lambda: build_mirror_plan(book=sized, client=client),
         skip_on_rate_limit=False,
     )
     outcomes, _ = _run_step(
         _STEP_PLACEMENT,
         lambda: mirror_place(
             client=client,
-            book=stamped,
+            book=sized,
             plan=plan,
             store=store,
             limiter=limiter,
@@ -1371,9 +1551,14 @@ def _run_slot(
             required_total,
         )
 
-    # 5 — persist the rebalance when the book names its provenance.
+    # 5 — persist the rebalance when the book names its provenance.  It is
+    #     handed the *same* sized mapping the plan and the placement were,
+    #     so the three recipients agree on one book; only the weights are
+    #     read from it, and those are the book's own — the equity is the
+    #     slot's execution-side figure and the record keeps the
+    #     construction.
     persisted, persist_skipped = _persist_target_weights(
-        book=book,
+        book=sized,
         book_id=book_id,
         rebalance_ts=rebalance_ts,
         book_store=book_store,
@@ -1391,6 +1576,9 @@ def _run_slot(
         skipped=tuple(skipped),
         persisted=persisted,
         persist_skipped=persist_skipped,
+        book_equity_usdt=_decimal_text(Decimal(str(book.get("equity_usdt")))),
+        sized_equity_usdt=sized["equity_usdt"],
+        margin_utilisation=_decimal_text(utilisation),
         exit_code=EXIT_OK if every_landed else EXIT_REFUSED,
     )
 

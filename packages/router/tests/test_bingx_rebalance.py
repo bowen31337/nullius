@@ -1615,6 +1615,9 @@ def _deferred_report(
         ),
         persisted=False,
         persist_skipped="no_provenance",
+        book_equity_usdt="10000",
+        sized_equity_usdt="9000",
+        margin_utilisation="0.90",
         exit_code=EXIT_REFUSED,
     )
 
