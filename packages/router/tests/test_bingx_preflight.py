@@ -80,7 +80,6 @@ from router.bingx_preflight import (
     BINGX_PREFLIGHT_CODE,
     CLOCK_SKEW_CODE,
     HEDGE_MODE_CODE,
-    INSUFFICIENT_BALANCE_CODE,
     LEVERAGE_IN_FORCE_REFUSAL_CODE,
     MAX_CLOCK_SKEW_MILLISECONDS,
     ONE_WAY_REPAIR,
@@ -319,8 +318,8 @@ def test_a_passing_preflight_answers_the_four_facts() -> None:
 
     assert isinstance(report, PreflightReport)
     assert report.skew_ms == 40
-    assert report.available_usdt == Decimal("10000")
-    assert report.required_usdt == Decimal("10000")
+    assert report.available_usdt == Decimal(10000)
+    assert report.required_usdt == Decimal(10000)
     assert report.symbols == ("BTC-USDT", "ETH-USDT", "SOL-USDT")
 
 
@@ -755,7 +754,7 @@ def test_insufficient_balance_refuses_below_and_passes_at_the_required_margin() 
             clock=lambda: LOCAL_MILLIS,
         )
     assert raised.value.available_usdt == Decimal("9999.99")
-    assert raised.value.required_usdt == Decimal("10000")
+    assert raised.value.required_usdt == Decimal(10000)
     assert str(raised.value) == (
         "insufficient_balance: available USDT 9999.99 is below the 10000 "
         "this plan's orders need; fund the VST account and run the "
@@ -770,13 +769,13 @@ def test_insufficient_balance_refuses_below_and_passes_at_the_required_margin() 
     exact = _funded_client()
     report = run_bingx_preflight(
         exact,
-        required_usdt=Decimal("10000"),
+        required_usdt=Decimal(10000),
         symbols=["BTC-USDT"],
         env={},
         clock=lambda: LOCAL_MILLIS,
     )
-    assert report.available_usdt == Decimal("10000")
-    assert report.required_usdt == Decimal("10000")
+    assert report.available_usdt == Decimal(10000)
+    assert report.required_usdt == Decimal(10000)
 
 
 def test_a_plan_that_needs_no_margin_passes_an_empty_account() -> None:
@@ -799,8 +798,8 @@ def test_a_plan_that_needs_no_margin_passes_an_empty_account() -> None:
         clock=lambda: LOCAL_MILLIS,
     )
 
-    assert report.available_usdt == Decimal("0")
-    assert report.required_usdt == Decimal("0")
+    assert report.available_usdt == Decimal(0)
+    assert report.required_usdt == Decimal(0)
     assert report.symbols == ()
 
 
@@ -832,7 +831,7 @@ def test_the_balance_row_is_read_from_either_document_spelling() -> None:
             clock=lambda: LOCAL_MILLIS,
         )
 
-        assert report.available_usdt == Decimal("10000")
+        assert report.available_usdt == Decimal(10000)
 
 
 def test_a_balance_document_naming_no_usdt_row_is_refused() -> None:
@@ -1482,7 +1481,7 @@ def test_the_client_face_is_required_up_front() -> None:
     faces = {
         "server_time": lambda: LOCAL_MILLIS,
         "position_mode": lambda: False,
-        "balance": lambda: {},
+        "balance": dict,
         "positions": lambda symbol=None: (),
         "set_margin_type": lambda symbol, margin_type="ISOLATED": {},
         "set_leverage": lambda symbol, leverage=1, *, side="BOTH": {},
