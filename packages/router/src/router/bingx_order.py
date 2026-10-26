@@ -362,6 +362,12 @@ class BingXOrder:
       identifier: the venue field's payload, never the system's own name
       for the order (the placement store's idempotency key stays the
       full 64-hex identifier, and nothing joins on the projection).
+    * ``reduce_only`` — ``True`` for a leg that only shrinks a held
+      position, so the venue frees the margin it would otherwise reserve
+      for the resting order; ``False``, the default, for every other leg.
+      A plain order's parameters are exactly what they were before the
+      field existed: the flag adds a key only when it is set, spelled with
+      :mod:`router.bingx_flatten`'s own constants.
 
     All fields are canonicalised at construction — the closed side, type
     and position-side vocabularies checked, the price/time-in-force pair
@@ -381,6 +387,7 @@ class BingXOrder:
     price: str | None
     time_in_force: str | None
     client_order_id: str
+    reduce_only: bool = False
 
     def __post_init__(self) -> None:
         # Normalize rather than trust, in the fixed order the verb builds
@@ -474,6 +481,15 @@ class BingXOrder:
                 "field, and a value this module re-truncated to fit would "
                 "be a second projection of one order"
             )
+        if not isinstance(self.reduce_only, bool):
+            raise RouterBingXOrderError(
+                f"{BINGX_ORDER_CODE}: reduce_only is a boolean — the venue's "
+                "own spelling is chosen when the parameters are written — "
+                f"got {self.reduce_only!r} ({type(self.reduce_only).__name__}) "
+                f"for {symbol!r}; a text spelling such as 'false' is truthy, "
+                "and a flag that read as set would send a reduceOnly order "
+                "nobody meant to"
+            )
         object.__setattr__(self, "symbol", symbol)
 
     def parameters(self) -> dict[str, str]:
@@ -487,7 +503,10 @@ class BingXOrder:
         no ``price`` and no ``timeInForce`` key at all rather than null
         spellings of them: the request would not carry the fields, so
         the plan does not either, and a reader counting the parameters
-        counts the ones the venue would read.
+        counts the ones the venue would read.  A ``reduce_only`` leg adds
+        one more key, ``reduceOnly``, spelled with the constants
+        :mod:`router.bingx_flatten` sends on its closes; every other leg
+        answers exactly the keys it always has.
         """
         parameters: dict[str, str] = {
             "symbol": self.symbol,
@@ -500,6 +519,13 @@ class BingXOrder:
             assert self.price is not None  # required by __post_init__
             parameters["price"] = self.price
             parameters["timeInForce"] = self.time_in_force
+        if self.reduce_only:
+            # Imported here, not at the top: the flatten module imports
+            # this one (and, through the mirror, this one again), so a
+            # module-level import would be a cycle for two constants.
+            from .bingx_flatten import BINGX_REDUCE_ONLY_TRUE, REDUCE_ONLY_FIELD
+
+            parameters[REDUCE_ONLY_FIELD] = BINGX_REDUCE_ONLY_TRUE
         parameters["clientOrderID"] = self.client_order_id
         return parameters
 

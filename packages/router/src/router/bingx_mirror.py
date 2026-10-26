@@ -202,7 +202,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -493,6 +493,37 @@ class MirrorLeg:
                 "reports the request the venue was asked to take, and "
                 "nothing else spells those parameters (feature 4)"
             )
+
+
+class MirrorOutcomes(dict[str, MirrorLeg]):
+    """:func:`mirror_place`'s answer: the legs by symbol, and the run's own counts.
+
+    A plain symbol-keyed mapping of :class:`MirrorLeg` — every caller that
+    indexes, iterates or compares it as the ``dict`` it always was still
+    can — carrying the one fact about the run that is not any single leg's
+    outcome: ``crossing_symbols``, the plan's legs that would cross zero (a
+    leg larger than the position it opposes, reducing it and re-opening
+    the rest on the other side).  Such a leg cannot be sent reduceOnly — the
+    venue would clip or refuse the re-opening part — and cannot be split
+    into two orders either, because the client-order-id law gives one leg
+    one key and admits no suffix (see :func:`mirror_place`), so it is sent
+    plain as it always was and named here.  ``crossing_legs`` is their
+    count.  Both are facts about the *plan*, so a crossing leg that was
+    deferred for margin or refused is counted too.
+    """
+
+    crossing_symbols: tuple[str, ...]
+
+    def __init__(
+        self, *args: Any, crossing_symbols: Sequence[str] = (), **kwargs: Any
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.crossing_symbols = tuple(crossing_symbols)
+
+    @property
+    def crossing_legs(self) -> int:
+        """How many of the plan's legs would cross zero."""
+        return len(self.crossing_symbols)
 
 
 # -- Reading the ask -----------------------------------------------------------
@@ -1395,6 +1426,12 @@ def reprice_passive_order(
             "between the plan and its placement is a book the plan no "
             "longer describes (feature 314)"
         )
+    if isinstance(answer, BingXOrder) and order.reduce_only:
+        # The repriced leg is the same order at a better price, so it keeps
+        # what makes it that order: a reduceOnly leg that lost the flag
+        # here would reach the venue plain and reserve the margin it was
+        # sent to release.
+        answer = replace(answer, reduce_only=True)
     return answer
 
 
@@ -1842,6 +1879,12 @@ def _order_recorder(
       never reads for a MARKET leg) for the latter.
     * **``cost_model_version``** is the resolved document's own version,
       shared by every leg this run records.
+    * **``reduce_only``** is the sent order's own flag
+      (``bug_spec_vst_reduce_only_legs.xml``, bug 1), read off the order as
+      it was *sent* — repricing keeps it — so a reconciliation can tell a
+      reduceOnly fill from a plain one.  Unlike the facts above it is never
+      absent: every leg this run records was either sent reduceOnly or
+      sent plain.
 
     Every one of these is best-effort: a document that will not load, a
     mark the venue does not price for a *passive* leg, a book this run
@@ -1946,6 +1989,7 @@ def _order_recorder(
             cost_model_version=cost_model_version,
             sent_at=sent_at,
             acked_at=acked_at,
+            reduce_only=order.reduce_only,
         )
 
     return recorder
@@ -2209,7 +2253,7 @@ def mirror_place(
     sleep: Callable[[timedelta], Any] = _sleep,
     jitter_rng: Any = None,
     on_retry: Any = None,
-) -> dict[str, MirrorLeg]:
+) -> MirrorOutcomes:
     """Feature 4's placement half: preflight, then place every order once.
 
     Runs :func:`router.bingx_preflight.run_bingx_preflight` over the
@@ -2252,6 +2296,27 @@ def mirror_place(
     whole plan every increasing leg is admitted in the same stable order
     as before and the placement is byte-for-byte what it was.
 
+    **The reducing legs are sent reduceOnly** (``bug_spec_vst_reduce_only_legs.xml``,
+    bug 1).  The venue reserves initial margin for a resting LIMIT order
+    whatever its direction unless the order carries ``reduceOnly``, so a
+    reducing leg sent plain locked the margin it was sent first to release:
+    on the live slots the re-read answered 14.8 USDT against 636.3 before
+    them and every increasing leg was deferred.  A leg whose increasing
+    quantity is zero and whose reducing quantity is positive shrinks a held
+    position and never crosses zero, so it is sent with
+    :attr:`~router.bingx_order.BingXOrder.reduce_only` set — same identity,
+    same price, same quantity — and the repricer keeps the flag.  A leg that
+    *would* cross zero is the exception: its reducing part is reduceOnly-
+    safe but its re-opening part is not, and it cannot be split, because the
+    identity law (:mod:`router.client_order_id`) derives exactly one key
+    per ``(book, rebalance, symbol)`` — a fixed 64-hex digest, projected to
+    its first 40 characters for the venue — and admits no suffix; a second
+    id would have to rename the symbol term, which the cancel, the read-back
+    and the reconciliation (all addressed by one id per symbol) would never
+    look for.  So a crossing leg is sent plain, whole, exactly as before,
+    and reported in the answer's ``crossing_legs``
+    (:class:`MirrorOutcomes`).
+
     The repricer, the recorder's quotes and the per-leg margin terms are
     built *before* the preflight runs: their client face checks and their
     public reads are side-effect-free, so a wiring fault refuses before
@@ -2259,7 +2324,8 @@ def mirror_place(
     read behind those terms is the same one the send order is decided
     with, so one run judges every leg against one snapshot of the account.
 
-    Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol.  A leg
+    Returns one :class:`MirrorLeg` per *order* leg, keyed by symbol, as a
+    :class:`MirrorOutcomes` (a ``dict`` that also names the crossing legs).  A leg
     the plan itself refused (a gate's code word, a document's) is not an
     order and is not placed, so it is not in the answer: the caller prints
     it from the plan, exactly as Stage 0 does.  The preflight's own
@@ -2297,6 +2363,26 @@ def mirror_place(
         )
         if increase > 0
     }
+    # The legs that only shrink a held position — nothing in them is new
+    # margin (_increasing_size zero) and part of them closes held exposure
+    # (_reducing_size positive) — are read off the same walk, so one
+    # positions snapshot decides the send order, the admission and the
+    # flag.  The legs that do both (new margin *and* a closed part) cross
+    # zero and are only named.
+    shrinking = {
+        order.symbol
+        for order, (increase, release) in zip(
+            orders, leg_margins, strict=True
+        )
+        if increase == 0 and release > 0
+    }
+    crossing = tuple(
+        order.symbol
+        for order, (increase, release) in zip(
+            orders, leg_margins, strict=True
+        )
+        if increase > 0 and release > 0
+    )
     preflight_kwargs: dict[str, Any] = {
         # Zero, deliberately: the four ordered checks still run — a killed
         # order layer, a skewed clock and a hedge-mode account all refuse
@@ -2316,10 +2402,18 @@ def mirror_place(
     # bind none of the account's money and their fills are what releases
     # the margin the increasing legs below are admitted against.  The sort
     # is stable, so each group keeps the plan's own order inside it.
-    reducing = [order for order in orders if order.symbol not in increasing]
+    # A reducing leg is sent reduceOnly (bug_spec_vst_reduce_only_legs.xml,
+    # bug 1), so the venue frees the margin it would otherwise reserve for
+    # the resting order.  The plan's own order values are untouched; the leg
+    # that is sent is the same order with the one flag set.
+    reducing = [
+        replace(order, reduce_only=True) if order.symbol in shrinking else order
+        for order in orders
+        if order.symbol not in increasing
+    ]
     growing = [order for order in orders if order.symbol in increasing]
 
-    outcomes: dict[str, MirrorLeg] = {}
+    outcomes = MirrorOutcomes(crossing_symbols=crossing)
 
     def place(order: BingXOrder) -> MirrorLeg:
         """Place one leg through the store, the limiter and the backoff."""

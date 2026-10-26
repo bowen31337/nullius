@@ -206,7 +206,7 @@ _ORDER_FIDELITY_COLUMNS = (
     "client_order_id, book_id, rebalance_ts, symbol, side, type, "
     "leg_state, decision_mark, expected_cost_bps, realized_cost_bps, "
     "gap_bps, commission_bps, maker, place_to_fill_ms, unfilled_rest_ms, "
-    "notional, computed_at"
+    "notional, computed_at, reduce_only"
 )
 
 #: :data:`ORDER_FIDELITY_TABLE`'s columns before this bugfix — no
@@ -255,7 +255,11 @@ CREATE TABLE IF NOT EXISTS {ORDER_FIDELITY_TABLE} (
     place_to_fill_ms   INTEGER,
     unfilled_rest_ms   INTEGER,
     notional           TEXT,
-    computed_at        TEXT NOT NULL
+    computed_at        TEXT NOT NULL,
+    -- bug_spec_vst_reduce_only_legs.xml, bug 1: whether the leg was sent
+    -- reduceOnly (1) or plain (0), read off its router_order_record row;
+    -- NULL when that row predates the flag (unknown, not plain).
+    reduce_only        INTEGER
 );
 
 -- The per-slot half: one row per reconciled slot, keyed by the rebalance's
@@ -283,7 +287,7 @@ CREATE TABLE IF NOT EXISTS {SLOT_FIDELITY_TABLE} (
 
 _ORDER_FIDELITY_INSERT_SQL = f"""
 INSERT INTO {ORDER_FIDELITY_TABLE} ({_ORDER_FIDELITY_COLUMNS})
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE NOT EXISTS (
     SELECT 1 FROM {ORDER_FIDELITY_TABLE} WHERE client_order_id = ?
 )
@@ -454,6 +458,10 @@ class OrderFidelity:
     time to a cancel.  ``unfilled_rest_ms`` is the mirror image: the time the
     venue held a :data:`FIDELITY_LEG_UNFILLED` leg open before its terminal
     ``CANCELED``/``EXPIRED`` state, ``None`` for every other leg state.
+    ``reduce_only`` is whether the leg was sent reduceOnly (``True``) or plain
+    (``False``), carried from the leg's order record so a reduceOnly fill and
+    a plain one are told apart here; ``None`` when that record predates the
+    flag.
     """
 
     client_order_id: str
@@ -473,6 +481,7 @@ class OrderFidelity:
     unfilled_rest_ms: int | None
     notional: Decimal | None
     computed_at: datetime
+    reduce_only: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -617,6 +626,7 @@ def _leg_fidelity(
         unfilled_rest_ms=unfilled_rest_ms,
         notional=notional,
         computed_at=computed_at,
+        reduce_only=record.reduce_only,
     )
 
 
@@ -649,7 +659,7 @@ def _slot_funding_income(
 
 
 def _order_fidelity_params(order: OrderFidelity) -> tuple[Any, ...]:
-    """The 18 bound parameters :data:`_ORDER_FIDELITY_INSERT_SQL` takes."""
+    """The 19 bound parameters :data:`_ORDER_FIDELITY_INSERT_SQL` takes."""
     key = order.client_order_id
     return (
         key,
@@ -669,6 +679,7 @@ def _order_fidelity_params(order: OrderFidelity) -> tuple[Any, ...]:
         order.unfilled_rest_ms,
         _decimal_text_or_none(order.notional),
         _isoformat_utc(order.computed_at),
+        None if order.reduce_only is None else int(order.reduce_only),
         key,
     )
 
@@ -699,6 +710,7 @@ def _order_fidelity_from_row(row: tuple) -> OrderFidelity:
         unfilled_rest_ms,
         notional_raw,
         computed_at_raw,
+        reduce_only_raw,
     ) = row
     try:
         rebalance_ts = datetime.fromisoformat(rebalance_ts_raw)
@@ -733,6 +745,7 @@ def _order_fidelity_from_row(row: tuple) -> OrderFidelity:
         unfilled_rest_ms=unfilled_rest_ms,
         notional=_decimal_or_none(notional_raw, what="notional"),
         computed_at=computed_at,
+        reduce_only=None if reduce_only_raw is None else bool(reduce_only_raw),
     )
 
 
@@ -845,6 +858,27 @@ def _ensure_slot_fidelity_columns(connection: sqlite3.Connection) -> None:
             continue
         connection.execute(
             f"ALTER TABLE {SLOT_FIDELITY_TABLE} ADD COLUMN {name} {sqltype}"
+        )
+
+
+def _ensure_order_fidelity_columns(connection: sqlite3.Connection) -> None:
+    """Add ``reduce_only`` to a pre-existing :data:`ORDER_FIDELITY_TABLE`.
+
+    The same probe-then-``ALTER`` :func:`_ensure_slot_fidelity_columns` and
+    ``router.submission_result`` use for a column added to a table the store
+    already owns (``bug_spec_vst_reduce_only_legs.xml``, bug 1).  A table
+    :data:`_SCHEMA` just created, or :func:`_migrate_order_fidelity_table`
+    just rebuilt, already carries the column and this is a no-op; a table
+    from before it gains the column as ``NULL`` for every row it holds — a
+    leg reconciled before the flag was recorded is unknown, not plain — and
+    no row is rewritten.
+    """
+    rows = connection.execute(f"PRAGMA table_info({ORDER_FIDELITY_TABLE})").fetchall()
+    if any(str(row[1]) == "reduce_only" for row in rows):
+        return
+    with connection:
+        connection.execute(
+            f"ALTER TABLE {ORDER_FIDELITY_TABLE} ADD COLUMN reduce_only INTEGER"
         )
 
 
@@ -984,7 +1018,8 @@ def _migrate_order_fidelity_table(connection: sqlite3.Connection) -> None:
                 place_to_fill_ms   INTEGER,
                 unfilled_rest_ms   INTEGER,
                 notional           TEXT,
-                computed_at        TEXT NOT NULL
+                computed_at        TEXT NOT NULL,
+                reduce_only        INTEGER
             )
             """
         )
@@ -1038,6 +1073,7 @@ def _migrate_order_fidelity_table(connection: sqlite3.Connection) -> None:
                     unfilled_rest_ms,
                     notional,
                     computed_at,
+                    None,  # reduce_only: a legacy row predates the flag
                     client_order_id,
                 ),
             )
@@ -1067,6 +1103,7 @@ def _persist_fidelity(slot_fidelity: SlotFidelity, *, database_url: str) -> Slot
         with connection:
             connection.executescript(_SCHEMA)
         _migrate_order_fidelity_table(connection)
+        _ensure_order_fidelity_columns(connection)
         with connection:
             _ensure_slot_fidelity_columns(connection)
         for order in slot_fidelity.orders:

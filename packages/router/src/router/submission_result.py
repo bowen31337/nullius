@@ -235,7 +235,11 @@ CREATE TABLE IF NOT EXISTS {ORDER_RECORD_TABLE} (
     expected_cost_bps  REAL,  -- the cost model's pre-trade estimate; null, never 0
     cost_model_version TEXT,  -- the resolved cost model's version string
     sent_at            TEXT,  -- ISO 8601 UTC: just before the place call
-    acked_at           TEXT   -- ISO 8601 UTC: just after the place call returned
+    acked_at           TEXT,  -- ISO 8601 UTC: just after the place call returned
+    -- bug_spec_vst_reduce_only_legs.xml, bug 1: whether the order was sent
+    -- with reduceOnly (1) or plain (0).  NULL for a row written before the
+    -- flag was recorded, which is unknown rather than plain.
+    reduce_only        INTEGER
 );
 """
 
@@ -246,6 +250,8 @@ CREATE TABLE IF NOT EXISTS {ORDER_RECORD_TABLE} (
 #: list is what :func:`_ensure_order_record_decision_columns` probes for and
 #: adds to a table a prior version of this module already created, so an
 #: existing ``vst.db`` upgrades in place rather than needing a rebuild.
+#: ``reduce_only`` is the one column past the nine, appended by
+#: ``bug_spec_vst_reduce_only_legs.xml`` bug 1 through the same probe.
 _DECISION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("decision_mark", "TEXT"),
     ("best_bid", "TEXT"),
@@ -256,6 +262,7 @@ _DECISION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cost_model_version", "TEXT"),
     ("sent_at", "TEXT"),
     ("acked_at", "TEXT"),
+    ("reduce_only", "INTEGER"),
 )
 
 
@@ -268,7 +275,7 @@ def _ensure_order_record_decision_columns(connection: sqlite3.Connection) -> Non
     carries no ``IF NOT EXISTS`` of its own.  A table ``_SCHEMA`` just
     created above already carries every column, so this is a no-op on a
     fresh database; a live ``vst.db`` written by a prior version of this
-    module is missing all nine, and this is what adds them without
+    module is missing all of them, and this is what adds them without
     touching a row it already holds.  Every column is nullable, so the
     ``ALTER`` never needs a ``DEFAULT`` to satisfy existing rows.
     """
@@ -311,7 +318,7 @@ _RECORD_COLUMNS = (
     "client_order_id, book_id, rebalance_ts, symbol, side, type, "
     "quantity, reference_price, placed_at, decision_mark, best_bid, "
     "best_ask, pre_reprice_limit, target_quantity, expected_cost_bps, "
-    "cost_model_version, sent_at, acked_at"
+    "cost_model_version, sent_at, acked_at, reduce_only"
 )
 
 #: The terms write: claim the key iff it has no row yet, the same
@@ -325,7 +332,7 @@ _RECORD_INSERT_SQL = f"""
 INSERT INTO {ORDER_RECORD_TABLE} (
     {_RECORD_COLUMNS}
 )
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE NOT EXISTS (
     SELECT 1 FROM {ORDER_RECORD_TABLE} WHERE client_order_id = ?
 )
@@ -634,6 +641,25 @@ def _require_optional_text(value: object, what: str) -> str | None:
     return value.strip()
 
 
+def _require_optional_bool(value: object, what: str) -> bool | None:
+    """``None`` verbatim, or ``value`` as a real boolean, or refuse it.
+
+    A flag is a ``bool`` and nothing else: ``"false"`` is truthy text and
+    ``1`` is a number, and either would be stored as a fact the order never
+    stated.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise RouterSubmissionResultError(
+            f"{SUBMISSION_RESULT_CODE}: a recorded order's {what} must be "
+            f"True, False or None, got {value!r} ({type(value).__name__}); "
+            "the flag says whether the order was sent reduceOnly, and a "
+            "value that is not a boolean states no such fact"
+        )
+    return value
+
+
 def _require_optional_aware(value: object, what: str) -> datetime | None:
     """``None`` verbatim, or :func:`_require_aware` over ``value``."""
     if value is None:
@@ -921,6 +947,11 @@ class OrderRecord:
     cost_model_version: str | None = None
     sent_at: datetime | None = None
     acked_at: datetime | None = None
+    #: Whether the order was sent ``reduceOnly`` (``True``) or plain
+    #: (``False``), so a reconciliation can tell a reduceOnly fill from a
+    #: plain one; ``None`` for a row written before the flag was recorded —
+    #: unknown, not plain (``bug_spec_vst_reduce_only_legs.xml``, bug 1).
+    reduce_only: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -974,6 +1005,11 @@ class OrderRecord:
         object.__setattr__(
             self, "acked_at", _require_optional_aware(self.acked_at, "acked_at")
         )
+        object.__setattr__(
+            self,
+            "reduce_only",
+            _require_optional_bool(self.reduce_only, "reduce_only"),
+        )
 
     @property
     def key(self) -> str:
@@ -1001,6 +1037,9 @@ class OrderRecord:
             "cost_model_version": self.cost_model_version,
             "sent_at": _isoformat_or_none(self.sent_at),
             "acked_at": _isoformat_or_none(self.acked_at),
+            "reduce_only": (
+                None if self.reduce_only is None else int(self.reduce_only)
+            ),
         }
 
 
@@ -1324,6 +1363,7 @@ class RouterOrderPlacementStore:
         cost_model_version: Any = None,
         sent_at: Any = None,
         acked_at: Any = None,
+        reduce_only: Any = None,
     ) -> OrderRecord:
         """Record one placed order's terms, so a later reconciliation can price it.
 
@@ -1354,6 +1394,11 @@ class RouterOrderPlacementStore:
         :class:`~router.errors.RouterStoreError` when the store could not
         take the row: an order placed and not recorded is exactly the gap
         that would make its fill-cost reconciliation wrong again.
+
+        ``reduce_only`` (``bug_spec_vst_reduce_only_legs.xml``, bug 1) is the
+        one fact beside those: ``True`` when the order was sent reduceOnly,
+        ``False`` when plain, ``None`` — the default — when the caller
+        states nothing.  Anything but those three is refused.
 
         The nine keyword arguments from ``decision_mark`` on are
         additions_spec_vst_fidelity.xml feature 2's decision-time facts —
@@ -1391,6 +1436,7 @@ class RouterOrderPlacementStore:
             cost_model_version=cost_model_version,
             sent_at=sent_at,
             acked_at=acked_at,
+            reduce_only=reduce_only,
         )
         try:
             with closing(self._connect()) as connection, connection:
@@ -1415,6 +1461,11 @@ class RouterOrderPlacementStore:
                         record.cost_model_version,
                         _isoformat_or_none(record.sent_at),
                         _isoformat_or_none(record.acked_at),
+                        (
+                            None
+                            if record.reduce_only is None
+                            else int(record.reduce_only)
+                        ),
                         record.client_order_id,
                     ),
                 )
@@ -1504,6 +1555,7 @@ class RouterOrderPlacementStore:
             cost_model_version,
             sent_at_raw,
             acked_at_raw,
+            reduce_only_raw,
         ) = row
         try:
             instant = datetime.fromisoformat(rebalance_ts_raw)
@@ -1542,6 +1594,13 @@ class RouterOrderPlacementStore:
                 cost_model_version=cost_model_version,
                 sent_at=sent_at,
                 acked_at=acked_at,
+                # SQLite holds the flag as 0, 1 or NULL; any other value is
+                # passed through unconverted so the record refuses it by name.
+                reduce_only=(
+                    reduce_only_raw == 1
+                    if reduce_only_raw in (0, 1)
+                    else reduce_only_raw
+                ),
             )
         except RouterSubmissionResultError as refusal:
             raise RouterSubmissionResultError(
