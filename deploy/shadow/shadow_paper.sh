@@ -25,6 +25,8 @@ SHADOW_LAKE="${SHADOW_LAKE:-$HOME/.local/share/nullius/lake-shadow}"
 SHADOW_NODES_PAPER="${SHADOW_NODES_PAPER:-$HOME/.config/nullius/shadow/nodes-paper.txt}"
 SHADOW_OUT_PAPER="${SHADOW_OUT_PAPER:-$HOME/.local/share/nullius/shadow-paper/book.json}"
 SHADOW_METRICS="${SHADOW_METRICS:-0}"
+# Extra shadow-book flags, word-split (shadow v2: "--grid-days 7 --max-name-weight 0.04 --node-weighting inverse_vol").
+SHADOW_BOOK_EXTRA_ARGS="${SHADOW_BOOK_EXTRA_ARGS:-}"
 # A perp book must be priced on the USD-M schedule; shadow-book refuses the
 # shipped spot default, so default it here rather than depend on the unit alone.
 export NULLIUS_COST_MODEL_PATH="${NULLIUS_COST_MODEL_PATH:-${REPO_ROOT}/packages/cost-model/src/cost_model/binance_usdm.yaml}"
@@ -61,6 +63,7 @@ BOOK_LINE="$("${RUN_SH}" shadow-book \
   --out "${SHADOW_OUT_PAPER}" \
   --contracts "${CONTRACTS_PATH}" \
   --ticker "${TICKER_PATH}" \
+  ${SHADOW_BOOK_EXTRA_ARGS} \
   "${NODE_ARGS[@]}")"
 echo "${BOOK_LINE}"
 

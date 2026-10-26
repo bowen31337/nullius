@@ -1,0 +1,33 @@
+# Paper-only forward shadow v2 (de-correlated multi-theme book, never traded).
+# docs/preregistration/2026-10-24-shadow-v2-multitheme.md
+#
+# Runs deploy/shadow/shadow_paper.sh after the daily lake refresh
+# (nullius-shadow.service, 09:30 UTC): it reuses that run's sealed snapshot and
+# BingX documents and writes one more book, into its own directory. It never
+# touches active_book.json and places no order. Installing and enabling it is an
+# operator step, as for every unit in this directory.
+#
+# `run.sh shadow-book` reads the stored node code and the evaluation config under
+# the campaign env file, so this unit needs the 1Password service token the same
+# way nullius-shadow.service does.
+
+[Unit]
+Description=nullius paper-only forward shadow v2 (multi-theme inverse-vol book, not traded)
+Documentation=file:/%h/projects/nullius/docs/preregistration/2026-10-24-shadow-v2-multitheme.md
+OnFailure=nullius-vst-alert@%n.service
+Wants=network-online.target
+After=network-online.target nullius-shadow.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/nullius
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NULLIUS_COST_MODEL_PATH=%h/projects/nullius/packages/cost-model/src/cost_model/binance_usdm.yaml
+Environment=SHADOW_METRICS=1
+Environment=SHADOW_NODES_PAPER=%h/.config/nullius/shadow/nodes-v2.txt
+Environment=SHADOW_OUT_PAPER=%h/.local/share/nullius/shadow-v2/book.json
+Environment=ENV_CAMPAIGN_TPL=%h/projects/nullius/.env.campaign-shadow-v2.tpl
+Environment=SHADOW_BOOK_EXTRA_ARGS=--grid-days 7 --max-name-weight 0.04 --node-weighting inverse_vol
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+ExecStart=/bin/sh -c 'OP_SERVICE_ACCOUNT_TOKEN="$$(cat %h/.config/op/service-token)"; export OP_SERVICE_ACCOUNT_TOKEN; : "$${OP_SERVICE_ACCOUNT_TOKEN:?1Password service token unreadable}"; exec %h/projects/nullius/deploy/shadow/shadow_paper.sh'
+Restart=no
