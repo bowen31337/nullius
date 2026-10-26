@@ -55,6 +55,7 @@ import json
 import sqlite3
 import subprocess
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -75,9 +76,11 @@ from router.bingx_rebalance import (
     REBALANCE_SLOT_HOURS,
     ROUTER_SLOT_COMPLETION_TABLE,
     SLOT_LOOKBACK_HOURS,
+    RebalanceReport,
     RouterBingXRebalanceError,
     RouterSlotCompletionStore,
     SlotCompletion,
+    _refusal_alert_text,
     floor_to_slot,
     main,
 )
@@ -1534,6 +1537,153 @@ def test_an_exit_one_slot_sends_one_warning_alert_listing_each_refused_leg(
         "— the PostOnly order would have crossed the book" in text
     )
     _assert_no_token_anywhere(capsys, caplog)
+
+
+#: One margin-deferred refusal's message, in the mirror's own shape — the
+#: sentence :func:`router.bingx_mirror._deferred_leg` spells, at the figures
+#: the live shadow book's slots actually saw, so a body composed over many
+#: of them is as long as the real one was.
+_DEFERRED_MESSAGE = (
+    "margin_deferred: this leg needs 13.666 USDT; 14.526 USDT of the "
+    "14.7867 USDT the account answered is already committed to the "
+    "increasing legs admitted ahead of it; the rest of the plan was sent, "
+    "and this leg is deferred to the next slot, which re-reads the balance"
+)
+
+
+class _GuardFigures:
+    """The four figures a report's own summary line spells, at zero loss.
+
+    A refusal body states no guard figure, but the summary line the journal
+    keeps reads all four, and the test below reads the summary line to pin
+    that the journal still carries what the phone no longer does.
+    """
+
+    opening_equity = Decimal(0)
+    current_equity = Decimal(0)
+    daily_loss = Decimal(0)
+    daily_loss_limit = Decimal(300)
+
+
+def _deferred_report(
+    deferred: int, *, refused_venue: int = 0, skipped: int = 1, placed: int = 1
+) -> RebalanceReport:
+    """A finished exit-1 slot's report, with as many deferred legs as asked.
+
+    The report the live shadow book handed the alert path on every exit-1
+    slot of 2026-10-24: a handful of legs placed, one or two closed by the
+    gates, and every increasing leg the account could not fund deferred
+    under ``margin_deferred`` (``bug_spec_vst_reduce_only_legs.xml``).  A
+    refused leg is an order leg too — the leg was priced and sent at, only
+    refused — so ``orders`` carries every entry ``refused`` does.
+    """
+    venue = tuple(
+        {
+            "symbol": f"VENUE{i}-USDT",
+            "placement": "101215",
+            "message": "the PostOnly order would have crossed the book",
+        }
+        for i in range(refused_venue)
+    )
+    deferred_legs = tuple(
+        {
+            "symbol": f"SYM{index:02d}-USDT",
+            "placement": "margin_deferred",
+            "message": _DEFERRED_MESSAGE,
+        }
+        for index in range(deferred)
+    )
+    placed_legs = tuple(
+        {"symbol": "BTC-USDT", "outcome": MIRROR_OUTCOME_PLACED}
+        for _ in range(placed)
+    )
+    refused_legs = tuple(
+        {"symbol": entry["symbol"], "outcome": MIRROR_OUTCOME_REFUSED}
+        for entry in venue + deferred_legs
+    )
+    return RebalanceReport(
+        book_id="synthetic-vst-0",
+        rebalance_ts=SLOT_NOON,
+        guard=_GuardFigures(),
+        cancelled=(),
+        cancel_skipped=False,
+        reconciled=False,
+        orders=placed_legs + refused_legs,
+        refused=venue + deferred_legs,
+        skipped=tuple(
+            {"symbol": "AGLD-USDT", "code": "no_mark"} for _ in range(skipped)
+        ),
+        persisted=False,
+        persist_skipped="no_provenance",
+        exit_code=EXIT_REFUSED,
+    )
+
+
+def test_the_refused_slot_alert_for_50_deferred_legs_stays_a_page() -> None:
+    """Counts first, then the two figures, then at most ten legs per code.
+
+    The body the live shadow book composed listed all 50 deferred legs with
+    their full messages and passed 13 000 characters, so the Bot API
+    refused it with ``message is too long`` and the operator heard nothing
+    about any refused slot (``bug_spec_vst_reduce_only_legs.xml``, bug 3).
+    The body now opens with the counts by code, states the available and
+    required margin the deferrals were measured against, and lists at most
+    the first ten legs per code.
+    """
+    report = _deferred_report(50)
+    body = _refusal_alert_text(report)
+
+    # The whole body is a page, not a listing: far inside the Bot API's
+    # 4096-character limit, so the one alert always lands.
+    assert len(body) < 2000
+    lines = body.splitlines()
+    # First line the counts by code, in the spec's own example's shape.
+    assert lines[0] == "deferred 50, refused 0, skipped 1, placed 1"
+    # Then the slot's own identification, then the two margin figures the
+    # deferrals were measured against, read back off the legs' messages.
+    assert lines[1] == (
+        f"The {SLOT_NOON.isoformat()} slot for book synthetic-vst-0 exited "
+        "1: 50 of its 51 order legs were refused."
+    )
+    assert (
+        lines[2] == "Margin available 14.7867 USDT; the deferred legs "
+        "require 683.300 USDT."
+    )
+    # Then at most the first ten legs under the code, each by symbol alone
+    # — the one sentence they all share is already stated by the figures —
+    # with a +N more line closing the group.
+    listed = [line for line in lines if line.startswith("- ")]
+    assert listed == [
+        f"- SYM{index:02d}-USDT: margin_deferred" for index in range(10)
+    ]
+    assert "+40 more" in lines
+    # The full list stays in the journal: the summary line the command
+    # prints still enumerates every deferred leg with its whole message.
+    assert len(report.as_line()["refused"]) == 50
+
+
+def test_the_refused_slot_alert_caps_each_code_apart_and_keeps_messages() -> None:
+    """Ten legs per code, per code — and a venue refusal keeps its message.
+
+    A slot that saw both kinds of refusal lists at most ten legs under each
+    code with that code's own ``+N more`` line, and a leg the venue refused
+    still carries its code and its message — those legs are few and each
+    message is its own fact, which is what the warning alert is for.
+    """
+    body = _refusal_alert_text(_deferred_report(5, refused_venue=12))
+    lines = body.splitlines()
+    assert lines[0] == "deferred 5, refused 12, skipped 1, placed 1"
+    listed = [line for line in lines if line.startswith("- ")]
+    assert listed[:10] == [
+        f"- VENUE{index}-USDT: 101215 — the PostOnly order would have "
+        "crossed the book"
+        for index in range(10)
+    ]
+    assert "+2 more" in lines
+    # A deferred leg's listing carries its symbol, not the sentence every
+    # deferred leg shares — the figures line above it already states it.
+    assert f"— {_DEFERRED_MESSAGE}" not in body
+    assert len([line for line in listed if line.endswith(": margin_deferred")]) == 5
 
 
 def test_a_breach_slot_sends_one_urgent_alert_naming_loss_limit_and_reset(

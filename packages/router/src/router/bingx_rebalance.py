@@ -782,26 +782,72 @@ def _halt_alert_text(book_id: str, slot: datetime, halt: BaseException) -> str:
     )
 
 
-def _refusal_alert_text(report: RebalanceReport) -> str:
-    """The warning body for exit 1: each refused symbol, code and message.
+#: The most legs the refused-slot alert lists under any one placement code.
+#: The legs past the limit are counted on a ``+N more`` line and the full
+#: list stays in the summary line the journal keeps, because the alert is a
+#: page an operator reads on a phone, not a log — the body that listed all
+#: 50 deferred legs of the live shadow book's exit-1 slots passed 13 000
+#: characters and the Bot API refused it whole (``bug_spec_vst_reduce_only_legs.xml``,
+#: bug 3).
+_REFUSED_LISTING_PER_CODE = 10
 
-    The listing is the sentence's own requirement — one line per leg the
-    venue would not take, carrying the code and the message exactly as the
-    summary line recorded them, so an operator reading the phone and one
-    reading the journal see the same refusal.
+
+def _refusal_alert_text(report: RebalanceReport) -> str:
+    """The warning body for exit 1: the counts, the figures, then a capped listing.
+
+    The body this used to compose — every refused leg with its full
+    message — passed 13 000 characters on the live shadow book's exit-1
+    slots (50 ``margin_deferred`` legs), so the Bot API refused the one
+    alert with ``message is too long`` and the operator heard nothing about
+    any refused slot (``bug_spec_vst_reduce_only_legs.xml``, bug 3).  It
+    now summarises before it lists: the counts by code open the body, the
+    deferred legs' two margin figures follow, and at most
+    :data:`_REFUSED_LISTING_PER_CODE` legs appear under any one code, a
+    ``+N more`` line closing each group that ran past the cap.
+
+    The listing keeps the line the phone and the journal have always shared
+    — ``symbol: code — message`` — for every code but ``margin_deferred``,
+    whose legs are few in symbol and one in sentence: a deferred leg lists
+    its symbol alone, because the message every deferred leg carries is the
+    same sentence and the figures it varies by are already stated on the
+    figures line.  The summary line the command prints still enumerates
+    every leg with its whole message, so the journal loses nothing the
+    phone stopped carrying.
     """
 
+    deferred = sum(
+        1 for entry in report.refused if entry["placement"] == MARGIN_DEFERRED_CODE
+    )
+    placed = sum(
+        1 for order in report.orders if order["outcome"] == MIRROR_OUTCOME_PLACED
+    )
+    counts = (
+        f"deferred {deferred}, refused {len(report.refused) - deferred}, "
+        f"skipped {len(report.skipped)}, placed {placed}"
+    )
     opener = (
         f"The {report.rebalance_ts.isoformat()} slot for book "
         f"{report.book_id} exited 1: {len(report.refused)} of its "
         f"{len(report.orders)} order legs were refused."
     )
-    lines = [opener]
+    lines = [counts, opener]
+    if deferred:
+        available, required_total = _deferred_figures(report.refused)
+        lines.append(
+            f"Margin available {available} USDT; the deferred legs require "
+            f"{required_total} USDT."
+        )
+    by_code: dict[str, list[dict[str, str]]] = {}
     for entry in report.refused:
-        line = f"- {entry['symbol']}: {entry['placement'] or 'no code'}"
-        if entry.get("message"):
-            line += f" — {entry['message']}"
-        lines.append(line)
+        by_code.setdefault(entry["placement"] or "no code", []).append(entry)
+    for code, entries in by_code.items():
+        for entry in entries[:_REFUSED_LISTING_PER_CODE]:
+            line = f"- {entry['symbol']}: {code}"
+            if entry.get("message") and code != MARGIN_DEFERRED_CODE:
+                line += f" — {entry['message']}"
+            lines.append(line)
+        if len(entries) > _REFUSED_LISTING_PER_CODE:
+            lines.append(f"+{len(entries) - _REFUSED_LISTING_PER_CODE} more")
     return "\n".join(lines)
 
 

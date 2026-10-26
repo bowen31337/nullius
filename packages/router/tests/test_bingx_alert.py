@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.parse
 from collections.abc import Mapping
 
@@ -28,6 +29,7 @@ from router.bingx_alert import (
     INFO,
     TELEGRAM_API_HOST,
     TELEGRAM_API_ORIGIN,
+    TELEGRAM_MAX_MESSAGE,
     URGENT,
     WARNING,
     RouterBingXAlertError,
@@ -141,6 +143,77 @@ def test_an_unknown_level_is_a_typed_refusal_before_anything_is_sent() -> None:
 
 def test_the_default_timeout_is_ten_seconds() -> None:
     assert DEFAULT_TIMEOUT_SECONDS == 10.0
+
+
+# -- The Bot API's own message-length limit -----------------------------------
+
+
+#: The marker an over-long wire text is cut to end with, as a pattern: the
+#: count it names is whatever the sender dropped, so the test reads the
+#: number back out of the posted body instead of restating it.
+TRUNCATION_MARKER = re.compile(r"… \[truncated, (\d+) chars\]$")
+
+
+def test_the_limit_is_the_number_the_bot_api_refuses_past() -> None:
+    """4096 is the Bot API's own ceiling, not a number this member picked."""
+    assert TELEGRAM_MAX_MESSAGE == 4096
+
+
+def test_a_body_over_the_limit_is_posted_cut_to_it_ending_in_a_marker() -> None:
+    """An over-long message arrives at exactly the limit, head first.
+
+    The Bot API answers any message past :data:`TELEGRAM_MAX_MESSAGE`
+    characters with HTTP 400 ``message is too long`` — the refusal that
+    silenced every refused slot whose alert body listed 50 deferred legs
+    (``bug_spec_vst_reduce_only_legs.xml``, bug 3).  The wire text is cut
+    to the limit and ends with a marker naming how many characters fell
+    off, so the level, the bot's name and the body's first lines always
+    arrive and the operator learns there is more in the journal.
+    """
+    recorder = _Recorder(_ok())
+    assert send_alert(URGENT, "x" * 10_000, env=_env(), transport=recorder) is True
+    text = _body_of(recorder)["text"]
+    assert len(text) == TELEGRAM_MAX_MESSAGE
+    assert text.startswith(f"{URGENT}: {BOT_NAME}\n\n")
+    marker = TRUNCATION_MARKER.search(text)
+    assert marker is not None
+    # The head that survived is the original's own opening, and the count
+    # names exactly the characters of the original that did not survive.
+    original = f"{URGENT}: {BOT_NAME}\n\n" + "x" * 10_000
+    kept = len(text) - len(marker.group(0))
+    assert text[:kept] == original[:kept]
+    assert int(marker.group(1)) == len(original) - kept
+
+
+def test_a_body_that_fits_is_posted_unchanged() -> None:
+    """A message inside the limit carries no marker and no cut."""
+    recorder = _Recorder(_ok())
+    assert send_alert(WARNING, "a leg was refused", env=_env(), transport=recorder)
+    assert (
+        _body_of(recorder)["text"] == f"{WARNING}: {BOT_NAME}\n\na leg was refused"
+    )
+
+
+def test_a_body_exactly_at_the_limit_is_posted_unchanged() -> None:
+    """The limit is inclusive: 4096 characters is not an over-long message."""
+    prefix = f"{INFO}: {BOT_NAME}\n\n"
+    recorder = _Recorder(_ok())
+    body = "y" * (TELEGRAM_MAX_MESSAGE - len(prefix))
+    assert send_alert(INFO, body, env=_env(), transport=recorder) is True
+    text = _body_of(recorder)["text"]
+    assert len(text) == TELEGRAM_MAX_MESSAGE
+    assert text == prefix + body
+
+
+def test_a_body_one_character_over_is_cut_to_the_limit() -> None:
+    """One character past the limit is still cut, marker and all."""
+    prefix = f"{URGENT}: {BOT_NAME}\n\n"
+    recorder = _Recorder(_ok())
+    body = "y" * (TELEGRAM_MAX_MESSAGE - len(prefix) + 1)
+    assert send_alert(URGENT, body, env=_env(), transport=recorder) is True
+    text = _body_of(recorder)["text"]
+    assert len(text) == TELEGRAM_MAX_MESSAGE
+    assert TRUNCATION_MARKER.search(text) is not None
 
 
 # -- Delivery outcomes: False, one line, no token -----------------------------

@@ -49,6 +49,16 @@ somewhere else.  The transport is a callable ``(method, url, headers, body) ->
 is a :mod:`urllib.request` transport with a 10-second timeout, and the suite
 passes a recorder, which is what makes *"no test opens a network connection"*
 enforceable.
+
+**An over-long message is cut, never lost whole.**  The Bot API answers any
+message past :data:`TELEGRAM_MAX_MESSAGE` characters with HTTP 400 ``message is
+too long`` — the refusal that silenced the refused-slot alert while its body
+listed every deferred leg (``bug_spec_vst_reduce_only_legs.xml``, bug 3), a
+delivery failure like any other and therefore a silent one.  :func:`send_alert`
+cuts the formatted wire text to the limit as the last step before the body is
+posted, ending it with a marker naming how many characters fell off; the level,
+the bot's name and the body's first lines always arrive, and a message that
+fits is posted verbatim.
 """
 
 from __future__ import annotations
@@ -76,6 +86,7 @@ __all__ = [
     "SEND_MESSAGE_PATH",
     "TELEGRAM_API_HOST",
     "TELEGRAM_API_ORIGIN",
+    "TELEGRAM_MAX_MESSAGE",
     "URGENT",
     "WARNING",
     "RouterBingXAlertError",
@@ -117,6 +128,15 @@ SEND_MESSAGE_PATH = "/sendMessage"
 #: The spec's own *"a timeout of 10 seconds"*, spelled once so the sender and
 #: its suite cannot disagree about the budget.
 DEFAULT_TIMEOUT_SECONDS = 10.0
+
+#: The most characters one Bot API message may carry.  Telegram answers any
+#: longer text with HTTP 400 ``message is too long`` — the refusal that
+#: silenced the refused-slot alert while its body listed every deferred leg
+#: (``bug_spec_vst_reduce_only_legs.xml``, bug 3) — so the sender cuts the
+#: wire text to this length and lets the head arrive rather than lose the
+#: whole message.  Characters, as :func:`len` counts them, which is the
+#: unit the composed bodies of this bot's alerts measure in.
+TELEGRAM_MAX_MESSAGE = 4096
 
 #: The one ``--event`` this command understands today: the systemd ``OnFailure``
 #: hook that fires when a scheduled slot could not run at all.
@@ -223,6 +243,30 @@ def _format_message(level: str, text: str) -> str:
     return f"{level}: {BOT_NAME}\n\n{text}"
 
 
+def _truncate_wire_text(text: str) -> str:
+    """Cut an over-long wire text to the Bot API's limit, ending in a marker.
+
+    The Bot API refuses any message past :data:`TELEGRAM_MAX_MESSAGE`
+    characters whole — nothing arrives — so a body that runs past the limit
+    is cut and ends with a marker naming how many characters of the
+    original did not fit, and an operator reading a truncated alert knows
+    there is more of it in the journal.  The count feeds back into the cut:
+    a wider count leaves a shorter head, which can widen the count again,
+    so it is settled before the head is taken — the sequence is monotone
+    and bounded, so it settles within a pass or two.  A text at or under
+    the limit is returned unchanged, byte for byte.
+    """
+    dropped = len(text) - TELEGRAM_MAX_MESSAGE
+    if dropped <= 0:
+        return text
+    while True:
+        marker = f"… [truncated, {dropped} chars]"
+        keep = TELEGRAM_MAX_MESSAGE - len(marker)
+        if len(text) - keep == dropped:
+            return text[:keep] + marker
+        dropped = len(text) - keep
+
+
 def send_alert(
     level: str,
     text: str,
@@ -238,7 +282,12 @@ def send_alert(
     unknown level is a :class:`RouterBingXAlertError`, raised before anything is
     built.  The message opens with the level and :data:`BOT_NAME`.  An
     :data:`INFO` alert is sent with ``disable_notification`` true, so it arrives
-    silently; ``urgent`` and ``warning`` ring.
+    silently; ``urgent`` and ``warning`` ring.  The formatted wire text is cut
+    to :data:`TELEGRAM_MAX_MESSAGE` characters as the last step before the
+    request body is built (:func:`_truncate_wire_text`) — after every
+    scrubbing, before the post — so an over-long body arrives truncated with a
+    marker rather than being refused whole by the Bot API's own length limit,
+    and a message that fits is posted verbatim.
 
     Every delivery outcome the spec names returns ``False`` and logs exactly one
     line naming the failure: a missing ``TELEGRAM_BOT_TOKEN`` or
@@ -267,7 +316,7 @@ def send_alert(
     body = json.dumps(
         {
             "chat_id": chat_id,
-            "text": _format_message(level, text),
+            "text": _truncate_wire_text(_format_message(level, text)),
             "disable_notification": level == INFO,
         }
     ).encode("utf-8")
