@@ -41,6 +41,29 @@ same ordering :mod:`orchestrator._shadow` itself holds for its own
 is dollar- and beta-neutral over symbols it cannot trade is not the book
 that gets traded.
 
+**The scored universe can be cut to the most liquid names, and the cut goes
+through the same seam as the venue mapping.** additions_spec_shadow_liquidity_cut.xml
+and the shadow v3 registration (``docs/preregistration/2026-10-28-shadow-v3-liquidity-cut.md``):
+``--liquidity-top N`` ranks every mapped lake symbol by the *median* of the
+snapshot's own ``futbars.quote_volume`` over the trailing
+``--liquidity-window-days`` calendar days ending on the decision date
+(inclusive), drops any symbol carrying fewer than ``--liquidity-min-days``
+rows inside that window (too thin a history to trust), keeps the first ``N``
+and passes exactly that set as ``allowed_symbols`` to
+:func:`orchestrator._shadow.shadow_weights` — *before* z-scoring. It is the
+same seam and the same ordering the venue mapping above already uses, and for
+the identical reason: a book that is dollar- and beta-neutral over names it
+will never hold is not the book that gets held, so the cross-section the
+signal is ranked within must already be the cross-section that trades. The
+cut is *never* a post-scoring drop from a z-scored book, and nothing in
+:mod:`orchestrator._shadow` changes for it. The figures are read only from
+the sealed snapshot, one ``mount.select`` per (symbol, day), never a glob, a
+ticker or a live venue call, and symbols and dates are visited in sorted
+order, so the same snapshot and flags reproduce the same cut — and the same
+book — in every process. Opt-in: without ``--liquidity-top`` this block never
+runs, ``book.json`` is byte-identical to today, and the JSON line gains the
+four new keys at their defaults only.
+
 **The per-node book's weighting comes from the evaluation config; the cap
 and the node weighting come from a flag.** additions_spec_shadow_book_construction.xml,
 "Forward Shadow": :func:`orchestrator._shadow.shadow_weights` already builds
@@ -71,6 +94,7 @@ import json
 import math
 import os
 import sqlite3
+import statistics
 import sys
 import tempfile
 from collections.abc import Collection, Mapping, Sequence
@@ -148,6 +172,20 @@ _NODE_VOL_WINDOW_DAYS = 60
 #: "noise dressed as a scale" concern :data:`orchestrator._context.MIN_VOL_WINDOW_DAYS`
 #: already states for a per-name vol, applied here to the node's own book.
 _MIN_NODE_VOL_PRICED_DATES = 20
+#: ``--liquidity-window-days``' allowed range and its default — the trailing
+#: calendar window (the decision date inclusive), in days, over which a
+#: name's own ``futbars.quote_volume`` is measured for the cut. Thirty days:
+#: long enough that a single thin session does not decide a name's rank.
+_DEFAULT_LIQUIDITY_WINDOW_DAYS = 30
+#: ``--liquidity-min-days``' default — a mapped name carrying fewer rows than
+#: this inside the window is too thin to rank, so it is excluded from the cut
+#: (and therefore from the book) and counted as dropped rather than ranked
+#: on a median of a handful of prints.
+_DEFAULT_LIQUIDITY_MIN_DAYS = 20
+#: ``--liquidity-top``'s floor: a top below two names is not a universe, it
+#: is a single-name bet — the same "one name on a side is not diversification"
+#: concern :data:`orchestrator._shadow._MIN_SYMBOLS_PER_LEG` states for a leg.
+_MIN_LIQUIDITY_TOP = 2
 #: ``--max-name-weight``'s clip-and-renormalise loop runs at most this many
 #: passes before refusing — a cap under ``gross / n`` names can never be met,
 #: so a loop that has not settled by here never will.
@@ -387,6 +425,103 @@ def _price_mismatches(
         if not (1.0 / _PRICE_MISMATCH_FACTOR <= ratio <= _PRICE_MISMATCH_FACTOR):
             mismatched.add(lake_symbol)
     return mismatched
+
+
+# -- the liquidity cut: rank the mapped names by trailing median quote volume -
+
+
+def _validate_liquidity_cut(
+    *, top: int | None, window_days: int, min_days: int
+) -> None:
+    """Refuse a liquidity cut whose own flags cannot describe a universe.
+
+    additions_spec_shadow_liquidity_cut.xml, "Forward Shadow": three
+    refusals, each naming its flag — a ``--liquidity-top`` below
+    :data:`_MIN_LIQUIDITY_TOP` (no universe at all), a
+    ``--liquidity-window-days`` below one (no window to measure over), and a
+    ``--liquidity-min-days`` above the window (a floor no name could ever
+    clear, so the cut would silently empty the book rather than answer).
+    """
+    if top is not None and top < _MIN_LIQUIDITY_TOP:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: --liquidity-top {top} is below the "
+            f"{_MIN_LIQUIDITY_TOP}-name minimum the shadow book defends — a "
+            "cut this shallow is a single-name bet, not a universe"
+        )
+    if window_days < 1:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: --liquidity-window-days {window_days} must "
+            "be at least 1: a zero-day window measures nothing"
+        )
+    if min_days > window_days:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: --liquidity-min-days {min_days} exceeds "
+            f"--liquidity-window-days {window_days}: no name can carry more "
+            "rows than the window holds, so the cut would drop every name"
+        )
+
+
+def _liquidity_rank(
+    mount: SnapshotMount,
+    symbols: Collection[str],
+    decision_date: dt.date,
+    *,
+    window_days: int,
+    min_days: int,
+) -> tuple[list[str], dict[str, float], int]:
+    """Rank ``symbols`` by trailing median ``quote_volume`` — the cut's own math.
+
+    additions_spec_shadow_liquidity_cut.xml, "Forward Shadow", and the shadow
+    v3 registration (``docs/preregistration/2026-10-28-shadow-v3-liquidity-cut.md``):
+    for each lake symbol in ``sorted(symbols)``, every date in
+    :func:`orchestrator._context._beta_window_dates` over ``window_days`` (the
+    trailing calendar window ending at and including ``decision_date``) whose
+    ``date=…`` key the mount lists for that symbol is read through
+    ``mount.select`` and its ``quote_volume`` cast to a float — a symbol with
+    no ``futbars`` partition at all simply has zero rows. A symbol carrying
+    fewer than ``min_days`` rows inside the window is excluded and counted; the
+    rest are ranked by their median descending, ties broken by the lake symbol
+    ascending.
+
+    Returns ``(ranked_symbols, medians_by_symbol, n_excluded)``: the ranked
+    spelling, each ranked symbol's own median, and how many symbols were
+    dropped for too few rows. Reading goes through the mount's
+    ``partitions``/``dates``/``select`` only — never a glob, a ticker or a live
+    venue call — and symbols and dates are visited in sorted order, so the same
+    snapshot and flags give the same rank in every process.
+
+    The rank is handed to :func:`orchestrator._shadow.shadow_weights` as its
+    ``allowed_symbols`` — *before* z-scoring, never as a drop from a scored
+    book: the cross-section a dollar- and beta-neutral book is neutral over
+    must already be the cross-section it will hold, the same reason the venue
+    mapping restricts through the same seam.
+    """
+    import polars as pl  # lazy: the evaluator's own PyArrow/Polars read idiom
+
+    window = _beta_window_dates(decision_date, window_days)
+    medians: dict[str, float] = {}
+    n_excluded = 0
+    for symbol in sorted(symbols):
+        listed = set(mount.dates(FUTBARS_STREAM, symbol))
+        values: list[float] = []
+        for day in window:
+            iso = day.isoformat()
+            if iso not in listed:
+                continue
+            parts = mount.select(FUTBARS_STREAM, symbol, iso)
+            if not parts:
+                continue
+            frame = pl.read_parquet([part.path for part in parts])
+            values.extend(
+                float(value)
+                for value in frame.get_column("quote_volume").cast(pl.Float64)
+            )
+        if len(values) < min_days:
+            n_excluded += 1
+            continue
+        medians[symbol] = statistics.median(values)
+    ranked = sorted(medians, key=lambda symbol: (-medians[symbol], symbol))
+    return ranked, medians, n_excluded
 
 
 # -- the decision date ---------------------------------------------------------
@@ -806,10 +941,42 @@ def _build_parser() -> argparse.ArgumentParser:
         "as-is; 'inverse_vol' scales each node's vector by the inverse of "
         "its own trailing realised book volatility first",
     )
+    parser.add_argument(
+        "--liquidity-top",
+        type=int,
+        default=None,
+        metavar="N",
+        help="keep only the N most liquid mapped names, ranked by the "
+        "trailing median futbars quote_volume (see --liquidity-window-days "
+        "and --liquidity-min-days); unset (the default) applies no cut and "
+        "writes today's book",
+    )
+    parser.add_argument(
+        "--liquidity-window-days",
+        type=int,
+        default=_DEFAULT_LIQUIDITY_WINDOW_DAYS,
+        metavar="DAYS",
+        help="the trailing calendar window, decision date inclusive, over "
+        "which a name's own quote_volume is measured for --liquidity-top",
+    )
+    parser.add_argument(
+        "--liquidity-min-days",
+        type=int,
+        default=_DEFAULT_LIQUIDITY_MIN_DAYS,
+        metavar="DAYS",
+        help="a mapped name carrying fewer futbars rows than this inside "
+        "the window is excluded from the --liquidity-top ranking and so "
+        "from the book",
+    )
     return parser
 
 
 def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url: str, named: str) -> dict[str, Any]:
+    _validate_liquidity_cut(
+        top=arguments.liquidity_top,
+        window_days=arguments.liquidity_window_days,
+        min_days=arguments.liquidity_min_days,
+    )
     parsed_nodes = [_split_node_arg(raw) for raw in arguments.nodes]
     node_ids = [node_id for _campaign_id, node_id in parsed_nodes]
 
@@ -841,9 +1008,18 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
             "max_name_weight": arguments.max_name_weight,
             "node_weighting": arguments.node_weighting,
             "n_capped": 0,
+            # The hold rule stays cheap: a held book is never re-ranked, so
+            # the cut's counts are unanswered here (see _liquidity_rank and
+            # the module docstring) even when --liquidity-top names one.
+            "liquidity_top": arguments.liquidity_top,
+            "liquidity_window_days": arguments.liquidity_window_days,
+            "n_liquidity_ranked": None,
+            "n_dropped_illiquid": 0,
         }
 
     allowed_lake_symbols = set(symbol_map)
+    n_liquidity_ranked: int | None = None
+    n_dropped_illiquid = 0
     with tempfile.TemporaryDirectory() as tmp_dir:
         context = _shadow_context(
             source, named, arguments.snapshot, decision_date, tmp_dir
@@ -859,6 +1035,23 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
                 del symbol_map[lake_symbol]
             n_dropped_price_mismatch = len(mismatched)
             allowed_lake_symbols = set(symbol_map)
+        if arguments.liquidity_top is not None:
+            # The cut narrows the very set the venue mapping already built,
+            # before any node is scored: the kept names ride into
+            # shadow_weights as its own allowed_symbols, so the z-scoring
+            # (and the beta rescale) run over the traded cross-section, not
+            # over a wider one a later drop would have to undo.
+            ranked, _medians, _n_excluded = _liquidity_rank(
+                mount,
+                allowed_lake_symbols,
+                decision_date,
+                window_days=arguments.liquidity_window_days,
+                min_days=arguments.liquidity_min_days,
+            )
+            n_liquidity_ranked = len(ranked)
+            kept = set(ranked[: arguments.liquidity_top])
+            n_dropped_illiquid = len(allowed_lake_symbols) - len(kept)
+            allowed_lake_symbols = kept
         node_weights = []
         node_betas = []
         for campaign_id, node_id in parsed_nodes:
@@ -922,6 +1115,13 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
             book_document["construction"] = context.book.weighting
         if arguments.max_name_weight is not None:
             book_document["max_name_weight"] = arguments.max_name_weight
+        # The cut's own two informational keys, written only when the cut is
+        # in force: a command with no --liquidity-top writes exactly today's
+        # key set, so the byte-identical-default promise holds (see the
+        # module docstring).
+        if arguments.liquidity_top is not None:
+            book_document["liquidity_top"] = arguments.liquidity_top
+            book_document["liquidity_window_days"] = arguments.liquidity_window_days
         _atomic_write(arguments.out, book_document)
 
     n_long, n_short, gross = _book_stats(bingx_weights)
@@ -943,6 +1143,10 @@ def _run(arguments: argparse.Namespace, source: Mapping[str, str], database_url:
         "max_name_weight": arguments.max_name_weight,
         "node_weighting": arguments.node_weighting,
         "n_capped": n_capped,
+        "liquidity_top": arguments.liquidity_top,
+        "liquidity_window_days": arguments.liquidity_window_days,
+        "n_liquidity_ranked": n_liquidity_ranked,
+        "n_dropped_illiquid": n_dropped_illiquid,
     }
 
 
