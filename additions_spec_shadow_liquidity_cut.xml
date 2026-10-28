@@ -1,0 +1,58 @@
+<project_specification mode="brownfield">
+  <project_name>nullius — the forward shadow book can restrict its universe to the N most liquid tradable names before scoring</project_name>
+  <addition_summary>
+    The daily forward shadow (orchestrator.shadow, run by deploy/shadow/shadow_daily.sh
+    and shadow_paper.sh) scores every node over the whole mapped universe: every lake
+    symbol the BingX contracts document lists (70 of the shadow lake's 100 names today).
+    Shadow v1's VST leg showed what that costs in execution: legs skipped below the
+    venue's minimum notional on thin names, a delisting (EPICUSDT) mid-window, and a
+    70-leg book that trips the venue's error budget on a status call. Shadow v3
+    (docs/preregistration/2026-10-28-shadow-v3-liquidity-cut.md, paper-only) tests the
+    same four signals under the same construction as shadow v2 on a universe cut to the
+    30 most liquid tradable names, so the two shadows can be compared day by day.
+
+    This addition gives shadow-book an optional liquidity cut. --liquidity-top N ranks the
+    mapped lake symbols by the median of the snapshot's futbars quote_volume over the
+    trailing --liquidity-window-days calendar days ending on the decision date
+    (inclusive), excludes a symbol with fewer than --liquidity-min-days rows in that
+    window, keeps the first N, and passes exactly that set as allowed_symbols to
+    shadow_weights — before z-scoring, the same seam and the same ordering the venue
+    mapping already uses, because a book that is dollar- and beta-neutral over names it
+    will not hold is not the book that is held. The JSON line and book.json report the
+    cut. Opt-in: without --liquidity-top, book.json is byte-identical to today and the
+    JSON line carries the new keys at their defaults only.
+  </addition_summary>
+  <existing_context>
+    <stack>Python 3.12 / uv workspace / pytest / polars.</stack>
+    <test_baseline>main at c425e783: orchestrator shadow tests (test_shadow_cli.py, test_shadow_construction.py, test_shadow_eval.py, test_shadow_weights.py) 77 passed; root tests/ passing.</test_baseline>
+    <conventions>
+      Follow CLAUDE.md. Seams, all in packages/orchestrator/src/orchestrator/shadow.py: _run builds symbol_map (lake symbol -> BingX spelling) from mount.partitions(BARS_STREAM) and the contracts document, drops ticker price mismatches, then sets allowed_lake_symbols = set(symbol_map) and calls shadow_weights(context, code, as_of=decision_date, allowed_symbols=allowed_lake_symbols) per node (about lines 845-880); the cut must narrow allowed_lake_symbols right there, after the price-mismatch drop and before the node loop. The snapshot handle is a snapshot.SnapshotMount: mount.partitions(stream) lists symbol=… keys, mount.dates(stream, symbol) lists date=YYYY-MM-DD keys, mount.select(stream, symbol, date) returns that day's Parquet parts as read-only paths — the pruned per-date read §4.2 requires; never glob the snapshot tree. The futbars stream (orchestrator._context.FUTBARS_STREAM, "futbars") carries columns symbol, date (UTC datetime), fut_close, fut_volume, taker_buy_volume, quote_volume, all values stored as strings (cast quote_volume to float). The trailing-window helper _beta_window_dates(as_of, n) in orchestrator._context returns the n calendar dates ending at as_of inclusive and is what _node_book_returns already uses. _build_parser holds the flags (--max-name-weight and --node-weighting are the model: optional, defaulting to no effect). main prints one JSON line (as_of, decision_date, held, book_path, nodes, n_long, n_short, gross, book_beta, n_dropped_unmapped, n_dropped_price_mismatch, max_name_weight, node_weighting, n_capped); the held branch (about line 830) prints the same key set and must carry the new keys too. book.json carries optional informational keys construction and max_name_weight only when in force. Tests live in packages/orchestrator/tests/test_shadow*.py with small synthetic snapshots built by their own helpers (test_shadow_construction.py is the closest model: it seals futbars with quote_volume columns). Exact reproduction tests use 1e-12.
+    </conventions>
+    <constraints>
+      - Never edit packages/orchestrator/src/orchestrator/_sandbox_child.py, packages/orchestrator/src/orchestrator/_shadow.py, packages/orchestrator/src/orchestrator/_context.py, packages/orchestrator/src/orchestrator/shadow_eval.py, packages/contract/**, packages/snapshot/**, src/app/**, deploy/**, packages/router/**, packages/evaluator/**, orchestrator/closeout.py, nulloracle/** or docs/preregistration/**.
+      - Byte-identical default: without --liquidity-top, shadow-book writes exactly the bytes it writes today for the same snapshot, nodes and other flags, and prints the same JSON line plus the new keys at their defaults (liquidity_top null, liquidity_window_days 30, n_liquidity_ranked null, n_dropped_illiquid 0). Add a test that pins this on the existing synthetic fixture.
+      - book_id derivation is unchanged (shadow_eval's _BOOK_ID_RE accepts only shadow-DATE-12hex); the hold rule, the decision-date rule, the venue mapping, the price-mismatch drop, the cap and the node weighting are unchanged and run exactly as today over the cut universe.
+      - The cut is applied through the existing allowed_symbols argument of shadow_weights and nowhere else: no post-scoring drop, no re-neutralisation code, no change to _shadow.py.
+      - The liquidity figures are read only from the sealed snapshot through the mount's per-date select (no ticker, no live venue call, no glob), so the same snapshot and flags reproduce the same book in every process; iterate symbols and dates in sorted order so counts and ranks are deterministic.
+      - Lint only the touched files.
+    </constraints>
+  </existing_context>
+  <layout profile="uv-workspace"/>
+  <features_to_add>
+    <category name="Forward Shadow">
+      <feature index="1" shape="core" depends_on=""
+               touches_files="packages/orchestrator/src/orchestrator/shadow.py"
+               creates="packages/orchestrator/tests/test_shadow_liquidity.py">
+        System restricts the forward shadow's scored universe to the --liquidity-top N mapped names ranked by the median futbars quote_volume over the trailing --liquidity-window-days calendar days ending on the decision date, excludes names with fewer than --liquidity-min-days rows in that window, passes the kept set as allowed_symbols before any node is scored, reports the cut in the JSON line and book.json, and writes byte-identical output when the flag is absent.
+        <steps>
+          - shadow.py _build_parser: three new optional flags. --liquidity-top INT (default None, metavar N): keep only the N most liquid mapped names; --liquidity-window-days INT (default 30): the trailing calendar window, decision date inclusive, over which liquidity is measured; --liquidity-min-days INT (default 20): a mapped name with fewer futbars rows than this inside the window is excluded from the ranking and therefore from the book. Refuse by name (ShadowCliError) a --liquidity-top below 2, a window below 1, or a min-days above the window.
+          - shadow.py new function _liquidity_rank(mount, symbols, decision_date, *, window_days, min_days) -> tuple[list[str], dict[str, float], int]: for each lake symbol in sorted(symbols), for each date in _beta_window_dates(decision_date, window_days) whose date=… key mount.dates(FUTBARS_STREAM, symbol) lists, read the parts mount.select returns with polars and take that day's quote_volume cast to float (a symbol with no futbars partition at all has zero rows); a symbol with fewer than min_days rows is excluded and counted; the rest are ranked by the median descending, ties by lake symbol ascending. Return the ranked symbols, their medians and the number excluded for too few rows. Reading goes through the mount's partitions/dates/select only.
+          - shadow.py _run: after the ticker price-mismatch drop and before the node loop, when --liquidity-top is set, call _liquidity_rank over allowed_lake_symbols, keep the first N ranked symbols as the new allowed_lake_symbols, and count n_dropped_illiquid = len(previous allowed) - len(kept) (names excluded for too few rows plus names ranked below N). The nodes are then scored exactly as today over the kept set (shadow_weights restricts before z-scoring), and the node weighting, the cap and the combine run unchanged. When the flag is absent nothing in this block runs.
+          - JSON line (both the fresh branch and the held branch) gains liquidity_top (the flag or null), liquidity_window_days (the flag's value), n_liquidity_ranked (how many names were rankable, null when the flag is absent) and n_dropped_illiquid (0 when absent). book.json gains the informational keys liquidity_top and liquidity_window_days only when --liquidity-top is set, so the default file is byte-identical.
+          - Docstrings: the module docstring and _liquidity_rank state the rule, cite this spec and the shadow v3 registration path, and say why the cut goes through allowed_symbols before scoring (the same reason the venue mapping does) rather than dropping names from a scored book.
+          - Tests (new file test_shadow_liquidity.py, synthetic snapshot in the style of test_shadow_construction.py with futbars quote_volume values chosen per symbol): (a) default path: no --liquidity-top produces bytes equal to a run of the unchanged code path on the existing fixture and the JSON line carries the four new keys at their defaults; (b) eight mapped symbols with distinct constant quote volumes and --liquidity-top 4: exactly the four highest appear in book.json, none of the other four does, n_liquidity_ranked 8, n_dropped_illiquid 4; (c) a symbol with the highest quote volume but only 10 rows inside a 30-day window at --liquidity-min-days 20 is excluded and counted in n_dropped_illiquid while n_liquidity_ranked excludes it; (d) two symbols with identical medians: the lexically smaller lake symbol ranks first (pin with --liquidity-top set so exactly one of them is kept); (e) a row dated the day before the window's first date does not count toward a symbol's rows, a row on the decision date does; (f) the kept book is still built before scoring: with a plain-z config the kept book's weights sum to 0 within 1e-12 and its gross equals --gross within 1e-12, and the per-node allowed_symbols passed to shadow_weights equals the kept set (monkeypatch shadow_weights to capture it); (g) --liquidity-top 1 and --liquidity-min-days 40 with --liquidity-window-days 30 are refused by name; (h) book.json carries liquidity_top and liquidity_window_days when set and neither key otherwise. The four existing shadow test files still pass.
+        </steps>
+      </feature>
+    </category>
+  </features_to_add>
+</project_specification>
