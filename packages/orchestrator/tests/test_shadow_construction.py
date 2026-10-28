@@ -495,6 +495,41 @@ def test_cap_name_weights_is_a_no_op_when_nothing_exceeds_the_cap() -> None:
     assert capped == pytest.approx({"AAA": 0.5, "BBB": -0.5}, abs=1e-12)
 
 
+def test_cap_name_weights_is_scale_free_and_exact_at_the_fixed_point() -> None:
+    # The cap is a fraction of *gross*, so the input's own scale must not
+    # matter: the gross-1 mean and the gross-100 mean (what an
+    # inverse-vol-scaled book actually hands in) give the identical book.
+    # The answer is exact, not geometric: A is fixed at the cap, and the
+    # freed gross is water-filled over B, C, D in proportion to their
+    # normalised weights (0.6 / 0.5 = 1.2).
+    mean = {"A": 0.5, "B": 0.3, "C": -0.15, "D": -0.05}
+    expected = {"A": 0.4, "B": 0.36, "C": -0.18, "D": -0.06}
+
+    capped_at_one, n_one = shadow_cli._cap_name_weights(mean, cap=0.4, gross=1.0)
+    capped_at_hundred, n_hundred = shadow_cli._cap_name_weights(
+        {symbol: weight * 100.0 for symbol, weight in mean.items()},
+        cap=0.4,
+        gross=1.0,
+    )
+
+    assert capped_at_one == pytest.approx(expected, abs=1e-12)
+    assert capped_at_hundred == pytest.approx(expected, abs=1e-12)
+    assert n_one == 1
+    assert n_hundred == 1
+
+
+def test_cap_name_weights_water_fills_through_a_second_round() -> None:
+    # Capping A frees gross that pushes B over the cap too, so a second
+    # round fixes B and redistributes once more. The loop reaches the exact
+    # fixed point (gross 1.0) rather than refusing a meetable cap.
+    combined = {"A": 0.55, "B": 0.35, "C": 0.1}
+
+    capped, n_capped = shadow_cli._cap_name_weights(combined, cap=0.4, gross=1.0)
+
+    assert capped == pytest.approx({"A": 0.4, "B": 0.4, "C": 0.2}, abs=1e-12)
+    assert n_capped == 2
+
+
 # -- (e) --node-weighting inverse_vol: _node_book_sigma as a pure function ---
 
 

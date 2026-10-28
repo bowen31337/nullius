@@ -186,13 +186,9 @@ _DEFAULT_LIQUIDITY_MIN_DAYS = 20
 #: is a single-name bet — the same "one name on a side is not diversification"
 #: concern :data:`orchestrator._shadow._MIN_SYMBOLS_PER_LEG` states for a leg.
 _MIN_LIQUIDITY_TOP = 2
-#: ``--max-name-weight``'s clip-and-renormalise loop runs at most this many
-#: passes before refusing — a cap under ``gross / n`` names can never be met,
-#: so a loop that has not settled by here never will.
-_MAX_CAP_PASSES = 20
-#: Float slack the cap loop's own convergence check and its ``n_capped``
-#: count use, well under a cap any caller would set and well over a
-#: ``fsum``/``float`` division's own rounding.
+#: Float slack the cap's own over-the-line test uses, well under a cap any
+#: caller would set and well over a ``fsum``/``float`` division's own
+#: rounding.
 _CAP_TOLERANCE = 1e-9
 
 EXIT_OK = 0
@@ -673,7 +669,10 @@ def _combine(
     never sets ``--max-name-weight`` gets back the identical book it always
     has. The per-name cap (:func:`_cap_name_weights`) runs *instead* of this
     function, over the same :func:`_mean_weights` output, because the cap is
-    an execution-side choice a flag names, never the evaluation config's.
+    an execution-side choice a flag names, never the evaluation config's. It
+    rescales that mean to ``gross`` itself — through the identical
+    :func:`_rescale_to_gross` math — *before* it caps anything, because the
+    cap is a fraction of gross and so must not read the mean's own scale.
     """
     return _rescale_to_gross(_mean_weights(weights_by_node), gross=gross)
 
@@ -681,61 +680,74 @@ def _combine(
 def _cap_name_weights(
     combined: Mapping[str, float], *, cap: float, gross: float
 ) -> tuple[dict[str, float], int]:
-    """Clip every name's ``|weight|`` to ``cap``, renormalised to ``gross``.
+    """Cap every name's ``|weight|`` at ``cap`` by water-filling to ``gross``.
 
     additions_spec_shadow_book_construction.xml, "Forward Shadow": runs on
-    :func:`_mean_weights`'s own output — *after* the nodes' mean, *before*
-    the plain gross rescale :func:`_rescale_to_gross` would otherwise do —
-    because docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md and the
-    two RESULTs before it show a short-tail book's losses concentrated on a
+    :func:`_mean_weights`'s own output — *after* the nodes' mean, because
+    docs/preregistration/2026-10-22-m2-h10-lowvol.RESULT.md and the two
+    RESULTs before it show a short-tail book's losses concentrated on a
     handful of squeeze dates in a few names: a cap on any one name's share of
     the combined book is a trade-level risk control, not a research setting,
     which is why it is a flag rather than a config key.
 
-    Each pass clips every ``|w_i|`` exceeding ``cap`` to ``cap`` (keeping its
-    sign) and rescales the whole, now-clipped book back to ``gross`` —
-    clipping first can push a previously clean name over the cap once the
-    freed-up gross is redistributed, so the two steps repeat until a pass
-    leaves nothing over the cap or :data:`_MAX_CAP_PASSES` passes have run.
-    A cap under ``gross`` divided by the number of names can never be met by
-    any number of passes, so that case is refused by name rather than spun
-    forever.
+    ``cap`` is a fraction of *gross*, so the input's own scale must not
+    matter: the combined mean is first rescaled to ``gross`` exactly as
+    :func:`_rescale_to_gross` would (its own math, and its own below-dust
+    filter), and everything that follows reads fractions of gross. A name
+    whose ``|w|`` exceeds ``cap`` is fixed at ``±cap`` (keeping its sign);
+    the remaining gross, ``gross - n_capped · cap``, is distributed over the
+    uncapped names in proportion to their normalised weights. Fixing one
+    name's gross can push another over, so the two steps repeat until no
+    uncapped name exceeds the cap. Each round adds at least one name to the
+    capped set, so the loop terminates in at most ``n`` rounds with the
+    exact fixed point — no tolerance-driven refusal of a meetable cap.
 
-    Returns the converged book (the same below-dust filter
-    :func:`_rescale_to_gross` applies) and how many names are sitting
-    exactly at the cap — ``0`` is impossible once this function returns
-    normally only when ``cap`` was never actually binding.
+    The only cap with no solution is one under ``gross / n`` names
+    (``n · cap < gross``): no distribution of at most ``cap`` per name can
+    reach ``gross``. That case is refused by name.
+
+    Returns the capped book (the same below-dust filter
+    :func:`_rescale_to_gross` applies) and ``n_capped``, the size of the
+    capped set — the names sitting exactly at the cap.
     """
-    weights: dict[str, float] = dict(combined)
-    for _pass in range(_MAX_CAP_PASSES):
-        clipped = {
-            symbol: math.copysign(cap, value) if abs(value) > cap else value
+    weights = _rescale_to_gross(combined, gross=gross)
+    n_names = len(weights)
+    if cap * n_names < gross:
+        raise ShadowCliError(
+            f"{SHADOW_CLI_CODE}: no book honours --max-name-weight {cap!r} at "
+            f"--gross {gross!r} across {n_names} name(s) — a cap under "
+            "gross/n cannot be met by any distribution"
+        )
+    capped: set[str] = set()
+    while True:
+        over = [
+            symbol
             for symbol, value in weights.items()
-        }
-        total = math.fsum(abs(value) for value in clipped.values())
+            if symbol not in capped and abs(value) > cap + _CAP_TOLERANCE
+        ]
+        if not over:
+            break
+        for symbol in over:
+            weights[symbol] = math.copysign(cap, weights[symbol])
+            capped.add(symbol)
+        if len(capped) == n_names:
+            break
+        total = math.fsum(
+            abs(value) for symbol, value in weights.items() if symbol not in capped
+        )
         if total <= 0.0:
-            raise ShadowCliError(
-                f"{SHADOW_CLI_CODE}: the combined book is flat across every "
-                "node — there is nothing to renormalise to gross"
-            )
-        scale = gross / total
-        weights = {symbol: value * scale for symbol, value in clipped.items()}
-        if all(abs(value) <= cap + _CAP_TOLERANCE for value in weights.values()):
-            n_capped = sum(
-                1 for value in weights.values() if abs(abs(value) - cap) <= _CAP_TOLERANCE
-            )
-            return (
-                {
-                    symbol: value
-                    for symbol, value in weights.items()
-                    if abs(value) >= _MIN_WEIGHT_FRACTION
-                },
-                n_capped,
-            )
-    raise ShadowCliError(
-        f"{SHADOW_CLI_CODE}: no book honours --max-name-weight {cap!r} at "
-        f"--gross {gross!r} across {len(weights)} name(s) after "
-        f"{_MAX_CAP_PASSES} passes — a cap this far under gross/n cannot be met"
+            break
+        scale = (gross - cap * len(capped)) / total
+        for symbol in weights:
+            if symbol not in capped:
+                weights[symbol] *= scale
+    return (
+        {
+            symbol: value
+            for symbol, value in weights.items()
+            if abs(value) >= _MIN_WEIGHT_FRACTION
+        },
+        len(capped),
     )
 
 
